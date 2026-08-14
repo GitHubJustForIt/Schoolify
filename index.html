@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AirSignal — deine Schulwelt</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+<div class="bg-pattern"></div>
+<div id="toasts"></div>
+
+<!-- ================= AUTH SCREEN ================= -->
+<div id="authScreen" class="auth-wrap hidden">
+  <div class="auth-card">
+    <div class="row" style="justify-content:center;gap:8px;">
+      <span class="dot" style="width:14px;height:14px;border-radius:50%;background:linear-gradient(135deg,var(--blush),var(--lavender));display:inline-block;"></span>
+      <span style="font-family:var(--font-display);font-weight:600;font-size:1.1rem;">AirSignal</span>
+    </div>
+    <div class="auth-tabs">
+      <div class="tab active" data-authtab="login">Anmelden</div>
+      <div class="tab" data-authtab="register">Account erstellen</div>
+    </div>
+
+    <!-- LOGIN -->
+    <div id="loginPane">
+      <div class="auth-title">Schön, dich zu sehen ✦</div>
+      <p class="auth-sub">Melde dich mit deiner Unique&nbsp;ID oder E-Mail an.</p>
+      <div class="field"><label>Unique ID, Username oder E-Mail</label><input type="text" id="loginIdentifier" placeholder="z. B. A7K29P4Q oder emma@example.com"></div>
+      <button class="btn" style="width:100%;justify-content:center;" id="loginBtn">Anmelden</button>
+      <p class="tiny" style="text-align:center;margin-top:14px;">Kein Passwort nötig — deine Unique&nbsp;ID ist dein Schlüssel. Teile sie nur mit Personen, denen du vertraust.</p>
+      <div id="localAccountsList" style="margin-top:16px;"></div>
+    </div>
+
+    <!-- REGISTER -->
+    <div id="registerPane" class="hidden">
+      <div class="auth-title">Willkommen ♡</div>
+      <p class="auth-sub">Leg dir in ein paar Sekunden deinen Account an.</p>
+      <div class="field"><label>Vorname</label><input type="text" id="regFirst"></div>
+      <div class="field"><label>Nachname</label><input type="text" id="regLast"></div>
+      <div class="field"><label>Username</label><input type="text" id="regUsername" placeholder="z. B. emma.s"></div>
+      <div class="field"><label>E-Mail-Adresse</label><input type="email" id="regEmail" placeholder="beliebige E-Mail, z. B. emma@gmail.com"></div>
+      <button class="btn" style="width:100%;justify-content:center;" id="registerBtn">Account erstellen</button>
+      <p class="tiny" style="text-align:center;margin-top:14px;">Keine Verifizierungs-E-Mail. Deine Adresse dient nur als Kennung.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ================= APP ================= -->
+<div id="app" class="hidden">
+  <!-- Sidebar (desktop) -->
+  <nav class="sidebar" id="sidebar">
+    <div class="brand"><span class="dot"></span> AirSignal</div>
+    <div class="nav-item" data-view="dashboard"><span class="ic">✦</span> Dashboard</div>
+    <div class="nav-item" data-view="timetable"><span class="ic">📘</span> Stundenplan</div>
+    <div class="nav-item" data-view="tasks"><span class="ic">✔︎</span> Aufgaben</div>
+    <div class="nav-item" data-view="notes"><span class="ic">✎</span> Notizen</div>
+    <div class="nav-item" data-view="materials"><span class="ic">🗂</span> Schulmaterial</div>
+    <div class="nav-item" data-view="friends"><span class="ic">♡</span> Freunde</div>
+    <div class="nav-item" data-view="chat"><span class="ic">💬</span> Chat</div>
+    <div class="nav-item" data-view="airsignal"><span class="ic">☁</span> AirSignal</div>
+    <div class="nav-spacer"></div>
+    <div class="nav-foot">
+      <div class="nav-item" data-view="security"><span class="ic">🔒</span> Sicherheit</div>
+      <div class="nav-item" data-view="settings"><span class="ic">⚙</span> Einstellungen</div>
+      <div class="nav-item" data-view="profile"><span class="ic">👤</span> <span id="sidebarName">Profil</span></div>
+    </div>
+  </nav>
+
+  <!-- Topbar (mobile) -->
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span> AirSignal</div>
+    <div class="row">
+      <div class="avatar" id="topbarAvatar" style="width:32px;height:32px;font-size:.75rem;" data-view="profile"></div>
+    </div>
+  </div>
+
+  <main>
+    <!-- DASHBOARD -->
+    <section class="view sec-dashboard" id="view-dashboard">
+      <div class="view-head">
+        <div>
+          <span class="section-tag">Heute</span>
+          <h1 id="dashGreeting">Hey ♡</h1>
+          <p class="view-sub" id="dashDate"></p>
+        </div>
+      </div>
+      <div class="grid grid-2">
+        <div class="card">
+          <strong>Nächste Stunde</strong>
+          <div id="dashNextLesson" class="muted" style="margin-top:8px;">–</div>
+        </div>
+        <div class="card">
+          <strong>Wichtigste Aufgabe</strong>
+          <div id="dashTopTask" class="muted" style="margin-top:8px;">–</div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px;">
+        <div class="row between"><strong>Freunde</strong><span class="tiny" data-view="friends" style="cursor:pointer;">Alle ansehen →</span></div>
+        <div id="dashFriends" class="row wrap" style="margin-top:10px;gap:14px;"></div>
+      </div>
+      <div class="grid grid-2" style="margin-top:14px;">
+        <div class="card">
+          <div class="row between"><strong>AirSignal</strong><span class="tiny" data-view="airsignal" style="cursor:pointer;">Öffnen →</span></div>
+          <div id="dashAirsignal" class="muted" style="margin-top:8px;">–</div>
+        </div>
+        <div class="card">
+          <div class="row between"><strong>Letzte Notiz</strong><span class="tiny" data-view="notes" style="cursor:pointer;">Öffnen →</span></div>
+          <div id="dashNote" class="muted" style="margin-top:8px;">–</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TIMETABLE -->
+    <section class="view sec-timetable hidden" id="view-timetable">
+      <div class="view-head">
+        <div><span class="section-tag">Unterricht</span><h1>Stundenplan</h1><p class="view-sub">Deine Woche im Überblick.</p></div>
+        <button class="btn btn-sm" id="addLessonBtn">+ Stunde hinzufügen</button>
+      </div>
+      <div class="card" style="overflow-x:auto;">
+        <table id="timetableGrid" style="border-collapse:collapse;width:100%;min-width:640px;"></table>
+      </div>
+    </section>
+
+    <!-- TASKS -->
+    <section class="view sec-tasks hidden" id="view-tasks">
+      <div class="view-head">
+        <div><span class="section-tag">Aufgaben</span><h1>Was ansteht</h1></div>
+        <button class="btn btn-sm" id="addTaskBtn">+ Aufgabe</button>
+      </div>
+      <div class="row wrap" id="taskFilters" style="margin-bottom:14px;gap:8px;"></div>
+      <div class="card" id="taskListCard"><div id="taskList"></div></div>
+    </section>
+
+    <!-- NOTES -->
+    <section class="view sec-notes hidden" id="view-notes">
+      <div class="view-head">
+        <div><span class="section-tag">Notizen</span><h1>Dein Notizbuch</h1></div>
+        <div class="row" style="gap:8px;">
+          <button class="btn btn-ghost btn-sm" id="addFolderBtn">+ Ordner</button>
+          <button class="btn btn-sm" id="addNoteBtn">+ Notiz</button>
+        </div>
+      </div>
+      <div class="field" style="max-width:280px;"><input type="search" id="noteSearch" placeholder="Notizen durchsuchen…"></div>
+      <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+        <div class="card" style="min-width:200px;flex:0 0 220px;">
+          <strong style="font-size:.82rem;">Ordner</strong>
+          <div id="folderList" style="margin-top:8px;"></div>
+        </div>
+        <div class="card" style="flex:1;min-width:260px;" id="noteListCard">
+          <div id="noteList"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MATERIALS -->
+    <section class="view sec-materials hidden" id="view-materials">
+      <div class="view-head">
+        <div><span class="section-tag">Material</span><h1>Schulmaterial</h1></div>
+        <button class="btn btn-sm" id="uploadMaterialBtn">+ Datei hochladen</button>
+      </div>
+      <input type="file" id="materialFileInput" class="hidden" multiple>
+      <div class="field" style="max-width:280px;"><input type="search" id="materialSearch" placeholder="Dateien durchsuchen…"></div>
+      <div id="materialList" class="grid grid-3"></div>
+    </section>
+
+    <!-- FRIENDS -->
+    <section class="view sec-friends hidden" id="view-friends">
+      <div class="view-head">
+        <div><span class="section-tag">Kontakte</span><h1>Freunde</h1></div>
+      </div>
+      <div class="card">
+        <strong style="font-size:.85rem;">Per Unique ID finden</strong>
+        <div class="row" style="margin-top:8px;gap:8px;">
+          <input type="text" id="friendSearchInput" placeholder="z. B. A7K29P4Q" style="max-width:220px;">
+          <button class="btn btn-sm" id="friendSearchBtn">Suchen &amp; verbinden</button>
+        </div>
+        <p class="tiny" style="margin-top:6px;">Nutzt eine echte Peer-Verbindung — die Person muss die App gerade offen haben.</p>
+        <div id="friendSearchResult" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="grid grid-2" style="margin-top:14px;">
+        <div class="card">
+          <strong style="font-size:.85rem;">Anfragen</strong>
+          <div id="friendRequestsList" style="margin-top:8px;"></div>
+        </div>
+        <div class="card">
+          <strong style="font-size:.85rem;">Blockiert</strong>
+          <div id="blockedList" style="margin-top:8px;"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:14px;">
+        <strong style="font-size:.85rem;">Meine Freunde</strong>
+        <div id="friendsListFull" style="margin-top:8px;"></div>
+      </div>
+    </section>
+
+    <!-- CHAT -->
+    <section class="view sec-chat hidden" id="view-chat">
+      <div class="view-head"><div><span class="section-tag">Nachrichten</span><h1>Chat</h1></div></div>
+      <div class="card" style="display:flex;gap:0;padding:0;overflow:hidden;min-height:420px;">
+        <div style="width:210px;border-right:1.5px solid var(--border);padding:12px;flex-shrink:0;" id="chatConvoList"></div>
+        <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
+          <div id="chatEmptyState" class="empty" style="flex:1;display:flex;flex-direction:column;justify-content:center;">
+            <div class="em-ic">💬</div>Wähle links einen Freund aus, um zu chatten.
+          </div>
+          <div id="chatActive" class="hidden" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+            <div class="row between" style="padding:12px 16px;border-bottom:1.5px solid var(--border);">
+              <div class="row" style="gap:10px;"><div class="avatar" id="chatPartnerAvatar" style="width:34px;height:34px;font-size:.8rem;"></div><strong id="chatPartnerName"></strong></div>
+              <span class="tiny" id="chatPartnerStatus"></span>
+            </div>
+            <div id="chatMessages" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px;"></div>
+            <div class="row" style="padding:12px;border-top:1.5px solid var(--border);gap:8px;">
+              <input type="text" id="chatInput" placeholder="Nachricht schreiben…" style="flex:1;">
+              <button class="btn btn-sm" id="chatSendBtn">Senden</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AIRSIGNAL -->
+    <section class="view sec-airsignal hidden" id="view-airsignal">
+      <div class="view-head">
+        <div><span class="section-tag">AirSignal</span><h1>In deiner Nähe ☁</h1></div>
+        <button class="btn btn-sm" id="airsignalSendBtn">✦ Senden</button>
+      </div>
+
+      <div class="card">
+        <strong style="font-size:.85rem;">Freunde online</strong>
+        <div id="airFriendsOnline" style="margin-top:10px;" class="row wrap"></div>
+      </div>
+
+      <div class="wavy-divider"></div>
+
+      <div class="card">
+        <div class="row between"><strong style="font-size:.85rem;">In deiner Nähe</strong><span class="tiny" id="airNearbyStatus"></span></div>
+        <div id="airNearbyList" style="margin-top:10px;"></div>
+      </div>
+    </section>
+
+    <!-- SECURITY -->
+    <section class="view sec-security hidden" id="view-security">
+      <div class="view-head"><div><span class="section-tag">Privatsphäre</span><h1>Sicherheit</h1></div></div>
+      <div class="card"><div id="securityList"></div></div>
+      <div class="card" style="margin-top:14px;">
+        <strong style="font-size:.85rem;">Aktive Geräte</strong>
+        <div id="deviceList" style="margin-top:8px;"></div>
+        <button class="btn btn-outline btn-sm" style="margin-top:10px;" id="logoutAllBtn">Von allen Geräten abmelden</button>
+      </div>
+      <div class="card" style="margin-top:14px;">
+        <strong style="font-size:.85rem;">Konto</strong>
+        <div class="row wrap" style="margin-top:10px;gap:8px;">
+          <button class="btn btn-outline btn-sm" id="exportDataBtn">Daten exportieren</button>
+          <button class="btn btn-danger btn-sm" id="deleteAccountBtn">Account löschen</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view sec-settings hidden" id="view-settings">
+      <div class="view-head"><div><span class="section-tag">Personalisierung</span><h1>Einstellungen</h1></div></div>
+      <div class="card">
+        <strong style="font-size:.85rem;">Akzentfarbe</strong>
+        <div class="row wrap" id="accentPicker" style="margin-top:10px;gap:8px;"></div>
+      </div>
+      <div class="card" style="margin-top:14px;">
+        <div class="row between list-row"><span>Dark Mode</span><label class="switch"><input type="checkbox" id="darkModeToggle"><span class="track"></span></label></div>
+        <div class="row between list-row"><span>Animationen reduzieren</span><label class="switch"><input type="checkbox" id="reduceMotionToggle"><span class="track"></span></label></div>
+      </div>
+      <div class="card" style="margin-top:14px;">
+        <strong style="font-size:.85rem;">Benachrichtigungen</strong>
+        <div id="notifSettingsList" style="margin-top:8px;"></div>
+      </div>
+    </section>
+
+    <!-- PROFILE -->
+    <section class="view sec-profile hidden" id="view-profile">
+      <div class="view-head"><div><span class="section-tag">Ich</span><h1>Mein Profil</h1></div></div>
+      <div class="grid grid-2">
+        <div class="card" style="text-align:center;">
+          <div class="avatar" id="profileAvatarBig" style="width:96px;height:96px;font-size:1.8rem;margin:0 auto 10px auto;"></div>
+          <input type="file" id="avatarFileInput" accept="image/*" class="hidden">
+          <div class="row wrap" style="justify-content:center;gap:8px;margin-bottom:10px;">
+            <button class="btn btn-sm btn-outline" id="changeAvatarBtn">Bild ändern</button>
+            <button class="btn btn-sm btn-ghost" id="removeAvatarBtn">Entfernen</button>
+          </div>
+          <h3 id="profileName" style="margin:6px 0 0 0;"></h3>
+          <p class="muted" id="profileUsername" style="margin:2px 0;"></p>
+          <p class="pill" id="profileUid" style="margin:6px auto;"></p>
+        </div>
+        <div class="card">
+          <div id="qrCanvasWrap"></div>
+          <button class="btn btn-sm btn-outline" style="width:100%;margin-top:10px;" id="openQrFullBtn">Vollbild anzeigen</button>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px;">
+        <div class="field"><label>Vorname</label><input type="text" id="editFirst"></div>
+        <div class="field"><label>Nachname</label><input type="text" id="editLast"></div>
+        <div class="field"><label>Username</label><input type="text" id="editUsername"></div>
+        <div class="field"><label>Bio</label><textarea id="editBio" maxlength="140" placeholder="Erzähl etwas über dich…"></textarea></div>
+        <button class="btn btn-sm" id="saveProfileBtn">Speichern</button>
+      </div>
+      <div class="card" style="margin-top:14px;">
+        <div class="row between"><strong style="font-size:.85rem;">Accounts</strong><button class="btn btn-sm btn-ghost" id="addAccountBtn">+ Account hinzufügen</button></div>
+        <div id="accountSwitcherList" style="margin-top:10px;"></div>
+        <button class="btn btn-outline btn-sm" style="margin-top:12px;" id="logoutBtn">Abmelden</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- Bottom nav (mobile) -->
+<div class="bottomnav" id="bottomnav">
+  <div class="bn-item" data-view="dashboard"><span class="ic">✦</span>Home</div>
+  <div class="bn-item" data-view="tasks"><span class="ic">✔︎</span>Aufgaben</div>
+  <div class="bn-item" data-view="chat"><span class="ic">💬</span>Chat</div>
+  <div class="bn-item" data-view="airsignal"><span class="ic">☁</span>Signal</div>
+  <div class="bn-item" data-view="friends"><span class="ic">♡</span>Freunde</div>
+</div>
+
+<!-- Modal root -->
+<div id="modalRoot"></div>
+
+<script src="app.js"></script>
+<script src="realtime.js"></script>
+</body>
+</html>
