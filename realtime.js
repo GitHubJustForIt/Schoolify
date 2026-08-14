@@ -1,54 +1,42 @@
 /* ==========================================================================
-   AirSignal Schulwelt — realtime.js
+   Schoolify — realtime.js
    Echte Geräte-zu-Geräte-Verbindungen über PeerJS (WebRTC). Die Unique ID
-   jedes Accounts dient direkt als Peer-ID. Es gibt keinen eigenen Server —
-   der öffentliche PeerJS-Broker übernimmt nur den ersten Verbindungsaufbau
-   (Signaling), danach läuft alles direkt zwischen den zwei Geräten.
+   jedes Accounts dient direkt als Peer-ID. Kein eigener Server — der
+   öffentliche PeerJS-Broker übernimmt nur den ersten Verbindungsaufbau.
 
    WICHTIG (ehrlich, nicht versteckt):
    - Beide Geräte müssen die App gleichzeitig offen haben, damit z. B. eine
-     Chatnachricht oder Freundschaftsanfrage sofort ankommt. Es gibt (noch)
-     keinen Server, der Nachrichten für Offline-Empfänger zwischenspeichert.
-   - "Fremde in der Nähe" kann ohne eigenen Server nicht sauber umgesetzt
-     werden (niemand kennt alle Nutzer zentral) — dieser Teil bleibt bewusst
-     als ehrlicher Platzhalter stehen, bis ein echtes Backend existiert.
+     Chatnachricht oder Freundschaftsanfrage sofort ankommt.
+   - "Fremde in der Nähe" braucht ein echtes Backend — bleibt bewusst als
+     ehrlicher Platzhalter stehen.
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
-  peer: null,
-  conns: {},            // uid -> DataConnection
-  knownProfiles: {},     // uid -> {uniqueId, firstName, lastName, username, avatar,...}
-  pendingSearch: null,
-  activeChatUid: null,
-  lastGeo: null,          // {lat, lng} fuzzed
+  peer: null, conns: {}, knownProfiles: {}, pendingSearch: null, activeChatUid: null, lastGeo: null,
 });
 
 function myData() { return AS.currentData; }
 function mySec() { return AS.currentData.security; }
+
+function publicProfile() {
+  const u = AS.currentUser;
+  return { uniqueId: u.uniqueId, firstName: u.firstName, lastName: u.lastName, username: u.username, avatar: mySec().avatarVisibility !== 'nobody' ? u.avatar : null, bio: u.bio };
+}
+window.publicProfile = publicProfile;
 
 /* ---------------------------------------------------------------------- */
 /* Connection lifecycle                                                   */
 /* ---------------------------------------------------------------------- */
 ASRealtime.init = function (uid) {
   if (this.peer && !this.peer.destroyed) return;
-  try {
-    this.peer = new Peer(uid, { debug: 0 });
-  } catch (e) { AS.toast('Echtzeit-Verbindung konnte nicht gestartet werden.'); return; }
+  try { this.peer = new Peer(uid, { debug: 0 }); }
+  catch (e) { AS.toast('Echtzeit-Verbindung konnte nicht gestartet werden.'); return; }
 
-  this.peer.on('open', () => {
-    // reconnect to friends who might already be online, so status is live
-    myData().friends.forEach(fid => this.connectToPeer(fid, true));
-  });
-
+  this.peer.on('open', () => { myData().friends.forEach(fid => this.connectToPeer(fid, true)); });
   this.peer.on('connection', (conn) => this.handleIncomingConnection(conn));
-
   this.peer.on('error', (err) => {
-    if (String(err).includes('unavailable-id')) {
-      AS.toast('Dieses Gerät ist bereits mit deinem Account verbunden (anderer Tab?).');
-    }
-    // peer-unavailable errors happen constantly during friend search / offline friends — stay quiet
+    if (String(err).includes('unavailable-id')) AS.toast('Dieses Gerät ist bereits mit deinem Account verbunden (anderer Tab?).');
   });
-
   setInterval(() => this.refreshPresenceUI(), 4000);
 };
 
@@ -67,25 +55,19 @@ ASRealtime.connectToPeer = function (uid, silent) {
     const conn = this.peer.connect(uid, { reliable: true, metadata: { from: AS.currentUser.uniqueId } });
     const timeout = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, 6000);
     conn.on('open', () => {
-      this.conns[uid] = conn;
-      this.wireConnection(conn);
+      this.conns[uid] = conn; this.wireConnection(conn);
       this.sendTo(uid, { type: 'hello', profile: publicProfile() });
-      settled = true; clearTimeout(timeout); resolve(conn);
-      this.refreshPresenceUI();
+      settled = true; clearTimeout(timeout); resolve(conn); this.refreshPresenceUI();
     });
-    conn.on('error', () => { if (!settled) { settled = true; clearTimeout(timeout); resolve(null); } if (!silent) {/* quiet */} });
+    conn.on('error', () => { if (!settled) { settled = true; clearTimeout(timeout); resolve(null); } });
   });
 };
 
 ASRealtime.handleIncomingConnection = function (conn) {
   const fromUid = conn.peer;
   if (myData().blocked.includes(fromUid)) { conn.close(); return; }
-  if (mySec().whoCanMessage === 'friends' && !myData().friends.includes(fromUid) && mySec().blockUnknown) {
-    // still allow connection so friend requests can arrive, but flag as unknown
-  }
   conn.on('open', () => {
-    this.conns[fromUid] = conn;
-    this.wireConnection(conn);
+    this.conns[fromUid] = conn; this.wireConnection(conn);
     this.sendTo(fromUid, { type: 'hello', profile: publicProfile() });
     this.refreshPresenceUI();
   });
@@ -103,14 +85,7 @@ ASRealtime.sendTo = function (uid, obj) {
   return false;
 };
 
-ASRealtime.onlineFriends = function () {
-  return myData().friends.filter(f => this.conns[f] && this.conns[f].open);
-};
-
-function publicProfile() {
-  const u = AS.currentUser;
-  return { uniqueId: u.uniqueId, firstName: u.firstName, lastName: u.lastName, username: u.username, avatar: mySec().avatarVisibility !== 'nobody' ? u.avatar : null, bio: u.bio };
-}
+ASRealtime.onlineFriends = function () { return myData().friends.filter(f => this.conns[f] && this.conns[f].open); };
 
 /* ---------------------------------------------------------------------- */
 /* Incoming message router                                                */
@@ -139,8 +114,7 @@ ASRealtime.handleMessage = function (fromUid, msg) {
       if (msg.accepted) {
         if (!myData().friends.includes(fromUid)) myData().friends.push(fromUid);
         myData().friendRequestsOut = myData().friendRequestsOut.filter(u => u !== fromUid);
-        persist();
-        AS.toast(`Ihr seid jetzt befreundet ♡`);
+        persist(); AS.toast(`Ihr seid jetzt befreundet ♡`);
       } else {
         myData().friendRequestsOut = myData().friendRequestsOut.filter(u => u !== fromUid);
         persist();
@@ -149,7 +123,7 @@ ASRealtime.handleMessage = function (fromUid, msg) {
       break;
     case 'chat':
       if (mySec().whoCanMessage === 'friends' && !myData().friends.includes(fromUid)) return;
-      addIncomingChatMessage(fromUid, msg.text);
+      addIncomingChatMessage(fromUid, msg.text, msg.file || null);
       break;
     case 'airsignal':
       if (mySec().airsignalReceiveFrom === 'friends' && !myData().friends.includes(fromUid)) return;
@@ -176,17 +150,14 @@ document.getElementById('friendSearchBtn').addEventListener('click', async () =>
   if (!uid) return;
   if (uid === AS.currentUser.uniqueId) { AS.toast('Das ist deine eigene Unique ID 😄'); return; }
   if (myData().blocked.includes(uid)) { AS.toast('Diese Person ist blockiert.'); return; }
-  resBox.innerHTML = `<span class="muted">Verbinde…</span>`;
+  resBox.innerHTML = `<span class="muted row" style="gap:8px;"><span class="spinner-sm"></span> Verbinde…</span>`;
   ASRealtime.pendingSearch = uid;
   const conn = await ASRealtime.connectToPeer(uid);
   if (!conn) {
     resBox.innerHTML = `<span class="muted">Niemand mit dieser Unique ID ist gerade online. Bitte später erneut versuchen, wenn beide die App offen haben.</span>`;
     return;
   }
-  // profile arrives async via 'hello' -> renderFriendSearchResult
-  setTimeout(() => {
-    if (!ASRealtime.knownProfiles[uid]) resBox.innerHTML = `<span class="muted">Verbunden, warte auf Profil…</span>`;
-  }, 400);
+  setTimeout(() => { if (!ASRealtime.knownProfiles[uid]) resBox.innerHTML = `<span class="muted">Verbunden, warte auf Profil…</span>`; }, 400);
 });
 
 function renderFriendSearchResult(profile) {
@@ -201,7 +172,7 @@ function renderFriendSearchResult(profile) {
   renderAvatar(resBox.querySelector('.sr-av'), profile);
   const btn = resBox.querySelector('#sendFriendReq');
   if (btn) btn.addEventListener('click', () => {
-    AS.modal(`<h3>Freund hinzufügen?</h3>
+    AS.modal(`<h3>Freund hinzufügen? 💌</h3>
       <div class="row" style="gap:10px;margin:14px 0;"><div class="avatar cf-av" style="width:44px;height:44px;"></div><div><strong>${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</strong><div class="tiny">${profile.uniqueId}</div></div></div>
       <div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="cfCancel">Abbrechen</button><button class="btn btn-sm" id="cfOk">Anfrage senden</button></div>`,
       (root) => {
@@ -210,8 +181,7 @@ function renderFriendSearchResult(profile) {
         root.querySelector('#cfOk').onclick = () => {
           myData().friendRequestsOut.push(profile.uniqueId); persist();
           ASRealtime.sendTo(profile.uniqueId, { type: 'friend_request', profile: publicProfile() });
-          AS.toast('Freundschaftsanfrage gesendet.');
-          AS.closeModal(); RENDERERS.friends();
+          AS.toast('Freundschaftsanfrage gesendet.'); AS.closeModal(); RENDERERS.friends();
         };
       });
   });
@@ -232,8 +202,7 @@ RENDERERS.friends = function () {
     const uid = el.dataset.acc;
     if (!myData().friends.includes(uid)) myData().friends.push(uid);
     myData().friendRequestsIn = myData().friendRequestsIn.filter(r => r.from !== uid);
-    persist();
-    ASRealtime.sendTo(uid, { type: 'friend_response', accepted: true });
+    persist(); ASRealtime.sendTo(uid, { type: 'friend_response', accepted: true });
     AS.toast('Ihr seid jetzt befreundet ♡'); RENDERERS.friends();
   }));
   reqBox.querySelectorAll('[data-dec]').forEach(el => el.addEventListener('click', () => {
@@ -244,14 +213,13 @@ RENDERERS.friends = function () {
 
   const blockedBox = document.getElementById('blockedList');
   blockedBox.innerHTML = myData().blocked.length ? myData().blocked.map(uid => `
-    <div class="list-row"><span style="flex:1;" class="tiny">${uid}</span><button class="btn btn-sm btn-ghost" data-unblock="${uid}">Entsperren</button></div>
-  `).join('') : `<span class="muted tiny">Niemand blockiert.</span>`;
+    <div class="list-row"><span style="flex:1;" class="tiny">${uid}</span><button class="btn btn-sm btn-ghost" data-unblock="${uid}">Entsperren</button></div>`).join('') : `<span class="muted tiny">Niemand blockiert.</span>`;
   blockedBox.querySelectorAll('[data-unblock]').forEach(el => el.addEventListener('click', () => {
     myData().blocked = myData().blocked.filter(u => u !== el.dataset.unblock); persist(); RENDERERS.friends();
   }));
 
   const listBox = document.getElementById('friendsListFull');
-  if (!myData().friends.length) { listBox.innerHTML = `<div class="empty"><div class="em-ic">♡</div>Füge deine ersten Freunde über ihre Unique ID hinzu.</div>`; return; }
+  if (!myData().friends.length) { listBox.innerHTML = `<div class="empty"><div class="em-ic">💌</div>Füge deine ersten Freunde über ihre Unique ID hinzu.</div>`; return; }
   listBox.innerHTML = myData().friends.map(uid => {
     const p = friendProfile(uid) || { firstName: uid, lastName: '', username: '', uniqueId: uid };
     const online = ASRealtime.conns[uid] && ASRealtime.conns[uid].open;
@@ -272,15 +240,14 @@ RENDERERS.friends = function () {
     const uid = el.dataset.block;
     myData().friends = myData().friends.filter(u => u !== uid);
     if (!myData().blocked.includes(uid)) myData().blocked.push(uid);
-    persist();
-    ASRealtime.sendTo(uid, { type: 'block_notice' });
+    persist(); ASRealtime.sendTo(uid, { type: 'block_notice' });
     if (ASRealtime.conns[uid]) { ASRealtime.conns[uid].close(); delete ASRealtime.conns[uid]; }
     AS.toast('Person blockiert.'); RENDERERS.friends();
   }));
 };
 
 /* ======================================================================
-   CHAT
+   CHAT — jetzt mit Dateiversand & Datumsgruppen
    ====================================================================== */
 function renderChatConvoList() {
   const box = document.getElementById('chatConvoList');
@@ -290,10 +257,14 @@ function renderChatConvoList() {
     const online = ASRealtime.conns[uid] && ASRealtime.conns[uid].open;
     const convo = myData().conversations[uid] || [];
     const unread = convo.filter(m => m.unread).length;
-    return `<div class="list-row" style="cursor:pointer;${ASRealtime.activeChatUid === uid ? 'background:var(--accent-2);border-radius:10px;' : ''}" data-convo="${uid}">
-      <div class="avatar cv-av" data-uid="${uid}" style="width:32px;height:32px;font-size:.7rem;position:relative;">${online ? '<span class="dot-online" style="right:-1px;bottom:-1px;"></span>' : ''}</div>
-      <span style="flex:1;font-size:.85rem;">${escapeHtml(p.firstName)}</span>
-      ${unread ? `<span class="pill" style="background:var(--danger);color:#fff;">${unread}</span>` : ''}
+    const last = convo[convo.length - 1];
+    return `<div class="list-row" style="cursor:pointer;flex-direction:column;align-items:flex-start;gap:2px;${ASRealtime.activeChatUid === uid ? 'background:var(--accent-2);border-radius:10px;padding:8px 8px;' : ''}" data-convo="${uid}">
+      <div class="row" style="width:100%;">
+        <div class="avatar cv-av" data-uid="${uid}" style="width:32px;height:32px;font-size:.7rem;position:relative;">${online ? '<span class="dot-online" style="right:-1px;bottom:-1px;"></span>' : ''}</div>
+        <span style="flex:1;font-size:.85rem;font-weight:700;">${escapeHtml(p.firstName)}</span>
+        ${unread ? `<span class="pill" style="background:var(--danger);color:#fff;">${unread}</span>` : ''}
+      </div>
+      ${last ? `<div class="tiny" style="padding-left:42px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px;">${last.file ? '📎 ' + escapeHtml(last.file.name) : escapeHtml(last.text || '')}</div>` : ''}
     </div>`;
   }).join('');
   box.querySelectorAll('.cv-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
@@ -308,8 +279,9 @@ async function openConversation(uid) {
   const p = friendProfile(uid) || { firstName: uid, lastName: '' };
   renderAvatar(document.getElementById('chatPartnerAvatar'), p);
   document.getElementById('chatPartnerName').textContent = `${p.firstName} ${p.lastName || ''}`.trim();
+  document.getElementById('chatPartnerStatus').textContent = 'verbinde…';
   const conn = await ASRealtime.connectToPeer(uid, true);
-  document.getElementById('chatPartnerStatus').textContent = conn ? 'online' : 'nicht erreichbar gerade';
+  document.getElementById('chatPartnerStatus').textContent = conn ? '🟢 online' : 'nicht erreichbar gerade';
   (myData().conversations[uid] || []).forEach(m => m.unread = false);
   persist();
   renderChatMessages(uid);
@@ -320,21 +292,35 @@ function renderChatMessages(uid) {
   const box = document.getElementById('chatMessages');
   const msgs = myData().conversations[uid] || [];
   if (!msgs.length) { box.innerHTML = `<div class="empty"><div class="em-ic">💬</div>Noch keine Unterhaltung. Schreib etwas!</div>`; return; }
-  box.innerHTML = msgs.map(m => `
-    <div style="align-self:${m.from === 'me' ? 'flex-end' : 'flex-start'};max-width:75%;">
-      <div style="background:${m.from === 'me' ? 'var(--accent)' : 'var(--cream-2)'};padding:9px 13px;border-radius:16px;font-size:.87rem;">${escapeHtml(m.text)}</div>
+
+  let lastDay = null, html = '';
+  msgs.forEach(m => {
+    const day = new Date(m.ts).toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+    if (day !== lastDay) { html += `<div class="chat-date-sep">${day}</div>`; lastDay = day; }
+    const bubbleBg = m.from === 'me' ? 'var(--accent)' : 'var(--cream-2)';
+    let content = '';
+    if (m.file) {
+      const isImg = (m.file.type || '').includes('image');
+      content = isImg
+        ? `<img src="${m.file.dataUrl}" style="max-width:180px;border-radius:12px;display:block;margin-bottom:${m.text ? '6px' : '0'};">`
+        : `<a href="${m.file.dataUrl}" download="${escapeHtml(m.file.name)}" class="chat-file-chip">📎 <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.file.name)}</span></a>`;
+    }
+    html += `<div style="align-self:${m.from === 'me' ? 'flex-end' : 'flex-start'};max-width:78%;">
+      <div style="background:${bubbleBg};padding:9px 13px;border-radius:16px;font-size:.87rem;">${content}${m.text ? escapeHtml(m.text) : ''}</div>
       <div class="tiny" style="text-align:${m.from === 'me' ? 'right' : 'left'};margin-top:2px;">${new Date(m.ts).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</div>
-    </div>`).join('');
+    </div>`;
+  });
+  box.innerHTML = html;
   box.scrollTop = box.scrollHeight;
 }
 
-function addIncomingChatMessage(fromUid, text) {
+function addIncomingChatMessage(fromUid, text, file) {
   if (!myData().conversations[fromUid]) myData().conversations[fromUid] = [];
   const isOpen = ASRealtime.activeChatUid === fromUid && getCurrentView() === 'chat';
-  myData().conversations[fromUid].push({ from: fromUid, text, ts: Date.now(), unread: !isOpen });
+  myData().conversations[fromUid].push({ from: fromUid, text, file: file || null, ts: Date.now(), unread: !isOpen });
   persist();
-  if (isOpen) { renderChatMessages(fromUid); }
-  else if (myData().settings.notifMessages) { AS.toast(`Neue Nachricht von ${(friendProfile(fromUid) || {}).firstName || fromUid}`); }
+  if (isOpen) renderChatMessages(fromUid);
+  else if (myData().settings.notifMessages) AS.toast(`Neue Nachricht von ${(friendProfile(fromUid) || {}).firstName || fromUid}`);
   renderChatConvoList();
   if (getCurrentView() === 'dashboard') RENDERERS.dashboard();
 }
@@ -351,11 +337,32 @@ async function sendChatMessage() {
   if (!conn) { AS.toast('Diese Person ist gerade nicht erreichbar.'); return; }
   ASRealtime.sendTo(uid, { type: 'chat', text });
   if (!myData().conversations[uid]) myData().conversations[uid] = [];
-  myData().conversations[uid].push({ from: 'me', text, ts: Date.now() });
+  myData().conversations[uid].push({ from: 'me', text, file: null, ts: Date.now() });
   persist();
   input.value = '';
   renderChatMessages(uid);
+  renderChatConvoList();
 }
+
+document.getElementById('chatAttachBtn').addEventListener('click', () => document.getElementById('chatFileInput').click());
+document.getElementById('chatFileInput').addEventListener('change', async (e) => {
+  const uid = ASRealtime.activeChatUid;
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!uid || !file) return;
+  if (file.size > 4 * 1024 * 1024) { AS.toast('Datei ist zu groß (max. 4 MB).'); return; }
+  const conn = await ASRealtime.connectToPeer(uid, true);
+  if (!conn) { AS.toast('Diese Person ist gerade nicht erreichbar.'); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const fileObj = { name: file.name, type: file.type, dataUrl: reader.result };
+    ASRealtime.sendTo(uid, { type: 'chat', text: '', file: fileObj });
+    if (!myData().conversations[uid]) myData().conversations[uid] = [];
+    myData().conversations[uid].push({ from: 'me', text: '', file: fileObj, ts: Date.now() });
+    persist(); renderChatMessages(uid); renderChatConvoList();
+  };
+  reader.readAsDataURL(file);
+});
 
 /* ======================================================================
    AIRSIGNAL
@@ -373,7 +380,7 @@ RENDERERS.airsignal = function () {
   const statusEl = document.getElementById('airNearbyStatus');
   if (!mySec().airsignalActive) {
     statusEl.textContent = 'AirSignal deaktiviert';
-    nearBox.innerHTML = `<div class="empty"><div class="em-ic">☁</div>Aktiviere AirSignal in den Sicherheitseinstellungen.</div>`;
+    nearBox.innerHTML = `<div class="empty"><div class="em-ic">☁️</div>Aktiviere AirSignal in den Sicherheitseinstellungen.</div>`;
     return;
   }
   if (!ASRealtime.lastGeo) {
@@ -393,7 +400,7 @@ RENDERERS.airsignal = function () {
       return `<div class="list-row"><div class="avatar nf-av" data-uid="${uid}" style="width:32px;height:32px;font-size:.7rem;"></div><span style="flex:1;font-size:.85rem;">${escapeHtml(p.firstName)}</span><span class="tiny">${band}</span></div>`;
     }).join('');
   }
-  html += `<div class="empty" style="padding:20px 10px;"><div class="em-ic">✦</div>Fremde in deiner Nähe zu entdecken braucht ein echtes Backend mit zentralem Standort-Verzeichnis — das gibt es hier noch nicht, damit hier nichts vorgetäuscht wird. Sobald ein Server angebunden ist, erscheinen hier Schüler mit aktivem AirSignal in deiner Umgebung.</div>`;
+  html += `<div class="empty" style="padding:20px 10px;"><div class="em-ic">✦</div>Fremde in deiner Nähe zu entdecken braucht ein echtes Backend mit zentralem Standort-Verzeichnis — das gibt es hier noch nicht, damit nichts vorgetäuscht wird.</div>`;
   nearBox.innerHTML = html;
   nearBox.querySelectorAll('.nf-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
 };
@@ -401,7 +408,6 @@ RENDERERS.airsignal = function () {
 function requestGeoAndBroadcast() {
   if (!navigator.geolocation) { AS.toast('Geolocation wird von diesem Browser nicht unterstützt.'); return; }
   navigator.geolocation.getCurrentPosition((pos) => {
-    // Fuzz to ~1km precision — never store or send exact coordinates
     const fuzzed = { lat: Math.round(pos.coords.latitude * 80) / 80, lng: Math.round(pos.coords.longitude * 80) / 80 };
     ASRealtime.lastGeo = fuzzed;
     if (mySec().airsignalVisibility === 'friends' || mySec().airsignalVisibility === 'everyone') {
@@ -417,10 +423,7 @@ function distanceBand(a, b) {
   const dLat = (b.lat - a.lat) * Math.PI / 180, dLng = (b.lng - a.lng) * Math.PI / 180;
   const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
   const dist = 2 * R * Math.asin(Math.sqrt(s));
-  if (dist < 2) return 'ganz in der Nähe';
-  if (dist < 15) return 'in deiner Stadt';
-  if (dist < 80) return 'in der Region';
-  return 'weiter weg';
+  if (dist < 2) return 'ganz in der Nähe'; if (dist < 15) return 'in deiner Stadt'; if (dist < 80) return 'in der Region'; return 'weiter weg';
 }
 
 document.getElementById('airsignalSendBtn').addEventListener('click', () => {
@@ -443,8 +446,7 @@ document.getElementById('airsignalSendBtn').addEventListener('click', () => {
       const readers = files.map(f => new Promise((res) => { const r = new FileReader(); r.onload = () => res({ name: f.name, type: f.type, dataUrl: r.result }); r.readAsDataURL(f); }));
       Promise.all(readers).then((fileObjs) => {
         recipients.forEach(uid => ASRealtime.sendTo(uid, { type: 'airsignal', payload: { text, files: fileObjs, from: publicProfile() } }));
-        AS.toast('AirSignal gesendet ✦');
-        AS.closeModal();
+        AS.toast('AirSignal gesendet ✦'); AS.closeModal();
       });
     };
   });
@@ -454,7 +456,7 @@ function showAirsignalPopup(fromUid, payload) {
   if (myData().settings.notifAirsignal === false) return;
   AS.modal(`<h3>${escapeHtml(payload.from.firstName)} möchte dir etwas senden ✦</h3>
     <div class="row" style="gap:10px;margin:12px 0;"><div class="avatar ap-av" style="width:40px;height:40px;"></div><div><strong>${escapeHtml(payload.from.firstName)} ${escapeHtml(payload.from.lastName)}</strong><div class="tiny">${payload.files.length} Datei(en)</div></div></div>
-    ${payload.text ? `<p class="card" style="padding:12px;">${escapeHtml(payload.text)}</p>` : ''}
+    ${payload.text ? `<p class="card no-margin" style="padding:12px;">${escapeHtml(payload.text)}</p>` : ''}
     <div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="apDecline">Ablehnen</button><button class="btn btn-sm" id="apAccept">Annehmen</button></div>
   `, (root) => {
     renderAvatar(root.querySelector('.ap-av'), payload.from);
@@ -501,133 +503,16 @@ RENDERERS.security = function () {
   const box = document.getElementById('securityList');
   box.innerHTML = SECURITY_FIELDS.map(([key, label, type, opts]) => {
     const val = mySec()[key];
-    if (type === 'bool') {
-      return `<div class="row between list-row"><span>${label}</span><label class="switch"><input type="checkbox" data-sec="${key}" ${val ? 'checked' : ''}><span class="track"></span></label></div>`;
-    }
+    if (type === 'bool') return `<div class="row between list-row"><span>${label}</span><label class="switch"><input type="checkbox" data-sec="${key}" ${val ? 'checked' : ''}><span class="track"></span></label></div>`;
     return `<div class="row between list-row"><span>${label}</span><select data-sec="${key}" style="width:auto;">${opts.map(([v, l]) => `<option value="${v}" ${val === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
   }).join('');
   box.querySelectorAll('[data-sec]').forEach(el => el.addEventListener('change', () => {
     const key = el.dataset.sec;
     mySec()[key] = el.type === 'checkbox' ? el.checked : el.value;
-    persist();
-    AS.toast('Einstellung gespeichert.');
+    persist(); AS.toast('Einstellung gespeichert.');
     if (getCurrentView() === 'airsignal') RENDERERS.airsignal();
   }));
 
   const devBox = document.getElementById('deviceList');
   devBox.innerHTML = myData().devices.map(d => `<div class="list-row"><span style="flex:1;" class="tiny">${escapeHtml(d.label)}</span><span class="tiny">${new Date(d.lastActive).toLocaleDateString('de-DE')}</span></div>`).join('');
 };
-
-/* ======================================================================
-   SETTINGS
-   ====================================================================== */
-const ACCENTS = [['lavender', 'Lavendel'], ['mint', 'Mint'], ['blush', 'Rosa'], ['sky', 'Babyblau'], ['butter', 'Buttergelb'], ['peach', 'Pfirsich']];
-RENDERERS.settings = function () {
-  const box = document.getElementById('accentPicker');
-  box.innerHTML = ACCENTS.map(([k, l]) => `<div class="pill" data-accent="${k}" style="cursor:pointer;background:var(--${k}-2);border:2px solid ${myData().settings.accent === k ? 'var(--ink)' : 'transparent'};">${l}</div>`).join('');
-  box.querySelectorAll('[data-accent]').forEach(el => el.addEventListener('click', () => {
-    myData().settings.accent = el.dataset.accent; persist(); RENDERERS.settings();
-    AS.toast('Akzentfarbe gespeichert.');
-  }));
-  document.getElementById('darkModeToggle').checked = myData().settings.darkMode;
-  document.getElementById('reduceMotionToggle').checked = myData().settings.reduceMotion;
-
-  const notifBox = document.getElementById('notifSettingsList');
-  const notifFields = [['notifFriendRequests', 'Freundschaftsanfragen'], ['notifMessages', 'Neue Nachrichten'], ['notifAirsignal', 'AirSignal'], ['notifTasks', 'Aufgaben & Deadlines']];
-  notifBox.innerHTML = notifFields.map(([k, l]) => `<div class="row between list-row"><span>${l}</span><label class="switch"><input type="checkbox" data-notif="${k}" ${myData().settings[k] ? 'checked' : ''}><span class="track"></span></label></div>`).join('');
-  notifBox.querySelectorAll('[data-notif]').forEach(el => el.addEventListener('change', () => { myData().settings[el.dataset.notif] = el.checked; persist(); }));
-};
-document.getElementById('darkModeToggle').addEventListener('change', (e) => { myData().settings.darkMode = e.target.checked; persist(); applyTheme(); });
-document.getElementById('reduceMotionToggle').addEventListener('change', (e) => { myData().settings.reduceMotion = e.target.checked; persist(); applyTheme(); });
-
-/* ======================================================================
-   PROFILE
-   ====================================================================== */
-RENDERERS.profile = function () {
-  const u = AS.currentUser;
-  renderAvatar(document.getElementById('profileAvatarBig'), u);
-  document.getElementById('profileName').textContent = `${u.firstName} ${u.lastName}`;
-  document.getElementById('profileUsername').textContent = '@' + u.username;
-  document.getElementById('profileUid').textContent = u.uniqueId;
-  document.getElementById('editFirst').value = u.firstName;
-  document.getElementById('editLast').value = u.lastName;
-  document.getElementById('editUsername').value = u.username;
-  document.getElementById('editBio').value = u.bio || '';
-
-  const qrWrap = document.getElementById('qrCanvasWrap');
-  qrWrap.innerHTML = '';
-  new QRCode(qrWrap, { text: `airsignal://user/${u.uniqueId}`, width: 160, height: 160, colorDark: '#443C54', colorLight: '#ffffff' });
-
-  const session = AS.getSession();
-  const users = AS.getUsers();
-  const accBox = document.getElementById('accountSwitcherList');
-  accBox.innerHTML = session.accounts.filter(id => users[id]).map(id => {
-    const acc = users[id];
-    return `<div class="list-row" style="cursor:pointer;${id === u.uniqueId ? 'font-weight:800;' : ''}" data-switch="${id}">
-      <div class="avatar sw-av" data-uid="${id}" style="width:30px;height:30px;font-size:.7rem;"></div>
-      <span style="flex:1;">${escapeHtml(acc.firstName)} ${escapeHtml(acc.lastName)} ${id === u.uniqueId ? '(aktiv)' : ''}</span>
-    </div>`;
-  }).join('');
-  accBox.querySelectorAll('.sw-av').forEach(el => renderAvatar(el, users[el.dataset.uid]));
-  accBox.querySelectorAll('[data-switch]').forEach(el => el.addEventListener('click', () => {
-    if (el.dataset.switch === u.uniqueId) return;
-    const s = AS.getSession(); s.currentUserId = el.dataset.switch; AS.saveSession(s);
-    if (window.ASRealtime) window.ASRealtime.disconnect();
-    location.reload();
-  }));
-};
-
-document.getElementById('saveProfileBtn').addEventListener('click', () => {
-  const users = AS.getUsers();
-  const newUsername = document.getElementById('editUsername').value.trim();
-  const clash = Object.values(users).find(x => x.uniqueId !== AS.currentUser.uniqueId && x.username.toLowerCase() === newUsername.toLowerCase());
-  if (clash) { AS.toast('Dieser Username ist schon vergeben.'); return; }
-  AS.currentUser.firstName = document.getElementById('editFirst').value.trim();
-  AS.currentUser.lastName = document.getElementById('editLast').value.trim();
-  AS.currentUser.username = newUsername;
-  AS.currentUser.bio = document.getElementById('editBio').value.trim();
-  users[AS.currentUser.uniqueId] = AS.currentUser;
-  AS.saveUsers(users);
-  renderSidebarProfile();
-  RENDERERS.profile();
-  AS.toast('Profil gespeichert.');
-});
-
-document.getElementById('changeAvatarBtn').addEventListener('click', () => document.getElementById('avatarFileInput').click());
-document.getElementById('avatarFileInput').addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  if (file.size > 2 * 1024 * 1024) { AS.toast('Bild ist zu groß (max. 2 MB).'); return; }
-  const img = new Image();
-  const reader = new FileReader();
-  reader.onload = () => {
-    img.onload = () => {
-      const size = 240;
-      const canvas = document.createElement('canvas'); canvas.width = size; canvas.height = size;
-      const ctx = canvas.getContext('2d');
-      const s = Math.min(img.width, img.height);
-      ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-      const users = AS.getUsers();
-      AS.currentUser.avatar = dataUrl; users[AS.currentUser.uniqueId] = AS.currentUser; AS.saveUsers(users);
-      renderSidebarProfile(); RENDERERS.profile();
-      myData().friends.forEach(uid => ASRealtime.sendTo(uid, { type: 'hello', profile: publicProfile() }));
-      AS.toast('Profilbild aktualisiert.');
-    };
-    img.src = reader.result;
-  };
-  reader.readAsDataURL(file);
-});
-document.getElementById('removeAvatarBtn').addEventListener('click', () => {
-  const users = AS.getUsers();
-  AS.currentUser.avatar = null; users[AS.currentUser.uniqueId] = AS.currentUser; AS.saveUsers(users);
-  renderSidebarProfile(); RENDERERS.profile();
-});
-
-document.getElementById('openQrFullBtn').addEventListener('click', () => {
-  AS.modal(`<div style="text-align:center;"><h3>${escapeHtml(AS.currentUser.firstName)}s QR-Code</h3><div id="qrFullWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="pill">${AS.currentUser.uniqueId}</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="qrClose">Schließen</button></div></div>`,
-    (root) => {
-      new QRCode(root.querySelector('#qrFullWrap'), { text: `airsignal://user/${AS.currentUser.uniqueId}`, width: 220, height: 220, colorDark: '#443C54', colorLight: '#ffffff' });
-      root.querySelector('#qrClose').onclick = AS.closeModal;
-    });
-});
