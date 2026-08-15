@@ -1,7 +1,5 @@
 /* ==========================================================================
-   Schoolify — app.js (v2)
-   Cookie-Consent-Speicherwahl (lokal vs. Online-Speicher), Live-Einstellungen,
-   motivierendere To-Dos mit Streak, Live-Stundenplan-Linie, Mobile-Mehr-Menü.
+   Schoolify — app.js (v3, vollständig)
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -10,7 +8,7 @@ const AS = (window.AS = {});
 /* Cloud-Speicher (Personal Data Box) — nur aktiv nach Zustimmung          */
 /* ---------------------------------------------------------------------- */
 const CLOUD_BASE = "https://personal-data-box.lovable.app/api/public/v1/e823f868-9e3b-4d75-9b6f-762a84ac40a2";
-const CONSENT_KEY = 'as_consent'; // 'cloud' | 'local' | null (noch nicht gefragt)
+const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
 AS.setConsent = (v) => localStorage.setItem(CONSENT_KEY, v);
@@ -18,51 +16,36 @@ AS.cloudEnabled = () => AS.getConsent() === 'cloud';
 
 async function cloudPut(key, value) {
   try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }); }
-  catch (e) { /* still keep local copy — offline-sicher */ }
+  catch (e) {}
 }
 async function cloudGet(key) {
-  try {
-    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`);
-    if (!res.ok) return undefined;
-    const data = await res.json();
-    return data && data.value !== undefined ? data.value : data;
-  } catch (e) { return undefined; }
+  try { const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`); if (!res.ok) return undefined; const data = await res.json(); return data && data.value !== undefined ? data.value : data; }
+  catch (e) { return undefined; }
 }
-async function cloudDelete(key) {
-  try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {}
-}
+async function cloudDelete(key) { try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {} }
 
-/* ---------------------------------------------------------------------- */
-/* Storage helpers — lokal als schneller Cache, Cloud als Zusatzspiegel   */
-/* ---------------------------------------------------------------------- */
 AS.storage = {
-  get(key, fallback) {
-    try { const raw = localStorage.getItem(key); return raw === null ? fallback : JSON.parse(raw); }
-    catch (e) { return fallback; }
-  },
+  get(key, fallback) { try { const raw = localStorage.getItem(key); return raw === null ? fallback : JSON.parse(raw); } catch (e) { return fallback; } },
   set(key, value) {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-      if (AS.cloudEnabled()) cloudPut(key, value);
-      return true;
-    } catch (e) { AS.toast('Speicher ist voll — bitte alte Dateien/Notizen löschen.'); return false; }
+    try { localStorage.setItem(key, JSON.stringify(value)); if (AS.cloudEnabled()) cloudPut(key, value); return true; }
+    catch (e) { AS.toast('Speicher ist voll — bitte alte Dateien/Notizen löschen.'); return false; }
   },
-  remove(key) {
-    localStorage.removeItem(key);
-    if (AS.cloudEnabled()) cloudDelete(key);
-  }
+  remove(key) { localStorage.removeItem(key); if (AS.cloudEnabled()) cloudDelete(key); }
 };
 
-/* Beim Start: falls Cloud aktiv, versuchen aktuelle Daten nachzuladen (best effort, nicht blockierend) */
 async function hydrateFromCloudIfEnabled() {
   if (!AS.cloudEnabled()) return;
   const session = AS.getSession();
   const keysToTry = [KEY_USERS, KEY_SESSION];
   if (session.currentUserId) keysToTry.push(dataKey(session.currentUserId));
-  for (const k of keysToTry) {
-    const remote = await cloudGet(k);
-    if (remote !== undefined) localStorage.setItem(k, JSON.stringify(remote));
-  }
+  for (const k of keysToTry) { const remote = await cloudGet(k); if (remote !== undefined) localStorage.setItem(k, JSON.stringify(remote)); }
+}
+/* Nachträgliches Hochladen: falls jemand Cloud erst später aktiviert,
+   werden alle bereits vorhandenen lokalen Daten mit hochgeladen. */
+async function pushAllLocalToCloud() {
+  const users = AS.getUsers(); cloudPut(KEY_USERS, users);
+  const session = AS.getSession(); cloudPut(KEY_SESSION, session);
+  session.accounts.forEach(uid => { const d = AS.storage.get(dataKey(uid), null); if (d) cloudPut(dataKey(uid), d); });
 }
 
 const KEY_USERS = 'as_users';
@@ -76,14 +59,14 @@ function defaultData() {
     tasks: [], timetable: [], materials: [], conversations: {}, calendarEvents: [],
     todoTemplate: { 0: [], 1: [], 2: [], 3: [], 4: [] },
     todoLog: {}, todoStreak: 0, todoBestStreak: 0,
-    decks: [],   // [{id,name,color}]
-    flashcards: [], // [{id,deckId,front,back}]
+    todoMode: 'checklist', // 'checklist' (alle sichtbar) | 'sequential' (nacheinander)
+    decks: [], flashcards: [],
     devices: [{ id: 'device-' + Math.random().toString(36).slice(2, 8), label: navigator.userAgent.slice(0, 40), lastActive: Date.now() }],
     security: {
-      profileVisibility: 'everyone', whoCanFriendRequest: 'everyone', whoCanMessage: 'friends',
-      onlineStatusVisible: true, onlineStatusFriendsOnly: true,
+      profileVisibility: 'everyone', avatarVisibility: 'everyone', discoverableByUid: true,
+      whoCanFriendRequest: 'everyone', whoCanMessage: 'friends', blockUnknown: true,
+      onlineStatusVisible: true, onlineStatusFriendsOnly: true, activityStatus: true, readReceipts: true,
       airsignalActive: true, airsignalVisibility: 'friends', airsignalReceiveFrom: 'friends', airsignalAutoAccept: false,
-      blockUnknown: true, readReceipts: true, activityStatus: true, avatarVisibility: 'everyone', discoverableByUid: true
     },
     settings: {
       accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false,
@@ -100,10 +83,9 @@ AS.getData = (uid) => {
   const d = AS.storage.get(dataKey(uid), defaultData());
   const def = defaultData();
   Object.keys(def).forEach(k => { if (d[k] === undefined) d[k] = def[k]; });
-  if (!d.settings.accent) d.settings.accent = 'mint';
-  if (!d.settings.paperStyle) d.settings.paperStyle = 'kariert';
-  if (d.todoStreak === undefined) d.todoStreak = 0;
-  if (d.todoBestStreak === undefined) d.todoBestStreak = 0;
+  Object.keys(def.security).forEach(k => { if (d.security[k] === undefined) d.security[k] = def.security[k]; });
+  Object.keys(def.settings).forEach(k => { if (d.settings[k] === undefined) d.settings[k] = def.settings[k]; });
+  if (!d.todoMode) d.todoMode = 'checklist';
   if (!d.decks) d.decks = [];
   if (!d.flashcards) d.flashcards = [];
   return d;
@@ -150,12 +132,47 @@ function confirmModal(title, msg, onYes) {
     <div class="row" style="margin-top:16px;gap:8px;justify-content:flex-end;">
       <button class="btn btn-ghost btn-sm" id="cfNo">Abbrechen</button>
       <button class="btn btn-danger btn-sm" id="cfYes">Löschen</button>
-    </div>`, (root) => {
-    root.querySelector('#cfNo').onclick = AS.closeModal;
-    root.querySelector('#cfYes').onclick = () => { AS.closeModal(); onYes(); };
-  });
+    </div>`, (root) => { root.querySelector('#cfNo').onclick = AS.closeModal; root.querySelector('#cfYes').onclick = () => { AS.closeModal(); onYes(); }; });
 }
 window.confirmModal = confirmModal;
+
+/* ---------------------------------------------------------------------- */
+/* Bild-Kompression — hält Speicherverbrauch niedrig (KB statt MB)        */
+/* ---------------------------------------------------------------------- */
+function compressImage(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (w > maxDim || h > maxDim) { const scale = maxDim / Math.max(w, h); w = Math.round(w * scale); h = Math.round(h * scale); }
+        const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = reject; img.src = reader.result;
+    };
+    reader.onerror = reject; reader.readAsDataURL(file);
+  });
+}
+window.compressImage = compressImage;
+function fileToDataUrl(file) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); }); }
+window.fileToDataUrl = fileToDataUrl;
+
+function limitsFor(kind) {
+  const cloud = AS.cloudEnabled();
+  const L = {
+    material:  { maxDim: cloud ? 1600 : 1100, quality: cloud ? 0.75 : 0.6, maxBytesRaw: cloud ? 6 * 1024 * 1024 : 2.5 * 1024 * 1024 },
+    chatFile:  { maxDim: cloud ? 1400 : 1000, quality: cloud ? 0.72 : 0.58, maxBytesRaw: cloud ? 5 * 1024 * 1024 : 2 * 1024 * 1024 },
+    noteImage: { maxDim: cloud ? 1200 : 900,  quality: cloud ? 0.7  : 0.55, maxBytesRaw: cloud ? 4 * 1024 * 1024 : 1.5 * 1024 * 1024 },
+    avatar:    { maxDim: 300, quality: 0.8, maxBytesRaw: 3 * 1024 * 1024 },
+  };
+  return L[kind] || L.material;
+}
+window.limitsFor = limitsFor;
 
 /* ---------------------------------------------------------------------- */
 /* Avatars                                                                */
@@ -170,11 +187,10 @@ function renderAvatar(el, user) {
 }
 window.renderAvatar = renderAvatar;
 
-/* Klickbare Avatare/Profile überall außer im Chat-Fenster selbst öffnen ein Profil-Modal */
 function openFriendProfileModal(uid) {
   const p = friendProfile(uid) || { firstName: uid, lastName: '', username: '', uniqueId: uid };
   const online = window.ASRealtime && ASRealtime.conns[uid] && ASRealtime.conns[uid].open;
-  const isFriend = myDataSafe() && myDataSafe().friends.includes(uid);
+  const isFriend = AS.currentData && AS.currentData.friends.includes(uid);
   AS.modal(`
     <div class="profile-modal-head">
       <div class="avatar profile-modal-avatar" id="pmAvatar"></div>
@@ -198,19 +214,13 @@ function openFriendProfileModal(uid) {
   });
 }
 window.openFriendProfileModal = openFriendProfileModal;
-function myDataSafe() { return AS.currentData; }
-
-/* Delegation: jeder .avatar.clickable[data-uid] öffnet das Profil (außer im Chat-Fenster) */
 document.addEventListener('click', (e) => {
   const av = e.target.closest('.avatar.clickable[data-uid]');
   if (!av) return;
-  if (av.closest('#chatMessages') || av.closest('.chat-header')) return; // im Chat selbst nicht
+  if (av.closest('#chatMessages') || av.closest('.chat-header') || av.closest('#chatConvoList')) return;
   openFriendProfileModal(av.dataset.uid);
 });
 
-/* ---------------------------------------------------------------------- */
-/* Splash                                                                 */
-/* ---------------------------------------------------------------------- */
 function hideSplash() { const s = document.getElementById('splash'); if (!s) return; s.classList.add('fade-out'); setTimeout(() => s.remove(), 450); }
 
 /* ---------------------------------------------------------------------- */
@@ -222,15 +232,13 @@ function initConsentFlow(next) {
   const banner = document.getElementById('cookieBanner');
   banner.classList.remove('hidden');
   document.getElementById('cookieAcceptBtn').addEventListener('click', () => {
-    AS.setConsent('cloud'); banner.classList.add('hidden'); AS.toast('Online-Speicherung aktiviert ✓'); next();
+    AS.setConsent('cloud'); banner.classList.add('hidden'); pushAllLocalToCloud(); AS.toast('Online-Speicherung aktiviert ✓'); next();
   });
-  document.getElementById('cookieDeclineBtn').addEventListener('click', () => {
-    AS.setConsent('local'); banner.classList.add('hidden'); next();
-  });
+  document.getElementById('cookieDeclineBtn').addEventListener('click', () => { AS.setConsent('local'); banner.classList.add('hidden'); next(); });
 }
 
 /* ---------------------------------------------------------------------- */
-/* Auth — mehrstufige Registrierung                                        */
+/* Auth — Login mit Name + E-Mail, "Namen vergessen"-Flow                 */
 /* ---------------------------------------------------------------------- */
 document.querySelectorAll('[data-authtab]').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -239,8 +247,75 @@ document.querySelectorAll('[data-authtab]').forEach(tab => {
     const which = tab.dataset.authtab;
     document.getElementById('loginPane').classList.toggle('hidden', which !== 'login');
     document.getElementById('registerPane').classList.toggle('hidden', which !== 'register');
+    document.getElementById('forgotPane').classList.add('hidden');
+    document.getElementById('authTabsBar').classList.remove('hidden');
   });
 });
+
+function normName(s) { return (s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
+
+document.getElementById('loginBtn').addEventListener('click', () => {
+  const name = document.getElementById('loginName').value.trim();
+  const email = document.getElementById('loginEmail').value.trim().toLowerCase();
+  if (!name || !email) { AS.toast('Bitte Name und E-Mail eingeben.'); return; }
+  const btn = document.getElementById('loginBtn'); btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Anmelden…';
+  setTimeout(() => {
+    const users = AS.getUsers();
+    const found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
+    if (!found) { AS.toast('Name und E-Mail passen nicht zu einem Account auf diesem Gerät.'); btn.disabled = false; btn.textContent = 'Anmelden'; return; }
+    loginAs(found.uniqueId);
+  }, 350);
+});
+
+/* Namen vergessen */
+document.getElementById('forgotNameLink').addEventListener('click', () => {
+  document.getElementById('authTabsBar').classList.add('hidden');
+  document.getElementById('loginPane').classList.add('hidden');
+  document.getElementById('registerPane').classList.add('hidden');
+  document.getElementById('forgotPane').classList.remove('hidden');
+  document.getElementById('forgotStep1').classList.remove('hidden');
+  document.getElementById('forgotStep2').classList.add('hidden');
+});
+let forgotUid = null;
+document.getElementById('forgotFindBtn').addEventListener('click', () => {
+  const email = document.getElementById('forgotEmail').value.trim().toLowerCase();
+  if (!email) { AS.toast('Bitte E-Mail eingeben.'); return; }
+  const users = AS.getUsers();
+  const found = Object.values(users).find(u => u.email.toLowerCase() === email);
+  if (!found) { AS.toast('Keine E-Mail mit diesem Account auf diesem Gerät gefunden.'); return; }
+  forgotUid = found.uniqueId;
+  document.getElementById('forgotStep1').classList.add('hidden');
+  document.getElementById('forgotStep2').classList.remove('hidden');
+});
+document.getElementById('forgotSaveBtn').addEventListener('click', () => {
+  const n1 = document.getElementById('forgotNewName1').value.trim();
+  const n2 = document.getElementById('forgotNewName2').value.trim();
+  if (!n1 || !n2) { AS.toast('Bitte beide Felder ausfüllen.'); return; }
+  if (normName(n1) !== normName(n2)) { AS.toast('Die beiden Namen stimmen nicht überein.'); return; }
+  const parts = n1.split(' ');
+  const first = parts[0]; const last = parts.slice(1).join(' ') || '';
+  const users = AS.getUsers();
+  const u = users[forgotUid];
+  if (!u) { AS.toast('Etwas ist schiefgelaufen — bitte erneut versuchen.'); return; }
+  u.firstName = first; u.lastName = last;
+  users[forgotUid] = u; AS.saveUsers(users);
+  AS.toast('Name aktualisiert — bitte melde dich jetzt erneut an.');
+  document.getElementById('forgotPane').classList.add('hidden');
+  document.getElementById('authTabsBar').classList.remove('hidden');
+  document.getElementById('loginPane').classList.remove('hidden');
+  document.getElementById('loginName').value = n1;
+  document.getElementById('loginEmail').value = u.email;
+  document.querySelector('[data-authtab="login"]').classList.add('active');
+  document.querySelector('[data-authtab="register"]').classList.remove('active');
+});
+document.getElementById('forgotBackToLogin1').addEventListener('click', () => {
+  document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden');
+});
+document.getElementById('forgotBackToLogin2').addEventListener('click', () => {
+  document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden');
+});
+
+/* Registrierung — mehrstufig; Namen dürfen mehrfach vorkommen, E-Mail muss einzigartig sein */
 function goToRegStep(n) {
   [1, 2, 3].forEach(i => document.getElementById('regStep' + i).classList.toggle('hidden', i !== n));
   document.querySelectorAll('#regStepDots span').forEach(d => { const step = +d.dataset.step; d.classList.toggle('active', step === n); d.classList.toggle('done', step < n); });
@@ -252,44 +327,34 @@ document.getElementById('regNext1').addEventListener('click', () => {
 });
 document.getElementById('regBack2').addEventListener('click', () => goToRegStep(1));
 document.getElementById('regNext2').addEventListener('click', () => {
-  const username = document.getElementById('regUsername').value.trim();
   const email = document.getElementById('regEmail').value.trim().toLowerCase();
-  if (!username || !email) { AS.toast('Bitte Username und E-Mail angeben.'); return; }
+  if (!email) { AS.toast('Bitte eine E-Mail angeben.'); return; }
   if (!email.includes('@') || !email.includes('.')) { AS.toast('Das sieht nicht nach einer gültigen E-Mail aus.'); return; }
   const users = AS.getUsers();
-  if (Object.values(users).some(u => u.email === email)) { AS.toast('Diese E-Mail-Adresse wird bereits verwendet.'); return; }
-  if (Object.values(users).some(u => u.username.toLowerCase() === username.toLowerCase())) { AS.toast('Dieser Username ist schon vergeben.'); return; }
+  if (Object.values(users).some(u => u.email.toLowerCase() === email)) { AS.toast('Diese E-Mail-Adresse wird bereits verwendet.'); return; }
   document.getElementById('regReviewName').textContent = `${document.getElementById('regFirst').value.trim()} ${document.getElementById('regLast').value.trim()}`;
-  document.getElementById('regReviewUser').textContent = '@' + username;
   document.getElementById('regReviewMail').textContent = email;
   goToRegStep(3);
 });
 document.getElementById('regBack3').addEventListener('click', () => goToRegStep(2));
 document.getElementById('registerBtn').addEventListener('click', () => {
   const first = document.getElementById('regFirst').value.trim(), last = document.getElementById('regLast').value.trim();
-  const username = document.getElementById('regUsername').value.trim(), email = document.getElementById('regEmail').value.trim().toLowerCase();
-  if (!first || !last || !username || !email) { AS.toast('Bitte fülle alle Felder aus.'); return; }
+  const email = document.getElementById('regEmail').value.trim().toLowerCase();
+  const username = document.getElementById('regUsername').value.trim() || (first + last.charAt(0)).toLowerCase().replace(/\s+/g, '') + Math.floor(Math.random() * 900 + 100);
+  if (!first || !last || !email) { AS.toast('Bitte fülle alle Felder aus.'); return; }
   const btn = document.getElementById('registerBtn'); btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Wird erstellt…';
   setTimeout(() => {
     const users = AS.getUsers();
-    if (Object.values(users).some(u => u.email === email)) { AS.toast('Diese E-Mail-Adresse wird bereits verwendet.'); btn.disabled = false; btn.textContent = 'Account erstellen ✦'; return; }
+    if (Object.values(users).some(u => u.email.toLowerCase() === email)) { AS.toast('Diese E-Mail-Adresse wird bereits verwendet.'); btn.disabled = false; btn.textContent = 'Account erstellen ✦'; return; }
+    let finalUsername = username, n = 1;
+    while (Object.values(users).some(u => u.username.toLowerCase() === finalUsername.toLowerCase())) { finalUsername = username + n; n++; }
     const uniqueId = generateUniqueId();
-    const user = { uniqueId, firstName: first, lastName: last, username, email, bio: '', avatar: null, createdAt: Date.now() };
+    const user = { uniqueId, firstName: first, lastName: last, username: finalUsername, email, bio: '', avatar: null, createdAt: Date.now() };
     users[uniqueId] = user; AS.saveUsers(users); AS.saveData(uniqueId, defaultData());
-    loginAs(uniqueId); AS.toast(`Willkommen, ${first}! Deine Unique ID ist ${uniqueId}.`);
+    loginAs(uniqueId); AS.toast(`Willkommen, ${first}! Schoolify ist komplett kostenlos ✦`);
   }, 500);
 });
-document.getElementById('loginBtn').addEventListener('click', () => {
-  const q = document.getElementById('loginIdentifier').value.trim();
-  if (!q) { AS.toast('Bitte gib deine Unique ID, Username oder E-Mail ein.'); return; }
-  const btn = document.getElementById('loginBtn'); btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Anmelden…';
-  setTimeout(() => {
-    const users = AS.getUsers();
-    const found = Object.values(users).find(u => u.uniqueId.toLowerCase() === q.toLowerCase() || u.username.toLowerCase() === q.toLowerCase() || u.email.toLowerCase() === q.toLowerCase());
-    if (!found) { AS.toast('Kein Account mit diesen Daten auf diesem Gerät gefunden.'); btn.disabled = false; btn.textContent = 'Anmelden'; return; }
-    loginAs(found.uniqueId);
-  }, 350);
-});
+
 function loginAs(uniqueId) {
   const session = AS.getSession();
   session.currentUserId = uniqueId;
@@ -304,21 +369,15 @@ function renderLocalAccountsQuickList() {
     const u = users[id];
     return `<div class="list-row" style="cursor:pointer;border:1.5px solid var(--border);border-radius:12px;padding:8px 10px;margin-bottom:6px;" data-quicklogin="${id}">
       <div class="avatar av-mini" data-uid="${id}" style="width:30px;height:30px;font-size:.7rem;"></div>
-      <div><strong style="font-size:.85rem;">${escapeHtml(u.firstName)} ${escapeHtml(u.lastName)}</strong><div class="tiny">@${escapeHtml(u.username)}</div></div>
+      <div><strong style="font-size:.85rem;">${escapeHtml(u.firstName)} ${escapeHtml(u.lastName)}</strong><div class="tiny">${escapeHtml(u.email)}</div></div>
     </div>`;
   }).join('');
   box.querySelectorAll('.av-mini').forEach(el => renderAvatar(el, users[el.dataset.uid]));
   box.querySelectorAll('[data-quicklogin]').forEach(el => el.addEventListener('click', () => loginAs(el.dataset.quicklogin)));
 }
-function logout() {
-  const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session);
-  if (window.ASRealtime) window.ASRealtime.disconnect();
-  location.reload();
-}
+function logout() { const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); if (window.ASRealtime) window.ASRealtime.disconnect(); location.reload(); }
 document.getElementById('logoutBtn').addEventListener('click', logout);
-document.getElementById('logoutAllBtn').addEventListener('click', () => {
-  AS.saveSession({ currentUserId: null, accounts: [] }); AS.toast('Von allen Geräten abgemeldet (lokal).'); setTimeout(() => location.reload(), 700);
-});
+document.getElementById('logoutAllBtn').addEventListener('click', () => { AS.saveSession({ currentUserId: null, accounts: [] }); AS.toast('Von allen Geräten abgemeldet (lokal).'); setTimeout(() => location.reload(), 700); });
 document.getElementById('addAccountBtn').addEventListener('click', () => { const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); location.reload(); });
 document.getElementById('deleteAccountBtn').addEventListener('click', () => {
   confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan und deine Freundesliste werden unwiderruflich gelöscht.', () => {
@@ -335,7 +394,7 @@ document.getElementById('exportDataBtn').addEventListener('click', () => {
 });
 
 /* ---------------------------------------------------------------------- */
-/* Boot / Router                                                          */
+/* Boot / Router — inkl. QR-Auto-Freundschaftsanfrage                     */
 /* ---------------------------------------------------------------------- */
 function boot() {
   initConsentFlow(async () => {
@@ -352,18 +411,60 @@ function boot() {
     AS.currentData = AS.getData(AS.currentUser.uniqueId);
     document.getElementById('authScreen').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
-    applyTheme(); renderSidebarProfile(); showView('dashboard'); hideSplash();
+    applyTheme(); renderSidebarProfile(); initNavGroups(); showView('dashboard'); hideSplash();
     if (window.ASRealtime) window.ASRealtime.init(AS.currentUser.uniqueId);
     startTimetableClock();
+    handleQrAutoFriend();
   });
 }
+
+/* Wenn die Seite über einen QR-Code-Link (?addfriend=UID) geöffnet wurde,
+   wird automatisch eine Freundschaftsanfrage an diese Person gesendet. */
+function handleQrAutoFriend() {
+  const params = new URLSearchParams(location.search);
+  const targetUid = params.get('addfriend');
+  if (!targetUid || targetUid === AS.currentUser.uniqueId) return;
+  history.replaceState({}, '', location.pathname);
+  if (AS.currentData.blocked.includes(targetUid)) return;
+  if (AS.currentData.friends.includes(targetUid)) { AS.toast('Ihr seid bereits befreundet ♡'); return; }
+  if (AS.currentData.friendRequestsOut.includes(targetUid)) { AS.toast('Freundschaftsanfrage bereits unterwegs…'); return; }
+  AS.currentData.friendRequestsOut.push(targetUid); persist();
+  AS.toast('QR-Code erkannt — Freundschaftsanfrage wird gesendet ✦');
+  setTimeout(() => { if (window.ASRealtime) ASRealtime.sendReliable(targetUid, { type: 'friend_request', profile: publicProfile() }); }, 600);
+}
+
+const ACCENT_HEX = {
+  mint: ['#B7E4D4', '#E2F5EE'], sky: ['#C3DFF7', '#E7F2FC'], butter: ['#F8E39B', '#FCF3D6'],
+  peach: ['#F6D3B8', '#FCEEE2'], lavender: ['#D9CBF2', '#EFE7FA'], blush: ['#F6CBD6', '#FCE9EE']
+};
 function applyTheme() {
   const s = AS.currentData.settings;
   document.documentElement.setAttribute('data-theme', s.darkMode ? 'dark' : 'light');
   document.body.classList.toggle('reduce-motion', !!s.reduceMotion);
   document.body.setAttribute('data-paper', s.paperStyle || 'kariert');
+  const [accent, accent2] = ACCENT_HEX[s.accent] || ACCENT_HEX.mint;
+  document.documentElement.style.setProperty('--accent', accent);
+  document.documentElement.style.setProperty('--accent-2', accent2);
 }
 function renderSidebarProfile() { document.getElementById('sidebarName').textContent = AS.currentUser.firstName; renderAvatar(document.getElementById('topbarAvatar'), AS.currentUser); }
+
+/* Nav-Gruppen ein-/ausklappen (Organisieren / Sozial) — weniger überwältigend */
+function initNavGroups() {
+  setupNavGroup('groupOrganisieren', 'groupOrganisierenBody', true);
+  setupNavGroup('groupSozial', 'groupSozialBody', true);
+}
+function setupNavGroup(headId, bodyId, defaultOpen) {
+  const head = document.getElementById(headId), body = document.getElementById(bodyId);
+  if (!head || !body) return;
+  const key = 'as_navgroup_' + headId;
+  const isOpen = localStorage.getItem(key) !== null ? localStorage.getItem(key) === '1' : defaultOpen;
+  head.classList.toggle('open', isOpen); body.classList.toggle('open', isOpen);
+  head.onclick = () => {
+    const open = !body.classList.contains('open');
+    head.classList.toggle('open', open); body.classList.toggle('open', open);
+    localStorage.setItem(key, open ? '1' : '0');
+  };
+}
 
 const VIEWS = ['dashboard', 'timetable', 'tasks', 'todo', 'learn', 'calendar', 'notes', 'materials', 'friends', 'chat', 'airsignal', 'security', 'settings', 'profile'];
 const RENDERERS = {};
@@ -380,7 +481,6 @@ function showView(name) {
 window.showView = showView;
 document.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
 
-/* Mobile "Mehr"-Menü */
 function openMoreMenu() { document.getElementById('moreMenuSheet').classList.add('open'); }
 function closeMoreMenu() { document.getElementById('moreMenuSheet').classList.remove('open'); }
 document.getElementById('moreNavBtn').addEventListener('click', openMoreMenu);
@@ -404,18 +504,13 @@ window.getCurrentViewSafe = getCurrentViewSafe;
 RENDERERS.dashboard = function () {
   document.getElementById('dashGreeting').textContent = `Hey ${AS.currentUser.firstName} ♡`;
   document.getElementById('dashDate').textContent = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
-
   const dayIdx = todayDayIdx();
   const todays = AS.currentData.timetable.filter(l => l.day === dayIdx).sort((a, b) => a.period - b.period);
-  document.getElementById('dashNextLesson').textContent = todays.length
-    ? `${todays[0].subject} · ${todays[0].time || 'Stunde ' + todays[0].period}${todays[0].room ? ' · Raum ' + todays[0].room : ''}`
-    : 'Heute nichts eingetragen.';
-
+  document.getElementById('dashNextLesson').textContent = todays.length ? `${todays[0].subject} · ${todays[0].time || 'Stunde ' + todays[0].period}${todays[0].room ? ' · Raum ' + todays[0].room : ''}` : 'Heute nichts eingetragen.';
   const ts = todayStr();
   const todaysTasks = AS.currentData.tasks.filter(t => t.due === ts);
   const doneToday = todaysTasks.filter(t => t.done).length;
   document.getElementById('dashTasksToday').textContent = todaysTasks.length ? `${doneToday}/${todaysTasks.length} erledigt` : 'Heute nichts fällig ✨';
-
   const log = AS.currentData.todoLog[ts];
   let pct = 0, statusText = 'Noch nicht gestartet — geh zu To-Do, um loszulegen.';
   if (log && log.started && log.items.length) {
@@ -428,58 +523,41 @@ RENDERERS.dashboard = function () {
   document.getElementById('dashRingFill').style.strokeDashoffset = String(circumference - (circumference * pct / 100));
   document.getElementById('dashRingLabel').textContent = pct + '%';
   document.getElementById('dashTodoStatus').textContent = statusText;
-
   const box = document.getElementById('dashFriends');
   const online = window.ASRealtime ? window.ASRealtime.onlineFriends() : [];
   if (!AS.currentData.friends.length) box.innerHTML = `<span class="muted">Noch keine Freunde — füge welche über deine Unique ID hinzu.</span>`;
   else {
     box.innerHTML = AS.currentData.friends.slice(0, 8).map(uid => {
       const u = friendProfile(uid); const isOn = online.includes(uid);
-      return `<div style="text-align:center;position:relative;">
-        <div class="avatar clickable friend-av" data-uid="${uid}" style="width:44px;height:44px;font-size:.8rem;margin:0 auto;position:relative;">${isOn ? '<span class="dot-online" style="right:0;bottom:0;"></span>' : ''}</div>
-        <div class="tiny" style="margin-top:3px;">${escapeHtml(u ? u.firstName : uid)}</div>
-      </div>`;
+      return `<div style="text-align:center;position:relative;"><div class="avatar clickable friend-av" data-uid="${uid}" style="width:44px;height:44px;font-size:.8rem;margin:0 auto;position:relative;">${isOn ? '<span class="dot-online" style="right:0;bottom:0;"></span>' : ''}</div><div class="tiny" style="margin-top:3px;">${escapeHtml(u ? u.firstName : uid)}</div></div>`;
     }).join('');
     box.querySelectorAll('.friend-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
   }
-  document.getElementById('dashAirsignal').textContent = AS.currentData.security.airsignalActive
-    ? `AirSignal ist aktiv · ${(window.ASRealtime ? window.ASRealtime.onlineFriends().length : 0)} Freunde online` : 'AirSignal ist gerade deaktiviert.';
+  document.getElementById('dashAirsignal').textContent = AS.currentData.security.airsignalActive ? `AirSignal ist aktiv · ${(window.ASRealtime ? window.ASRealtime.onlineFriends().length : 0)} Freunde online` : 'AirSignal ist gerade deaktiviert.';
   const notes = [...AS.currentData.notePages].sort((a, b) => b.updatedAt - a.updatedAt);
   document.getElementById('dashNote').textContent = notes.length ? (notes[0].title || '(ohne Titel)') : 'Noch keine Notizen.';
 };
 
 /* ======================================================================
-   TIMETABLE — Untis-inspiriert mit Live-Zeitlinie
+   TIMETABLE
    ====================================================================== */
 const DAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr'];
 const DAYS_FULL = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag'];
 const LESSON_COLORS = ['sky', 'mint', 'lavender', 'butter', 'blush', 'peach'];
 let timetableClockInterval = null;
-
-function startTimetableClock() {
-  if (timetableClockInterval) clearInterval(timetableClockInterval);
-  timetableClockInterval = setInterval(() => { if (getCurrentViewSafe() === 'timetable') updateNowLine(); }, 30000);
-}
+function startTimetableClock() { if (timetableClockInterval) clearInterval(timetableClockInterval); timetableClockInterval = setInterval(() => { if (getCurrentViewSafe() === 'timetable') updateNowLine(); }, 30000); }
 
 RENDERERS.timetable = function () {
   const grid = document.getElementById('timetableGrid');
-  const periods = 8;
-  const byCell = {};
+  const periods = 8; const byCell = {};
   AS.currentData.timetable.forEach(l => { byCell[`${l.day}-${l.period}`] = l; });
-
   let html = `<div></div>` + DAYS.map(d => `<div class="tt-headcell">${d}</div>`).join('');
   for (let p = 1; p <= periods; p++) {
     html += `<div class="tt-timecell">${p}.</div>`;
     for (let d = 0; d < 5; d++) {
       const l = byCell[`${d}-${p}`];
-      if (l) {
-        html += `<div class="tt-cell filled" data-id="${l.id}" style="--c-bg:var(--${l.color}-2, var(--sky-2));--c-border:var(--${l.color}, var(--sky));">
-          <div class="tt-subject">${escapeHtml(l.subject)}</div>
-          <div class="tt-meta">${escapeHtml(l.room || '')}${l.teacher ? ' · ' + escapeHtml(l.teacher) : ''}</div>
-          ${l.cancelled ? '<div class="tt-meta" style="color:var(--danger);font-weight:800;">Fällt aus</div>' : ''}
-          ${l.substitution ? `<div class="tt-meta">Vertretung: ${escapeHtml(l.substitution)}</div>` : ''}
-        </div>`;
-      } else html += `<div class="tt-cell empty" data-day="${d}" data-period="${p}"></div>`;
+      if (l) html += `<div class="tt-cell filled" data-id="${l.id}" style="--c-bg:var(--${l.color}-2, var(--sky-2));--c-border:var(--${l.color}, var(--sky));"><div class="tt-subject">${escapeHtml(l.subject)}</div><div class="tt-meta">${escapeHtml(l.room || '')}${l.teacher ? ' · ' + escapeHtml(l.teacher) : ''}</div>${l.cancelled ? '<div class="tt-meta" style="color:var(--danger);font-weight:800;">Fällt aus</div>' : ''}${l.substitution ? `<div class="tt-meta">Vertretung: ${escapeHtml(l.substitution)}</div>` : ''}</div>`;
+      else html += `<div class="tt-cell empty" data-day="${d}" data-period="${p}"></div>`;
     }
   }
   grid.innerHTML = html;
@@ -487,31 +565,21 @@ RENDERERS.timetable = function () {
   grid.querySelectorAll('.tt-cell.empty').forEach(el => el.addEventListener('click', () => openLessonModal(null, +el.dataset.day, +el.dataset.period)));
   updateNowLine();
 };
-
 function updateNowLine() {
   const grid = document.getElementById('timetableGrid');
   if (!grid || grid.classList.contains('hidden')) return;
   const existing = grid.querySelector('.tt-now-line'); if (existing) existing.remove();
-  const dayIdx = todayDayIdx();
-  if (dayIdx < 0) return;
-  const now = new Date();
-  const minutesNow = now.getHours() * 60 + now.getMinutes();
-  const dayStart = 8 * 60, dayEnd = 16 * 60, periods = 8;
+  const dayIdx = todayDayIdx(); if (dayIdx < 0) return;
+  const now = new Date(); const minutesNow = now.getHours() * 60 + now.getMinutes();
+  const dayStart = 8 * 60, dayEnd = 16 * 60;
   if (minutesNow < dayStart || minutesNow > dayEnd) return;
   const frac = (minutesNow - dayStart) / (dayEnd - dayStart);
   const headerH = grid.children[0] ? grid.children[0].getBoundingClientRect().height + 5 : 30;
   const totalH = grid.scrollHeight;
-  const line = document.createElement('div');
-  line.className = 'tt-now-line';
-  line.style.top = (headerH + frac * (totalH - headerH)) + 'px';
-  const badge = document.createElement('div');
-  badge.className = 'tt-now-badge';
-  badge.textContent = now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-  line.appendChild(badge);
-  grid.style.position = 'relative';
-  grid.appendChild(line);
+  const line = document.createElement('div'); line.className = 'tt-now-line'; line.style.top = (headerH + frac * (totalH - headerH)) + 'px';
+  const badge = document.createElement('div'); badge.className = 'tt-now-badge'; badge.textContent = now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  line.appendChild(badge); grid.style.position = 'relative'; grid.appendChild(line);
 }
-
 document.getElementById('addLessonBtn').addEventListener('click', () => openLessonModal(null));
 function openLessonModal(lesson, day, period) {
   const isEdit = !!lesson;
@@ -527,20 +595,12 @@ function openLessonModal(lesson, day, period) {
       <div class="field" style="flex:1;"><label>Raum</label><input type="text" id="lRoom" value="${lesson ? escapeHtml(lesson.room || '') : ''}"></div>
       <div class="field" style="flex:1;"><label>Lehrer</label><input type="text" id="lTeacher" value="${lesson ? escapeHtml(lesson.teacher || '') : ''}"></div>
     </div>
-    <div class="field"><label>Farbe</label><div class="row wrap" id="lColorPick" style="gap:6px;">
-      ${LESSON_COLORS.map(c => `<div data-c="${c}" style="width:26px;height:26px;border-radius:50%;cursor:pointer;background:var(--${c});border:2px solid ${lesson && lesson.color === c ? 'var(--ink)' : 'transparent'};"></div>`).join('')}
-    </div></div>
+    <div class="field"><label>Farbe</label><div class="row wrap" id="lColorPick" style="gap:6px;">${LESSON_COLORS.map(c => `<div data-c="${c}" style="width:26px;height:26px;border-radius:50%;cursor:pointer;background:var(--${c});border:2px solid ${lesson && lesson.color === c ? 'var(--ink)' : 'transparent'};"></div>`).join('')}</div></div>
     <div class="row between list-row"><span>Fällt aus</span><label class="switch"><input type="checkbox" id="lCancelled" ${lesson && lesson.cancelled ? 'checked' : ''}><span class="track"></span></label></div>
     <div class="field"><label>Vertretung (optional)</label><input type="text" id="lSub" value="${lesson ? escapeHtml(lesson.substitution || '') : ''}"></div>
-    <div class="row" style="margin-top:14px;gap:8px;justify-content:flex-end;">
-      ${isEdit ? '<button class="btn btn-danger btn-sm" id="delLesson">Löschen</button>' : ''}
-      <button class="btn btn-ghost btn-sm" id="cancelLesson">Abbrechen</button>
-      <button class="btn btn-sm" id="saveLesson">Speichern</button>
-    </div>`, (root) => {
+    <div class="row" style="margin-top:14px;gap:8px;justify-content:flex-end;">${isEdit ? '<button class="btn btn-danger btn-sm" id="delLesson">Löschen</button>' : ''}<button class="btn btn-ghost btn-sm" id="cancelLesson">Abbrechen</button><button class="btn btn-sm" id="saveLesson">Speichern</button></div>`, (root) => {
     let chosenColor = lesson ? lesson.color : 'sky';
-    root.querySelectorAll('#lColorPick [data-c]').forEach(el => el.addEventListener('click', () => {
-      chosenColor = el.dataset.c; root.querySelectorAll('#lColorPick [data-c]').forEach(x => x.style.border = '2px solid transparent'); el.style.border = '2px solid var(--ink)';
-    }));
+    root.querySelectorAll('#lColorPick [data-c]').forEach(el => el.addEventListener('click', () => { chosenColor = el.dataset.c; root.querySelectorAll('#lColorPick [data-c]').forEach(x => x.style.border = '2px solid transparent'); el.style.border = '2px solid var(--ink)'; }));
     root.querySelector('#cancelLesson').onclick = AS.closeModal;
     if (isEdit) root.querySelector('#delLesson').onclick = () => { AS.currentData.timetable = AS.currentData.timetable.filter(l => l.id !== lesson.id); persist(); AS.closeModal(); RENDERERS.timetable(); };
     root.querySelector('#saveLesson').onclick = () => {
@@ -575,10 +635,7 @@ RENDERERS.tasks = function () {
   box.innerHTML = list.map(t => `
     <div class="list-row">
       <div class="check ${t.done ? 'checked' : ''}" data-toggle="${t.id}">${t.done ? '✓' : ''}</div>
-      <div style="flex:1;min-width:0;">
-        <div style="${t.done ? 'text-decoration:line-through;color:var(--ink-faint);' : ''}"><strong style="font-size:.9rem;">${escapeHtml(t.title)}</strong> ${t.subject ? `<span class="tiny">· ${escapeHtml(t.subject)}</span>` : ''}</div>
-        <div class="tiny">${t.due ? 'fällig ' + fmtDate(t.due) : 'kein Datum'} ${t.priority ? '· ' + prioLabel(t.priority) : ''}</div>
-      </div>
+      <div style="flex:1;min-width:0;"><div style="${t.done ? 'text-decoration:line-through;color:var(--ink-faint);' : ''}"><strong style="font-size:.9rem;">${escapeHtml(t.title)}</strong> ${t.subject ? `<span class="tiny">· ${escapeHtml(t.subject)}</span>` : ''}</div><div class="tiny">${t.due ? 'fällig ' + fmtDate(t.due) : 'kein Datum'} ${t.priority ? '· ' + prioLabel(t.priority) : ''}</div></div>
       <span class="tiny" style="cursor:pointer;" data-edit="${t.id}">Bearbeiten</span>
       <span class="tiny" style="cursor:pointer;color:var(--danger);" data-del="${t.id}">🗑️</span>
     </div>`).join('');
@@ -593,21 +650,10 @@ function openTaskModal(task) {
   AS.modal(`
     <h3>${isEdit ? 'Aufgabe bearbeiten' : 'Neue Aufgabe'}</h3>
     <div class="field"><label>Titel</label><input type="text" id="tTitle" value="${task ? escapeHtml(task.title) : ''}"></div>
-    <div class="row" style="gap:10px;">
-      <div class="field" style="flex:1;"><label>Fach</label><input type="text" id="tSubject" value="${task ? escapeHtml(task.subject || '') : ''}"></div>
-      <div class="field" style="flex:1;"><label>Fällig am</label><input type="date" id="tDue" value="${task ? task.due || '' : ''}"></div>
-    </div>
-    <div class="field"><label>Priorität</label><select id="tPrio">
-      <option value="low" ${task && task.priority === 'low' ? 'selected' : ''}>Niedrig</option>
-      <option value="mid" ${!task || task.priority === 'mid' ? 'selected' : ''}>Mittel</option>
-      <option value="high" ${task && task.priority === 'high' ? 'selected' : ''}>Hoch</option>
-    </select></div>
+    <div class="row" style="gap:10px;"><div class="field" style="flex:1;"><label>Fach</label><input type="text" id="tSubject" value="${task ? escapeHtml(task.subject || '') : ''}"></div><div class="field" style="flex:1;"><label>Fällig am</label><input type="date" id="tDue" value="${task ? task.due || '' : ''}"></div></div>
+    <div class="field"><label>Priorität</label><select id="tPrio"><option value="low" ${task && task.priority === 'low' ? 'selected' : ''}>Niedrig</option><option value="mid" ${!task || task.priority === 'mid' ? 'selected' : ''}>Mittel</option><option value="high" ${task && task.priority === 'high' ? 'selected' : ''}>Hoch</option></select></div>
     <div class="field"><label>Notiz</label><textarea id="tNote">${task ? escapeHtml(task.note || '') : ''}</textarea></div>
-    <div class="row" style="margin-top:10px;gap:8px;justify-content:flex-end;">
-      ${isEdit ? '<button class="btn btn-danger btn-sm" id="delTask">Löschen</button>' : ''}
-      <button class="btn btn-ghost btn-sm" id="cancelTask">Abbrechen</button>
-      <button class="btn btn-sm" id="saveTask">Speichern</button>
-    </div>`, (root) => {
+    <div class="row" style="margin-top:10px;gap:8px;justify-content:flex-end;">${isEdit ? '<button class="btn btn-danger btn-sm" id="delTask">Löschen</button>' : ''}<button class="btn btn-ghost btn-sm" id="cancelTask">Abbrechen</button><button class="btn btn-sm" id="saveTask">Speichern</button></div>`, (root) => {
     root.querySelector('#cancelTask').onclick = AS.closeModal;
     if (isEdit) root.querySelector('#delTask').onclick = () => { AS.currentData.tasks = AS.currentData.tasks.filter(t => t.id !== task.id); persist(); AS.closeModal(); RENDERERS.tasks(); };
     root.querySelector('#saveTask').onclick = () => {
@@ -621,7 +667,7 @@ function openTaskModal(task) {
 }
 
 /* ======================================================================
-   TO-DO — motivierender: Streak, Ansporn-Sprüche, jederzeit weitere Ziele
+   TO-DO — College-Checkliste mit Häkchen-Animation
    ====================================================================== */
 let todoEditDay = todayDayIdx() >= 0 ? todayDayIdx() : 0;
 const MOTIVATE_MSGS = ['Weiter so! ✨', 'Du rockst das! 💪', 'Fast geschafft! 🌟', 'Klasse gemacht! 🎉', 'Ein Schritt näher am Cookie 🍪'];
@@ -629,16 +675,14 @@ const MOTIVATE_MSGS = ['Weiter so! ✨', 'Du rockst das! 💪', 'Fast geschafft!
 RENDERERS.todo = function () { renderTodoToday(); renderTodoTemplate(); };
 
 function computeStreak() {
-  let streak = 0;
-  let d = new Date();
-  // heutigen Tag ggf. nicht mitzählen, falls noch nicht 100%
+  let streak = 0; let d = new Date();
   for (let i = 0; i < 365; i++) {
     const iso = d.toISOString().slice(0, 10);
     const log = AS.currentData.todoLog[iso];
     const isSchoolDay = d.getDay() !== 0 && d.getDay() !== 6;
     if (isSchoolDay) {
       if (log && log.started && log.items.length && log.items.every(it => it.current >= it.target)) streak++;
-      else if (iso === todayStr()) { /* heute läuft noch — nicht abbrechen */ }
+      else if (iso === todayStr()) { /* heute läuft noch */ }
       else break;
     }
     d.setDate(d.getDate() - 1);
@@ -670,17 +714,18 @@ function renderTodoToday() {
   const total = log.items.reduce((a, i) => a + i.target, 0);
   const cur = log.items.reduce((a, i) => a + Math.min(i.current, i.target), 0);
   const allDone = log.items.length > 0 && log.items.every(i => i.current >= i.target);
+  const mode = AS.currentData.todoMode; // 'checklist' | 'sequential'
 
+  let firstUnfinishedFound = false;
   let html = streakHtml;
+  html += `<div class="row between" style="margin-bottom:6px;"><span class="tiny">Modus:</span><span class="pill" style="cursor:pointer;" id="todoModeToggle">${mode === 'sequential' ? '🔢 Nacheinander' : '📋 Alle sichtbar'}</span></div>`;
   html += log.items.map(i => {
     const done = i.current >= i.target;
-    return `<div class="todo-item-row">
-      <div style="flex:1;">
-        <strong style="font-size:.88rem;">${done ? '✅ ' : ''}${escapeHtml(i.label)}</strong>
-        <div class="todo-bar" style="margin-top:6px;"><div class="todo-bar-fill" style="width:${Math.min(100, (i.current / i.target) * 100)}%;"></div></div>
-        <div class="tiny" style="margin-top:3px;">${i.current}/${i.target}</div>
-      </div>
-      <button class="btn btn-sm" data-bump="${i.id}" ${done ? 'disabled' : ''}>✓ Erledigt</button>
+    let locked = false;
+    if (mode === 'sequential' && !done) { if (firstUnfinishedFound) locked = true; else firstUnfinishedFound = true; }
+    return `<div class="todo-check-row ${done ? 'done' : ''} ${locked ? 'locked' : ''}">
+      <div class="todo-checkbox ${done ? 'checked' : ''}" data-check="${i.id}">${done ? '✓' : ''}</div>
+      <div style="flex:1;"><div class="todo-check-label">${escapeHtml(i.label)}</div><div class="todo-check-target">${i.current}/${i.target}</div></div>
       <span class="tiny" style="cursor:pointer;color:var(--danger);" data-delitem="${i.id}">🗑️</span>
     </div>`;
   }).join('');
@@ -690,44 +735,31 @@ function renderTodoToday() {
     html += `<div class="tiny" style="margin-top:8px;">Gesamt: ${cur}/${total} Punkte</div>`;
     if (!allDone && cur > 0) html += `<div class="motivate-msg">${MOTIVATE_MSGS[Math.floor((cur / Math.max(total, 1)) * (MOTIVATE_MSGS.length - 1))]}</div>`;
   }
-
   html += `<button class="btn btn-ghost btn-sm" id="addMoreGoalTodayBtn" style="margin-top:10px;">+ Weiteres Ziel für heute</button>`;
-
   if (allDone) {
-    html += `<div class="cookie-card">
-      <p style="font-family:var(--font-hand);font-size:1.3rem;font-weight:700;">Alles geschafft — gönn dir ein Cookie! 🎉</p>
-      <button class="cookie-btn" id="cookieBtn">${cookieEmoji(log.cookieBites)}</button>
-      <p class="tiny">${5 - log.cookieBites > 0 ? 'Klick, um am Cookie zu knabbern (' + (5 - log.cookieBites) + ' Bissen übrig)' : 'Aufgegessen — bis morgen! 🍪'}</p>
-    </div>`;
+    html += `<div class="cookie-card"><p style="font-family:var(--font-hand);font-size:1.3rem;font-weight:700;">Alles geschafft — gönn dir ein Cookie! 🎉</p><button class="cookie-btn" id="cookieBtn">${cookieEmoji(log.cookieBites)}</button><p class="tiny">${5 - log.cookieBites > 0 ? 'Klick, um am Cookie zu knabbern (' + (5 - log.cookieBites) + ' Bissen übrig)' : 'Aufgegessen — bis morgen! 🍪'}</p></div>`;
   }
 
   box.innerHTML = html;
-  box.querySelectorAll('[data-bump]').forEach(el => el.addEventListener('click', () => {
-    const item = log.items.find(i => i.id === el.dataset.bump);
-    if (item.current < item.target) item.current++;
-    persist(); renderTodoToday(); if (getCurrentViewSafe() === 'dashboard') RENDERERS.dashboard();
+  document.getElementById('todoModeToggle').addEventListener('click', () => { AS.currentData.todoMode = mode === 'sequential' ? 'checklist' : 'sequential'; persist(); renderTodoToday(); });
+  box.querySelectorAll('[data-check]').forEach(el => el.addEventListener('click', () => {
+    if (el.closest('.locked')) return;
+    const item = log.items.find(i => i.id === el.dataset.check);
+    if (item.current < item.target) { item.current++; persist(); renderTodoToday(); if (getCurrentViewSafe() === 'dashboard') RENDERERS.dashboard(); }
   }));
-  box.querySelectorAll('[data-delitem]').forEach(el => el.addEventListener('click', () => {
-    log.items = log.items.filter(i => i.id !== el.dataset.delitem); persist(); renderTodoToday();
-  }));
+  box.querySelectorAll('[data-delitem]').forEach(el => el.addEventListener('click', () => { log.items = log.items.filter(i => i.id !== el.dataset.delitem); persist(); renderTodoToday(); }));
   const addMoreBtn = document.getElementById('addMoreGoalTodayBtn');
   if (addMoreBtn) addMoreBtn.addEventListener('click', () => openQuickGoalModal(log));
   const cookieBtn = document.getElementById('cookieBtn');
   if (cookieBtn) cookieBtn.addEventListener('click', () => {
     if (log.cookieBites < 5) {
       log.cookieBites++;
-      if (log.cookieBites >= 5 && !log.rewardClaimed) {
-        log.rewardClaimed = true;
-        AS.currentData.todoStreak = computeStreak();
-        if (AS.currentData.todoStreak > AS.currentData.todoBestStreak) AS.currentData.todoBestStreak = AS.currentData.todoStreak;
-      }
-      persist(); renderTodoToday();
-      AS.toast(log.cookieBites >= 5 ? 'Mjam — Cookie aufgegessen! 🍪 Bis morgen!' : 'Knusper 🍪');
+      if (log.cookieBites >= 5 && !log.rewardClaimed) { log.rewardClaimed = true; AS.currentData.todoStreak = computeStreak(); if (AS.currentData.todoStreak > AS.currentData.todoBestStreak) AS.currentData.todoBestStreak = AS.currentData.todoStreak; }
+      persist(); renderTodoToday(); AS.toast(log.cookieBites >= 5 ? 'Mjam — Cookie aufgegessen! 🍪 Bis morgen!' : 'Knusper 🍪');
     }
   });
 }
 function cookieEmoji(bites) { const stages = ['🍪', '🍪', '🍪', '🍪', '🍪', '🫓']; return bites >= 5 ? '✨' : stages[bites]; }
-
 function openQuickGoalModal(log) {
   AS.modal(`<h3>Weiteres Ziel für heute</h3>
     <div class="field"><label>Was willst du noch erreichen?</label><input type="text" id="qgLabel" placeholder="z. B. 10 Minuten Vokabeln"></div>
@@ -737,12 +769,10 @@ function openQuickGoalModal(log) {
     root.querySelector('#qgSave').onclick = () => {
       const label = root.querySelector('#qgLabel').value.trim(); const target = +root.querySelector('#qgTarget').value || 1;
       if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; }
-      log.items.push({ id: 'g_' + Date.now(), label, target, current: 0 });
-      persist(); AS.closeModal(); renderTodoToday();
+      log.items.push({ id: 'g_' + Date.now(), label, target, current: 0 }); persist(); AS.closeModal(); renderTodoToday();
     };
   });
 }
-
 function renderTodoTemplate() {
   const tabs = document.getElementById('todoDayTabs');
   tabs.innerHTML = DAYS_FULL.map((d, i) => `<span class="pill ${todoEditDay === i ? 'active' : ''}" data-day="${i}" style="cursor:pointer;">${d}</span>`).join('');
@@ -815,7 +845,7 @@ function openCalDayModal(iso) {
 }
 
 /* ======================================================================
-   MATERIALS
+   MATERIALS — mit Kompression
    ====================================================================== */
 let materialQuery = '';
 RENDERERS.materials = function () {
@@ -826,64 +856,78 @@ RENDERERS.materials = function () {
   if (!list.length) { box.innerHTML = `<div class="empty" style="grid-column:1/-1;"><div class="em-ic">🗂️</div>Noch keine Dateien hochgeladen.</div>`; return; }
   box.innerHTML = list.map(m => {
     const isImg = (m.type || '').includes('image');
-    return `<div class="card no-margin" style="padding:0;overflow:hidden;">
-      <div class="mat-thumb">${isImg ? `<img src="${m.dataUrl}" alt="">` : iconForType(m.type)}</div>
-      <div style="padding:12px;">
-        <strong style="font-size:.85rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name)}</strong>
-        <div class="tiny">${escapeHtml(m.subject || 'Ohne Fach')}${m.topic ? ' · ' + escapeHtml(m.topic) : ''}</div>
-        <div class="tiny">${(m.size / 1024).toFixed(0)} KB</div>
-        <div class="row" style="margin-top:8px;gap:6px;"><a href="${m.dataUrl}" download="${escapeHtml(m.name)}" class="btn btn-sm btn-outline">Download</a><span class="tiny" style="cursor:pointer;margin-left:auto;color:var(--danger);" data-delm="${m.id}">🗑️</span></div>
-      </div>
-    </div>`;
+    return `<div class="card no-margin" style="padding:0;overflow:hidden;"><div class="mat-thumb">${isImg ? `<img src="${m.dataUrl}" alt="">` : iconForType(m.type)}</div><div style="padding:12px;"><strong style="font-size:.85rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name)}</strong><div class="tiny">${escapeHtml(m.subject || 'Ohne Fach')}${m.topic ? ' · ' + escapeHtml(m.topic) : ''}</div><div class="tiny">${(m.size / 1024).toFixed(0)} KB</div><div class="row" style="margin-top:8px;gap:6px;"><a href="${m.dataUrl}" download="${escapeHtml(m.name)}" class="btn btn-sm btn-outline">Download</a><span class="tiny" style="cursor:pointer;margin-left:auto;color:var(--danger);" data-delm="${m.id}">🗑️</span></div></div></div>`;
   }).join('');
   box.querySelectorAll('[data-delm]').forEach(el => el.addEventListener('click', () => { AS.currentData.materials = AS.currentData.materials.filter(m => m.id !== el.dataset.delm); persist(); RENDERERS.materials(); }));
 };
 function iconForType(t) { if (t.includes('pdf')) return '📕'; if (t.includes('image')) return '🖼️'; if (t.includes('presentation') || t.includes('powerpoint')) return '📊'; if (t.includes('word') || t.includes('document')) return '📄'; return '📁'; }
 document.getElementById('materialSearch').addEventListener('input', (e) => { materialQuery = e.target.value; RENDERERS.materials(); });
 document.getElementById('uploadMaterialBtn').addEventListener('click', () => document.getElementById('materialFileInput').click());
-document.getElementById('materialFileInput').addEventListener('change', (e) => {
-  const files = Array.from(e.target.files); const MAX = 4 * 1024 * 1024; let processed = 0; const okFiles = files.filter(f => f.size <= MAX);
-  files.forEach(file => {
-    if (file.size > MAX) { AS.toast(`"${file.name}" ist zu groß (max. 4 MB).`); return; }
-    const reader = new FileReader();
-    reader.onload = () => { AS.currentData.materials.push({ id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6), name: file.name, subject: '', topic: '', type: file.type || 'application/octet-stream', size: file.size, dataUrl: reader.result, favorite: false, addedAt: Date.now() }); processed++; if (processed === okFiles.length) { persist(); RENDERERS.materials(); } };
-    reader.onerror = () => AS.toast(`Upload von "${file.name}" fehlgeschlagen.`);
-    reader.readAsDataURL(file);
-  });
+document.getElementById('materialFileInput').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files);
+  const lim = limitsFor('material');
+  let added = 0;
+  for (const file of files) {
+    if (file.size > lim.maxBytesRaw) { AS.toast(`"${file.name}" ist zu groß (max. ${(lim.maxBytesRaw / 1024 / 1024).toFixed(1)} MB).`); continue; }
+    try {
+      const isImg = (file.type || '').includes('image');
+      const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
+      const approxBytes = Math.round(dataUrl.length * 0.75);
+      AS.currentData.materials.push({ id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6), name: file.name, subject: '', topic: '', type: file.type || 'application/octet-stream', size: approxBytes, dataUrl, favorite: false, addedAt: Date.now() });
+      added++;
+    } catch (err) { AS.toast(`Upload von "${file.name}" fehlgeschlagen.`); }
+  }
+  if (added) { persist(); RENDERERS.materials(); AS.toast(`${added} Datei(en) hinzugefügt (komprimiert).`); }
   e.target.value = '';
 });
 
 /* ======================================================================
-   SETTINGS
+   SETTINGS — sinnvoll kategorisiert, mit logischen Abhängigkeiten
    ====================================================================== */
 const ACCENTS = [['mint', 'Mint'], ['sky', 'Babyblau'], ['butter', 'Buttergelb'], ['peach', 'Pfirsich'], ['lavender', 'Lavendel'], ['blush', 'Rosa']];
 RENDERERS.settings = function () {
-  const box = document.getElementById('accentPicker');
-  box.innerHTML = ACCENTS.map(([k, l]) => `<div class="pill" data-accent="${k}" style="cursor:pointer;background:var(--${k}-2);border:2px solid ${AS.currentData.settings.accent === k ? 'var(--ink)' : 'transparent'};">${l}</div>`).join('');
-  box.querySelectorAll('[data-accent]').forEach(el => el.addEventListener('click', () => { AS.currentData.settings.accent = el.dataset.accent; persist(); RENDERERS.settings(); AS.toast('Akzentfarbe gespeichert.'); }));
+  const box = document.getElementById('settingsCategories');
+  box.innerHTML = `
+    <div class="settings-cat-title">Darstellung</div>
+    <div class="card">
+      <strong style="font-size:.85rem;">🎨 Akzentfarbe</strong>
+      <div class="row wrap" id="accentPicker" style="margin-top:10px;gap:8px;"></div>
+    </div>
+    <div class="card" style="margin-top:14px;">
+      <strong style="font-size:.85rem;">📝 Papier-Stil (Notizen &amp; Hintergrund)</strong>
+      <div class="row wrap" id="paperStylePicker" style="margin-top:10px;gap:8px;"></div>
+    </div>
+    <div class="card" style="margin-top:14px;">
+      <div class="row between list-row"><span>🌙 Dark Mode</span><label class="switch"><input type="checkbox" id="darkModeToggle"><span class="track"></span></label></div>
+      <div class="row between list-row"><span>🍃 Animationen reduzieren</span><label class="switch"><input type="checkbox" id="reduceMotionToggle"><span class="track"></span></label></div>
+    </div>
+    <div class="settings-cat-title">Benachrichtigungen</div>
+    <div class="card"><div id="notifSettingsList"></div></div>
+  `;
+  const accentBox = document.getElementById('accentPicker');
+  accentBox.innerHTML = ACCENTS.map(([k, l]) => `<div class="pill" data-accent="${k}" style="cursor:pointer;background:var(--${k}-2);border:2px solid ${AS.currentData.settings.accent === k ? 'var(--ink)' : 'transparent'};">${l}</div>`).join('');
+  accentBox.querySelectorAll('[data-accent]').forEach(el => el.addEventListener('click', () => { AS.currentData.settings.accent = el.dataset.accent; persist(); applyTheme(); RENDERERS.settings(); AS.toast('Theme aktualisiert.'); }));
   const paperBox = document.getElementById('paperStylePicker');
-  const styles = [['kariert', '▦ Kariert'], ['liniert', '≡ Liniert']];
-  paperBox.innerHTML = styles.map(([k, l]) => `<div class="pill" data-paper="${k}" style="cursor:pointer;${AS.currentData.settings.paperStyle === k ? 'box-shadow:var(--shadow-1);border:2px solid var(--ink);' : 'border:2px solid transparent;'}">${l}</div>`).join('');
+  paperBox.innerHTML = [['kariert', '▦ Kariert'], ['liniert', '≡ Liniert']].map(([k, l]) => `<div class="pill" data-paper="${k}" style="cursor:pointer;${AS.currentData.settings.paperStyle === k ? 'box-shadow:var(--shadow-1);border:2px solid var(--ink);' : 'border:2px solid transparent;'}">${l}</div>`).join('');
   paperBox.querySelectorAll('[data-paper]').forEach(el => el.addEventListener('click', () => { AS.currentData.settings.paperStyle = el.dataset.paper; persist(); applyTheme(); RENDERERS.settings(); AS.toast('Papier-Stil gespeichert.'); }));
   document.getElementById('darkModeToggle').checked = AS.currentData.settings.darkMode;
   document.getElementById('reduceMotionToggle').checked = AS.currentData.settings.reduceMotion;
+  document.getElementById('darkModeToggle').onchange = (e) => { AS.currentData.settings.darkMode = e.target.checked; persist(); applyTheme(); };
+  document.getElementById('reduceMotionToggle').onchange = (e) => { AS.currentData.settings.reduceMotion = e.target.checked; persist(); applyTheme(); };
   const notifBox = document.getElementById('notifSettingsList');
   const notifFields = [['notifFriendRequests', 'Freundschaftsanfragen'], ['notifMessages', 'Neue Nachrichten'], ['notifAirsignal', 'AirSignal'], ['notifTasks', 'Aufgaben & Deadlines']];
   notifBox.innerHTML = notifFields.map(([k, l]) => `<div class="row between list-row"><span>${l}</span><label class="switch"><input type="checkbox" data-notif="${k}" ${AS.currentData.settings[k] ? 'checked' : ''}><span class="track"></span></label></div>`).join('');
   notifBox.querySelectorAll('[data-notif]').forEach(el => el.addEventListener('change', () => { AS.currentData.settings[el.dataset.notif] = el.checked; persist(); }));
 };
-document.getElementById('darkModeToggle').addEventListener('change', (e) => { AS.currentData.settings.darkMode = e.target.checked; persist(); applyTheme(); });
-document.getElementById('reduceMotionToggle').addEventListener('change', (e) => { AS.currentData.settings.reduceMotion = e.target.checked; persist(); applyTheme(); });
 
-/* Sicherheit: Online-Speicherung umschaltbar in der Security-View */
 document.getElementById('cloudSyncToggle').addEventListener('change', (e) => {
   AS.setConsent(e.target.checked ? 'cloud' : 'local');
-  if (e.target.checked) { cloudPut(KEY_USERS, AS.getUsers()); cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData); AS.toast('Online-Speicherung aktiviert — deine Daten werden ab jetzt online gesichert.'); }
+  if (e.target.checked) { pushAllLocalToCloud(); AS.toast('Online-Speicherung aktiviert — bereits vorhandene Daten werden jetzt mit hochgeladen.'); }
   else AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
 });
 
 /* ======================================================================
-   PROFILE
+   PROFILE — QR-Code führt zu automatischer Freundschaftsanfrage
    ====================================================================== */
 RENDERERS.profile = function () {
   const u = AS.currentUser;
@@ -895,7 +939,8 @@ RENDERERS.profile = function () {
   document.getElementById('editFirst').value = u.firstName; document.getElementById('editLast').value = u.lastName;
   document.getElementById('editUsername').value = u.username; document.getElementById('editBio').value = u.bio || '';
   const qrWrap = document.getElementById('qrCanvasWrap'); qrWrap.innerHTML = '';
-  new QRCode(qrWrap, { text: `schoolify://user/${u.uniqueId}`, width: 160, height: 160, colorDark: '#3C4340', colorLight: '#ffffff' });
+  const qrUrl = `${location.origin}${location.pathname}?addfriend=${u.uniqueId}`;
+  new QRCode(qrWrap, { text: qrUrl, width: 160, height: 160, colorDark: '#3C4340', colorLight: '#ffffff' });
   const session = AS.getSession(); const users = AS.getUsers();
   const accBox = document.getElementById('accountSwitcherList');
   accBox.innerHTML = session.accounts.filter(id => users[id]).map(id => { const acc = users[id]; return `<div class="list-row" style="cursor:pointer;${id === u.uniqueId ? 'font-weight:800;' : ''}" data-switch="${id}"><div class="avatar sw-av" data-uid="${id}" style="width:30px;height:30px;font-size:.7rem;"></div><span style="flex:1;">${escapeHtml(acc.firstName)} ${escapeHtml(acc.lastName)} ${id === u.uniqueId ? '(aktiv)' : ''}</span></div>`; }).join('');
@@ -909,40 +954,29 @@ document.getElementById('saveProfileBtn').addEventListener('click', () => {
   AS.currentUser.firstName = document.getElementById('editFirst').value.trim(); AS.currentUser.lastName = document.getElementById('editLast').value.trim();
   AS.currentUser.username = newUsername; AS.currentUser.bio = document.getElementById('editBio').value.trim();
   users[AS.currentUser.uniqueId] = AS.currentUser; AS.saveUsers(users);
-  renderSidebarProfile(); RENDERERS.profile();
-  broadcastProfileUpdate();
-  AS.toast('Profil gespeichert.');
+  renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate(); AS.toast('Profil gespeichert.');
 });
-function broadcastProfileUpdate() {
-  if (!window.ASRealtime || !window.publicProfile) return;
-  AS.currentData.friends.forEach(uid => ASRealtime.sendTo(uid, { type: 'hello', profile: publicProfile() }));
-}
+function broadcastProfileUpdate() { if (!window.ASRealtime || !window.publicProfile) return; AS.currentData.friends.forEach(uid => ASRealtime.sendTo(uid, { type: 'hello', profile: publicProfile() })); }
 window.broadcastProfileUpdate = broadcastProfileUpdate;
 document.getElementById('changeAvatarBtn').addEventListener('click', () => document.getElementById('avatarFileInput').click());
-document.getElementById('avatarFileInput').addEventListener('change', (e) => {
+document.getElementById('avatarFileInput').addEventListener('change', async (e) => {
   const file = e.target.files[0]; if (!file) return;
-  if (file.size > 2 * 1024 * 1024) { AS.toast('Bild ist zu groß (max. 2 MB).'); return; }
-  const img = new Image(); const reader = new FileReader();
-  reader.onload = () => {
-    img.onload = () => {
-      const size = 240; const canvas = document.createElement('canvas'); canvas.width = size; canvas.height = size;
-      const ctx = canvas.getContext('2d'); const s = Math.min(img.width, img.height);
-      ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-      const users = AS.getUsers(); AS.currentUser.avatar = dataUrl; users[AS.currentUser.uniqueId] = AS.currentUser; AS.saveUsers(users);
-      renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate(); AS.toast('Profilbild aktualisiert — deine Freunde sehen es sofort.');
-    };
-    img.src = reader.result;
-  };
-  reader.readAsDataURL(file);
+  const lim = limitsFor('avatar');
+  if (file.size > lim.maxBytesRaw) { AS.toast('Bild ist zu groß (max. 3 MB).'); return; }
+  try {
+    const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
+    const users = AS.getUsers(); AS.currentUser.avatar = dataUrl; users[AS.currentUser.uniqueId] = AS.currentUser; AS.saveUsers(users);
+    renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate(); AS.toast('Profilbild aktualisiert — deine Freunde sehen es sofort.');
+  } catch (err) { AS.toast('Bild konnte nicht verarbeitet werden.'); }
 });
 document.getElementById('removeAvatarBtn').addEventListener('click', () => {
   const users = AS.getUsers(); AS.currentUser.avatar = null; users[AS.currentUser.uniqueId] = AS.currentUser; AS.saveUsers(users);
   renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate();
 });
 document.getElementById('openQrFullBtn').addEventListener('click', () => {
-  AS.modal(`<div style="text-align:center;"><h3>${escapeHtml(AS.currentUser.firstName)}s QR-Code</h3><div id="qrFullWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="pill">${AS.currentUser.uniqueId}</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="qrClose">Schließen</button></div></div>`,
-    (root) => { new QRCode(root.querySelector('#qrFullWrap'), { text: `schoolify://user/${AS.currentUser.uniqueId}`, width: 220, height: 220, colorDark: '#3C4340', colorLight: '#ffffff' }); root.querySelector('#qrClose').onclick = AS.closeModal; });
+  const qrUrl = `${location.origin}${location.pathname}?addfriend=${AS.currentUser.uniqueId}`;
+  AS.modal(`<div style="text-align:center;"><h3>${escapeHtml(AS.currentUser.firstName)}s QR-Code</h3><div id="qrFullWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="pill">${AS.currentUser.uniqueId}</p><p class="tiny" style="margin-top:6px;">Scannen sendet automatisch eine Freundschaftsanfrage.</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="qrClose">Schließen</button></div></div>`,
+    (root) => { new QRCode(root.querySelector('#qrFullWrap'), { text: qrUrl, width: 220, height: 220, colorDark: '#3C4340', colorLight: '#ffffff' }); root.querySelector('#qrClose').onclick = AS.closeModal; });
 });
 
 document.addEventListener('DOMContentLoaded', () => { setTimeout(boot, 500); });
