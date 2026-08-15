@@ -12,18 +12,28 @@
 <div class="bg-pattern"></div>
 <div id="toasts"></div>
 
-<!-- ================= SPLASH / LADEANIMATION ================= -->
+<!-- SPLASH -->
 <div id="splash">
   <div class="splash-badge">📚</div>
   <div class="splash-word">Schoolify</div>
   <div class="splash-dots"><span></span><span></span><span></span></div>
 </div>
 
-<!-- ================= AUTH SCREEN ================= -->
+<!-- COOKIE-BANNER -->
+<div id="cookieBanner" class="hidden">
+  <h3>🍪 Datenspeicherung</h3>
+  <p>Darf Schoolify deine Daten (Account, Notizen, Aufgaben usw.) speichern? Bei <strong>„Erlauben"</strong> werden sie online in deinem persönlichen Speicher gesichert, damit du sie geräteübergreifend behältst. Bei <strong>„Nur dieses Gerät"</strong> bleibt alles ausschließlich lokal in deinem Browser.</p>
+  <div class="row wrap" style="gap:8px;">
+    <button class="btn btn-sm" id="cookieAcceptBtn">Erlauben</button>
+    <button class="btn btn-ghost btn-sm" id="cookieDeclineBtn">Nur dieses Gerät</button>
+  </div>
+</div>
+
+<!-- AUTH -->
 <div id="authScreen" class="auth-wrap hidden">
   <div class="auth-card">
     <div class="row" style="justify-content:center;gap:8px;">
-      <span class="dot" style="width:15px;height:15px;border-radius:5px;background:linear-gradient(135deg,var(--blush),var(--lavender));display:inline-block;transform:rotate(-8deg);"></span>
+      <span class="dot" style="width:15px;height:15px;border-radius:5px;background:linear-gradient(135deg,var(--mint),var(--sky));display:inline-block;transform:rotate(-8deg);"></span>
       <span style="font-family:var(--font-display);font-weight:700;font-size:1.15rem;">Schoolify</span>
     </div>
     <div class="auth-tabs">
@@ -31,41 +41,31 @@
       <div class="tab" data-authtab="register">Account erstellen</div>
     </div>
 
-    <!-- LOGIN -->
     <div id="loginPane">
       <div class="auth-title">Schön, dich zu sehen ✦</div>
       <p class="auth-sub">Melde dich mit deiner Unique&nbsp;ID, Username oder E-Mail an.</p>
       <div class="field"><label>Unique ID, Username oder E-Mail</label><input type="text" id="loginIdentifier" placeholder="z. B. A7K29P4Q oder emma@example.com"></div>
       <button class="btn" style="width:100%;justify-content:center;" id="loginBtn">Anmelden</button>
-      <p class="tiny" style="text-align:center;margin-top:14px;">Kein Passwort nötig — deine Unique&nbsp;ID ist dein Schlüssel. Teile sie nur mit Personen, denen du vertraust.</p>
+      <p class="tiny" style="text-align:center;margin-top:14px;">Kein Passwort nötig — deine Unique&nbsp;ID ist dein Schlüssel.</p>
       <div id="localAccountsList" style="margin-top:16px;"></div>
     </div>
 
-    <!-- REGISTER — mehrstufig -->
     <div id="registerPane" class="hidden">
-      <div class="step-dots" id="regStepDots">
-        <span class="active" data-step="1"></span><span data-step="2"></span><span data-step="3"></span>
-      </div>
-
+      <div class="step-dots" id="regStepDots"><span class="active" data-step="1"></span><span data-step="2"></span><span data-step="3"></span></div>
       <div class="auth-step" id="regStep1">
         <div class="auth-title">Wie heißt du? ✎</div>
-        <p class="auth-sub">Nur für dein Profil — bleibt auf deinem Gerät.</p>
+        <p class="auth-sub">Nur für dein Profil.</p>
         <div class="field"><label>Vorname</label><input type="text" id="regFirst"></div>
         <div class="field"><label>Nachname</label><input type="text" id="regLast"></div>
         <button class="btn" style="width:100%;justify-content:center;" id="regNext1">Weiter →</button>
       </div>
-
       <div class="auth-step hidden" id="regStep2">
         <div class="auth-title">Wähl deinen Namen ♡</div>
-        <p class="auth-sub">Username &amp; E-Mail dienen nur als Kennung — keine Verifizierung nötig.</p>
+        <p class="auth-sub">Nur als Kennung — keine Verifizierung nötig.</p>
         <div class="field"><label>Username</label><input type="text" id="regUsername" placeholder="z. B. emma.s"></div>
-        <div class="field"><label>E-Mail-Adresse</label><input type="email" id="regEmail" placeholder="beliebige E-Mail, z. B. emma@gmail.com"></div>
-        <div class="row" style="gap:8px;">
-          <button class="btn btn-ghost btn-sm" id="regBack2">← Zurück</button>
-          <button class="btn" style="flex:1;justify-content:center;" id="regNext2">Weiter →</button>
-        </div>
+        <div class="field"><label>E-Mail-Adresse</label><input type="email" id="regEmail" placeholder="beliebige E-Mail"></div>
+        <div class="row" style="gap:8px;"><button class="btn btn-ghost btn-sm" id="regBack2">← Zurück</button><button class="btn" style="flex:1;justify-content:center;" id="regNext2">Weiter →</button></div>
       </div>
-
       <div class="auth-step hidden" id="regStep3">
         <div class="auth-title">Fast fertig 🎀</div>
         <p class="auth-sub">Kurz prüfen, dann geht's los.</p>
@@ -74,62 +74,50 @@
           <div class="tiny">Username</div><strong id="regReviewUser" style="display:block;margin-bottom:8px;"></strong>
           <div class="tiny">E-Mail</div><strong id="regReviewMail" style="display:block;"></strong>
         </div>
-        <div class="row" style="gap:8px;">
-          <button class="btn btn-ghost btn-sm" id="regBack3">← Zurück</button>
-          <button class="btn" style="flex:1;justify-content:center;" id="registerBtn">Account erstellen ✦</button>
-        </div>
+        <div class="row" style="gap:8px;"><button class="btn btn-ghost btn-sm" id="regBack3">← Zurück</button><button class="btn" style="flex:1;justify-content:center;" id="registerBtn">Account erstellen ✦</button></div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- ================= APP ================= -->
+<!-- APP -->
 <div id="app" class="hidden">
   <nav class="sidebar" id="sidebar">
-    <div class="brand"><span class="dot"></span> Schoolify</div>
-    <div class="nav-item" data-view="dashboard"><span class="ic">🏡</span> Dashboard</div>
-    <div class="nav-item" data-view="timetable"><span class="ic">🗓️</span> Stundenplan</div>
-    <div class="nav-item" data-view="tasks"><span class="ic">✅</span> Aufgaben</div>
-    <div class="nav-item" data-view="todo"><span class="ic">🍪</span> To-Do</div>
-    <div class="nav-item" data-view="calendar"><span class="ic">📅</span> Kalender</div>
-    <div class="nav-item" data-view="notes"><span class="ic">📓</span> Notizen</div>
-    <div class="nav-item" data-view="materials"><span class="ic">🗂️</span> Schulmaterial</div>
-    <div class="nav-item" data-view="friends"><span class="ic">💌</span> Freunde</div>
-    <div class="nav-item" data-view="chat"><span class="ic">💬</span> Chat</div>
-    <div class="nav-item" data-view="airsignal"><span class="ic">☁️</span> AirSignal</div>
+    <div class="brand"><span class="dot"></span> <span>Schoolify</span></div>
+    <div class="nav-item" data-view="dashboard"><span class="ic">🏡</span><span>Dashboard</span></div>
+    <div class="nav-item" data-view="timetable"><span class="ic">🗓️</span><span>Stundenplan</span></div>
+    <div class="nav-item" data-view="tasks"><span class="ic">✅</span><span>Aufgaben</span></div>
+    <div class="nav-item" data-view="todo"><span class="ic">🍪</span><span>To-Do</span></div>
+    <div class="nav-section-label">Organisieren</div>
+    <div class="nav-item" data-view="calendar"><span class="ic">📅</span><span>Kalender</span></div>
+    <div class="nav-item" data-view="notes"><span class="ic">📓</span><span>Notizen</span></div>
+    <div class="nav-item" data-view="learn"><span class="ic">🧠</span><span>Lernen</span></div>
+    <div class="nav-item" data-view="materials"><span class="ic">🗂️</span><span>Material</span></div>
+    <div class="nav-section-label">Sozial</div>
+    <div class="nav-item" data-view="friends"><span class="ic">💌</span><span>Freunde</span></div>
+    <div class="nav-item" data-view="chat"><span class="ic">💬</span><span>Chat</span></div>
+    <div class="nav-item" data-view="airsignal"><span class="ic">☁️</span><span>AirSignal</span></div>
     <div class="nav-spacer"></div>
     <div class="nav-foot">
-      <div class="nav-item" data-view="security"><span class="ic">🔒</span> Sicherheit</div>
-      <div class="nav-item" data-view="settings"><span class="ic">🎨</span> Einstellungen</div>
+      <div class="nav-item" data-view="security"><span class="ic">🔒</span><span>Sicherheit</span></div>
+      <div class="nav-item" data-view="settings"><span class="ic">🎨</span><span>Einstellungen</span></div>
       <div class="nav-item" data-view="profile"><span class="ic">🙋</span> <span id="sidebarName">Profil</span></div>
     </div>
   </nav>
 
   <div class="topbar">
     <div class="brand"><span class="dot"></span> Schoolify</div>
-    <div class="row">
-      <div class="avatar" id="topbarAvatar" style="width:32px;height:32px;font-size:.75rem;" data-view="profile"></div>
-    </div>
+    <div class="avatar clickable" id="topbarAvatar" style="width:32px;height:32px;font-size:.75rem;" data-view="profile"></div>
   </div>
 
   <main>
     <!-- DASHBOARD -->
     <section class="view sec-dashboard" id="view-dashboard">
-      <div class="view-head">
-        <div><span class="section-tag">Heute</span><h1 id="dashGreeting">Hey ♡</h1><p class="view-sub" id="dashDate"></p></div>
-      </div>
-
+      <div class="view-head"><div><span class="section-tag">Heute</span><h1 id="dashGreeting">Hey ♡</h1><p class="view-sub" id="dashDate"></p></div></div>
       <div class="grid grid-2">
-        <div class="card">
-          <strong>📘 Nächste Stunde</strong>
-          <div id="dashNextLesson" class="muted" style="margin-top:8px;">–</div>
-        </div>
-        <div class="card">
-          <strong>✅ Aufgaben heute</strong>
-          <div id="dashTasksToday" class="muted" style="margin-top:8px;">–</div>
-        </div>
+        <div class="card"><strong>📘 Nächste Stunde</strong><div id="dashNextLesson" class="muted" style="margin-top:8px;">–</div></div>
+        <div class="card"><strong>✅ Aufgaben heute</strong><div id="dashTasksToday" class="muted" style="margin-top:8px;">–</div></div>
       </div>
-
       <div class="card" style="margin-top:14px;">
         <div class="row" style="gap:18px;">
           <div class="progress-ring-wrap">
@@ -146,115 +134,96 @@
           </div>
         </div>
       </div>
-
       <div class="card" style="margin-top:14px;">
         <div class="row between"><strong>💌 Freunde</strong><span class="tiny" data-view="friends" style="cursor:pointer;">Alle ansehen →</span></div>
         <div id="dashFriends" class="row wrap" style="margin-top:10px;gap:14px;"></div>
       </div>
-
       <div class="grid grid-2" style="margin-top:14px;">
-        <div class="card">
-          <div class="row between"><strong>☁️ AirSignal</strong><span class="tiny" data-view="airsignal" style="cursor:pointer;">Öffnen →</span></div>
-          <div id="dashAirsignal" class="muted" style="margin-top:8px;">–</div>
-        </div>
-        <div class="card">
-          <div class="row between"><strong>📓 Letzte Notiz</strong><span class="tiny" data-view="notes" style="cursor:pointer;">Öffnen →</span></div>
-          <div id="dashNote" class="muted" style="margin-top:8px;">–</div>
-        </div>
+        <div class="card"><div class="row between"><strong>☁️ AirSignal</strong><span class="tiny" data-view="airsignal" style="cursor:pointer;">Öffnen →</span></div><div id="dashAirsignal" class="muted" style="margin-top:8px;">–</div></div>
+        <div class="card"><div class="row between"><strong>📓 Letzte Notiz</strong><span class="tiny" data-view="notes" style="cursor:pointer;">Öffnen →</span></div><div id="dashNote" class="muted" style="margin-top:8px;">–</div></div>
       </div>
     </section>
 
     <!-- TIMETABLE -->
     <section class="view sec-timetable hidden" id="view-timetable">
-      <div class="view-head">
-        <div><span class="section-tag">Unterricht</span><h1>Stundenplan</h1><p class="view-sub">Deine Woche im Überblick — im Untis-Stil.</p></div>
-        <button class="btn btn-sm" id="addLessonBtn">+ Stunde hinzufügen</button>
-      </div>
-      <div class="card no-margin tt-wrap">
-        <div class="tt-grid" id="timetableGrid"></div>
-      </div>
+      <div class="view-head"><div><span class="section-tag">Unterricht</span><h1>Stundenplan</h1><p class="view-sub">Untis-Stil mit Live-Zeitlinie.</p></div><button class="btn btn-sm" id="addLessonBtn">+ Stunde</button></div>
+      <div class="card no-margin tt-wrap"><div class="tt-grid" id="timetableGrid"></div></div>
     </section>
 
     <!-- TASKS -->
     <section class="view sec-tasks hidden" id="view-tasks">
-      <div class="view-head">
-        <div><span class="section-tag">Aufgaben</span><h1>Was ansteht</h1></div>
-        <button class="btn btn-sm" id="addTaskBtn">+ Aufgabe</button>
-      </div>
+      <div class="view-head"><div><span class="section-tag">Aufgaben</span><h1>Was ansteht</h1></div><button class="btn btn-sm" id="addTaskBtn">+ Aufgabe</button></div>
       <div class="row wrap" id="taskFilters" style="margin-bottom:14px;gap:8px;"></div>
       <div class="card" id="taskListCard"><div id="taskList"></div></div>
     </section>
 
     <!-- TO-DO -->
     <section class="view sec-todo hidden" id="view-todo">
-      <div class="view-head">
-        <div><span class="section-tag">Bessere Noten</span><h1>To-Do des Tages</h1><p class="view-sub">Setz dir jede Woche kleine Ziele pro Tag — und belohn dich am Ende ✦</p></div>
-      </div>
-
-      <div class="card" style="margin-bottom:14px;">
-        <strong>📌 Heute</strong>
-        <div id="todoTodayBox" style="margin-top:10px;"></div>
-      </div>
-
+      <div class="view-head"><div><span class="section-tag">Bessere Noten</span><h1>To-Do des Tages</h1><p class="view-sub">Setz dir jede Woche kleine Ziele — und belohn dich am Ende ✦</p></div></div>
+      <div class="card" style="margin-bottom:14px;"><strong>📌 Heute</strong><div id="todoTodayBox" style="margin-top:10px;"></div></div>
       <div class="card">
         <strong>🗓️ Wochenvorlage bearbeiten</strong>
-        <p class="tiny" style="margin:6px 0 10px 0;">Lege fest, was du an jedem Tag erreichen willst (z. B. "4× melden").</p>
+        <p class="tiny" style="margin:6px 0 10px 0;">Lege für jeden Tag beliebig viele kleine Ziele fest.</p>
         <div class="day-tabs" id="todoDayTabs"></div>
         <div id="todoTemplateList"></div>
         <button class="btn btn-sm btn-outline" id="addTodoGoalBtn" style="margin-top:10px;">+ Ziel hinzufügen</button>
       </div>
     </section>
 
-    <!-- KALENDER -->
-    <section class="view sec-calendar hidden" id="view-calendar">
+    <!-- LERNEN — Karteikarten -->
+    <section class="view sec-learn hidden" id="view-learn">
       <div class="view-head">
-        <div><span class="section-tag">Übersicht</span><h1 id="calMonthLabel">Kalender</h1></div>
-        <div class="row" style="gap:8px;">
-          <button class="btn btn-ghost btn-sm" id="calPrevBtn">← </button>
-          <button class="btn btn-ghost btn-sm" id="calTodayBtn">Heute</button>
-          <button class="btn btn-ghost btn-sm" id="calNextBtn"> →</button>
+        <div><span class="section-tag">Lernplan</span><h1 id="learnTitle">Karteikarten</h1></div>
+        <div class="row" style="gap:8px;" id="learnHeadActions"><button class="btn btn-sm" id="addDeckBtn">+ Stapel</button></div>
+      </div>
+      <div class="row" id="learnBreadcrumbs" style="margin-bottom:12px;gap:6px;"></div>
+      <div id="learnDecksLayer"><div class="deck-grid" id="deckGrid"></div></div>
+      <div id="learnCardsLayer" class="hidden"><div class="card-grid" id="cardGrid"></div></div>
+      <div id="learnStudyLayer" class="hidden">
+        <div class="flashcard-stage">
+          <div class="tiny" id="studyProgress"></div>
+          <div class="flashcard" id="flashcardEl">
+            <div class="flashcard-inner">
+              <div class="flashcard-face front"><span class="face-label">Frage</span><span id="studyFront"></span></div>
+              <div class="flashcard-face back"><span class="face-label">Antwort</span><span id="studyBack"></span></div>
+            </div>
+          </div>
+          <p class="tiny">Zum Umdrehen antippen</p>
+          <div class="row" style="gap:10px;">
+            <button class="btn btn-ghost btn-sm" id="studyPrevBtn">← Zurück</button>
+            <button class="btn btn-sm" id="studyNextBtn">Weiter →</button>
+          </div>
         </div>
-      </div>
-      <div class="card no-margin">
-        <div class="cal-grid" id="calGridHead"></div>
-        <div class="cal-grid" id="calGrid" style="margin-top:6px;"></div>
-      </div>
-      <div class="card" style="margin-top:14px;">
-        <strong>Einträge</strong>
-        <div id="calEventList" style="margin-top:8px;"></div>
       </div>
     </section>
 
-    <!-- NOTES — GoodNotes-Style (3 Ebenen) -->
+    <!-- KALENDER -->
+    <section class="view sec-calendar hidden" id="view-calendar">
+      <div class="view-head"><div><span class="section-tag">Übersicht</span><h1 id="calMonthLabel">Kalender</h1></div>
+        <div class="row" style="gap:8px;"><button class="btn btn-ghost btn-sm" id="calPrevBtn">←</button><button class="btn btn-ghost btn-sm" id="calTodayBtn">Heute</button><button class="btn btn-ghost btn-sm" id="calNextBtn">→</button></div>
+      </div>
+      <div class="card no-margin"><div class="cal-grid" id="calGridHead"></div><div class="cal-grid" id="calGrid" style="margin-top:6px;"></div></div>
+      <div class="card" style="margin-top:14px;"><strong>Einträge</strong><div id="calEventList" style="margin-top:8px;"></div></div>
+    </section>
+
+    <!-- NOTES -->
     <section class="view sec-notes hidden" id="view-notes">
-      <div class="view-head">
-        <div><span class="section-tag">Notizbuch</span><h1 id="notesTitle">Ordner</h1></div>
-        <div class="row" style="gap:8px;" id="notesHeadActions">
-          <button class="btn btn-sm" id="addFolderBtn">+ Ordner</button>
-        </div>
+      <div class="view-head"><div><span class="section-tag">Notizbuch</span><h1 id="notesTitle">Ordner</h1></div>
+        <div class="row" style="gap:8px;" id="notesHeadActions"><button class="btn btn-sm" id="addFolderBtn">+ Ordner</button></div>
       </div>
       <div class="row" id="notesBreadcrumbs" style="margin-bottom:12px;gap:6px;"></div>
-
-      <!-- Ebene 1: Ordner -->
-      <div id="notesFoldersLayer">
-        <div class="folder-grid" id="folderGrid"></div>
-      </div>
-
-      <!-- Ebene 2: Seiten in einem Ordner -->
-      <div id="notesPagesLayer" class="hidden">
-        <div class="page-grid" id="pageGrid"></div>
-      </div>
-
-      <!-- Ebene 3: Seiten-Editor -->
+      <div id="notesFoldersLayer"><div class="folder-grid" id="folderGrid"></div></div>
+      <div id="notesPagesLayer" class="hidden"><div class="page-grid" id="pageGrid"></div></div>
       <div id="notesEditorLayer" class="hidden">
         <div class="note-editor-toolbar">
-          <input type="text" id="pageTitleInput" placeholder="Titel der Seite" style="max-width:220px;">
+          <input type="text" id="pageTitleInput" placeholder="Titel der Seite" style="max-width:200px;">
           <div class="iconbtn" id="modeWriteBtn" title="Schreiben">✎</div>
           <div class="iconbtn" id="modeDrawBtn" title="Zeichnen">✏️</div>
           <div class="iconbtn" id="paperKariertBtn" title="Kariert">▦</div>
           <div class="iconbtn" id="paperLiniertBtn" title="Liniert">≡</div>
-          <div class="iconbtn" id="addImgBtn" title="Bild einfügen">🖼️</div>
+          <div class="iconbtn" id="addImgBtn" title="Bild einfügen">🖼️ Bild</div>
           <div class="iconbtn" id="clearDrawBtn" title="Zeichnung löschen">🧹</div>
+          <div class="iconbtn" id="deletePageBtn" title="Seite löschen" style="color:var(--danger);">🗑️</div>
           <input type="file" id="pageImgInput" accept="image/*" class="hidden" multiple>
           <span class="tiny" style="margin-left:auto;">Speichert automatisch ✓</span>
         </div>
@@ -268,10 +237,7 @@
 
     <!-- MATERIALS -->
     <section class="view sec-materials hidden" id="view-materials">
-      <div class="view-head">
-        <div><span class="section-tag">Material</span><h1>Schulmaterial</h1></div>
-        <button class="btn btn-sm" id="uploadMaterialBtn">+ Datei hochladen</button>
-      </div>
+      <div class="view-head"><div><span class="section-tag">Material</span><h1>Schulmaterial</h1></div><button class="btn btn-sm" id="uploadMaterialBtn">+ Datei hochladen</button></div>
       <input type="file" id="materialFileInput" class="hidden" multiple>
       <div class="field" style="max-width:280px;"><input type="search" id="materialSearch" placeholder="Dateien durchsuchen…"></div>
       <div id="materialList" class="grid grid-3"></div>
@@ -282,10 +248,7 @@
       <div class="view-head"><div><span class="section-tag">Kontakte</span><h1>Freunde</h1></div></div>
       <div class="card">
         <strong style="font-size:.85rem;">🔎 Per Unique ID finden</strong>
-        <div class="row" style="margin-top:8px;gap:8px;">
-          <input type="text" id="friendSearchInput" placeholder="z. B. A7K29P4Q" style="max-width:220px;">
-          <button class="btn btn-sm" id="friendSearchBtn">Suchen &amp; verbinden</button>
-        </div>
+        <div class="row" style="margin-top:8px;gap:8px;"><input type="text" id="friendSearchInput" placeholder="z. B. A7K29P4Q" style="max-width:220px;"><button class="btn btn-sm" id="friendSearchBtn">Suchen &amp; verbinden</button></div>
         <p class="tiny" style="margin-top:6px;">Nutzt eine echte Peer-Verbindung — die Person muss die App gerade offen haben.</p>
         <div id="friendSearchResult" style="margin-top:10px;"></div>
       </div>
@@ -293,32 +256,29 @@
         <div class="card"><strong style="font-size:.85rem;">📥 Anfragen</strong><div id="friendRequestsList" style="margin-top:8px;"></div></div>
         <div class="card"><strong style="font-size:.85rem;">🚫 Blockiert</strong><div id="blockedList" style="margin-top:8px;"></div></div>
       </div>
-      <div class="card" style="margin-top:14px;">
-        <strong style="font-size:.85rem;">💌 Meine Freunde</strong>
-        <div id="friendsListFull" style="margin-top:8px;"></div>
-      </div>
+      <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">💌 Meine Freunde</strong><div id="friendsListFull" style="margin-top:8px;"></div></div>
     </section>
 
     <!-- CHAT -->
     <section class="view sec-chat hidden" id="view-chat">
       <div class="view-head"><div><span class="section-tag">Nachrichten</span><h1>Chat</h1></div></div>
-      <div class="card no-margin" style="display:flex;gap:0;padding:0;overflow:hidden;min-height:460px;">
-        <div style="width:210px;border-right:1.5px solid var(--border);padding:12px;flex-shrink:0;" id="chatConvoList"></div>
-        <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
-          <div id="chatEmptyState" class="empty" style="flex:1;display:flex;flex-direction:column;justify-content:center;">
-            <div class="em-ic">💬</div>Wähle links einen Freund aus, um zu chatten.
-          </div>
-          <div id="chatActive" class="hidden" style="display:flex;flex-direction:column;flex:1;min-height:0;">
-            <div class="row between" style="padding:12px 16px;border-bottom:1.5px solid var(--border);">
-              <div class="row" style="gap:10px;"><div class="avatar" id="chatPartnerAvatar" style="width:34px;height:34px;font-size:.8rem;"></div><strong id="chatPartnerName"></strong></div>
-              <span class="tiny" id="chatPartnerStatus"></span>
-            </div>
-            <div id="chatMessages" style="flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:8px;"></div>
-            <div class="row" style="padding:12px;border-top:1.5px solid var(--border);gap:8px;">
-              <div class="iconbtn" id="chatAttachBtn" title="Datei anhängen">📎</div>
+      <div class="card no-margin" style="padding:0;overflow:hidden;">
+        <div class="chat-shell">
+          <div class="chat-side" id="chatConvoList"></div>
+          <div class="chat-main">
+            <div id="chatEmptyState" class="empty" style="flex:1;display:flex;flex-direction:column;justify-content:center;"><div class="em-ic">💬</div>Wähle links einen Freund aus, um zu chatten.</div>
+            <div id="chatActive" class="hidden" style="display:flex;flex-direction:column;flex:1;min-height:0;">
+              <div class="chat-header">
+                <div class="row" style="gap:10px;"><div class="avatar clickable" id="chatPartnerAvatar" style="width:34px;height:34px;font-size:.8rem;"></div><div><strong id="chatPartnerName"></strong><div class="tiny" id="chatPartnerStatus"></div></div></div>
+              </div>
+              <div id="chatMessages" class="chat-msgs"></div>
               <input type="file" id="chatFileInput" class="hidden" accept="image/*,.pdf,.doc,.docx,.txt">
-              <input type="text" id="chatInput" placeholder="Nachricht schreiben…" style="flex:1;">
-              <button class="btn btn-sm" id="chatSendBtn">Senden</button>
+              <div class="chat-inputbar">
+                <button class="chat-emoji-btn" id="chatAttachBtn" title="Datei anhängen">📎</button>
+                <button class="chat-emoji-btn" id="chatImgBtn" title="Bild senden">🖼️</button>
+                <input type="text" id="chatInput" placeholder="Nachricht schreiben…" style="flex:1;">
+                <button class="btn btn-sm" id="chatSendBtn">Senden ➤</button>
+              </div>
             </div>
           </div>
         </div>
@@ -327,11 +287,16 @@
 
     <!-- AIRSIGNAL -->
     <section class="view sec-airsignal hidden" id="view-airsignal">
-      <div class="view-head">
-        <div><span class="section-tag">AirSignal</span><h1>In deiner Nähe ☁️</h1></div>
-        <button class="btn btn-sm" id="airsignalSendBtn">✦ Senden</button>
+      <div class="view-head"><div><span class="section-tag">AirSignal</span><h1>In deiner Nähe ☁️</h1></div></div>
+      <div class="card">
+        <strong style="font-size:.85rem;">🟢 Freunde online — antippen zum Auswählen</strong>
+        <div id="airFriendsOnline" class="row wrap" style="margin-top:12px;gap:14px;"></div>
+        <div id="airSendBox" class="hidden" style="margin-top:14px;border-top:1.5px dashed var(--border);padding-top:14px;">
+          <div class="field"><label>Nachricht (optional)</label><input type="text" id="airQuickText" maxlength="100" placeholder="z. B. Hausaufgaben-Foto 📸"></div>
+          <div class="field"><label>Datei anhängen (optional)</label><input type="file" id="airQuickFile" accept="image/*,.pdf,.doc,.docx"></div>
+          <button class="btn btn-sm" id="airQuickSendBtn">✦ An <span id="airSelCount">0</span> Freunde senden</button>
+        </div>
       </div>
-      <div class="card"><strong style="font-size:.85rem;">🟢 Freunde online</strong><div id="airFriendsOnline" style="margin-top:10px;" class="row wrap"></div></div>
       <div class="card" style="margin-top:14px;">
         <div class="row between"><strong style="font-size:.85rem;">📍 In deiner Nähe</strong><span class="tiny" id="airNearbyStatus"></span></div>
         <div id="airNearbyList" style="margin-top:10px;"></div>
@@ -342,39 +307,24 @@
     <section class="view sec-security hidden" id="view-security">
       <div class="view-head"><div><span class="section-tag">Privatsphäre</span><h1>Sicherheit</h1></div></div>
       <div class="card"><div id="securityList"></div></div>
-      <div class="card" style="margin-top:14px;">
-        <strong style="font-size:.85rem;">📱 Aktive Geräte</strong>
-        <div id="deviceList" style="margin-top:8px;"></div>
-        <button class="btn btn-outline btn-sm" style="margin-top:10px;" id="logoutAllBtn">Von allen Geräten abmelden</button>
-      </div>
+      <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">📱 Aktive Geräte</strong><div id="deviceList" style="margin-top:8px;"></div><button class="btn btn-outline btn-sm" style="margin-top:10px;" id="logoutAllBtn">Von allen Geräten abmelden</button></div>
       <div class="card" style="margin-top:14px;">
         <strong style="font-size:.85rem;">⚙️ Konto</strong>
-        <div class="row wrap" style="margin-top:10px;gap:8px;">
-          <button class="btn btn-outline btn-sm" id="exportDataBtn">Daten exportieren</button>
-          <button class="btn btn-danger btn-sm" id="deleteAccountBtn">Account löschen</button>
-        </div>
+        <div class="row wrap" style="margin-top:10px;gap:8px;"><button class="btn btn-outline btn-sm" id="exportDataBtn">Daten exportieren</button><button class="btn btn-danger btn-sm" id="deleteAccountBtn">Account löschen</button></div>
+        <div class="row between list-row" style="margin-top:10px;"><span>🍪 Online-Speicherung</span><label class="switch"><input type="checkbox" id="cloudSyncToggle"><span class="track"></span></label></div>
       </div>
     </section>
 
     <!-- SETTINGS -->
     <section class="view sec-settings hidden" id="view-settings">
       <div class="view-head"><div><span class="section-tag">Personalisierung</span><h1>Einstellungen</h1></div></div>
-      <div class="card">
-        <strong style="font-size:.85rem;">🎨 Akzentfarbe</strong>
-        <div class="row wrap" id="accentPicker" style="margin-top:10px;gap:8px;"></div>
-      </div>
-      <div class="card" style="margin-top:14px;">
-        <strong style="font-size:.85rem;">📝 Papier-Stil (Notizen &amp; Hintergrund)</strong>
-        <div class="row wrap" id="paperStylePicker" style="margin-top:10px;gap:8px;"></div>
-      </div>
+      <div class="card"><strong style="font-size:.85rem;">🎨 Akzentfarbe</strong><div class="row wrap" id="accentPicker" style="margin-top:10px;gap:8px;"></div></div>
+      <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">📝 Papier-Stil</strong><div class="row wrap" id="paperStylePicker" style="margin-top:10px;gap:8px;"></div></div>
       <div class="card" style="margin-top:14px;">
         <div class="row between list-row"><span>🌙 Dark Mode</span><label class="switch"><input type="checkbox" id="darkModeToggle"><span class="track"></span></label></div>
         <div class="row between list-row"><span>🍃 Animationen reduzieren</span><label class="switch"><input type="checkbox" id="reduceMotionToggle"><span class="track"></span></label></div>
       </div>
-      <div class="card" style="margin-top:14px;">
-        <strong style="font-size:.85rem;">🔔 Benachrichtigungen</strong>
-        <div id="notifSettingsList" style="margin-top:8px;"></div>
-      </div>
+      <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">🔔 Benachrichtigungen</strong><div id="notifSettingsList" style="margin-top:8px;"></div></div>
     </section>
 
     <!-- PROFILE -->
@@ -384,18 +334,10 @@
         <div class="card" style="text-align:center;">
           <div class="avatar" id="profileAvatarBig" style="width:96px;height:96px;font-size:1.8rem;margin:0 auto 10px auto;"></div>
           <input type="file" id="avatarFileInput" accept="image/*" class="hidden">
-          <div class="row wrap" style="justify-content:center;gap:8px;margin-bottom:10px;">
-            <button class="btn btn-sm btn-outline" id="changeAvatarBtn">Bild ändern</button>
-            <button class="btn btn-sm btn-ghost" id="removeAvatarBtn">Entfernen</button>
-          </div>
-          <h3 id="profileName" style="margin:6px 0 0 0;"></h3>
-          <p class="muted" id="profileUsername" style="margin:2px 0;"></p>
-          <p class="pill" id="profileUid" style="margin:6px auto;"></p>
+          <div class="row wrap" style="justify-content:center;gap:8px;margin-bottom:10px;"><button class="btn btn-sm btn-outline" id="changeAvatarBtn">Bild ändern</button><button class="btn btn-sm btn-ghost" id="removeAvatarBtn">Entfernen</button></div>
+          <h3 id="profileName" style="margin:6px 0 0 0;"></h3><p class="muted" id="profileUsername" style="margin:2px 0;"></p><p class="pill" id="profileUid" style="margin:6px auto;"></p>
         </div>
-        <div class="card">
-          <div id="qrCanvasWrap"></div>
-          <button class="btn btn-sm btn-outline" style="width:100%;margin-top:10px;" id="openQrFullBtn">Vollbild anzeigen</button>
-        </div>
+        <div class="card"><div id="qrCanvasWrap"></div><button class="btn btn-sm btn-outline" style="width:100%;margin-top:10px;" id="openQrFullBtn">Vollbild anzeigen</button></div>
       </div>
       <div class="card" style="margin-top:14px;">
         <div class="field"><label>Vorname</label><input type="text" id="editFirst"></div>
@@ -418,13 +360,33 @@
   <div class="bn-item" data-view="tasks"><span class="ic">✅</span>Aufgaben</div>
   <div class="bn-item" data-view="todo"><span class="ic">🍪</span>To-Do</div>
   <div class="bn-item" data-view="chat"><span class="ic">💬</span>Chat</div>
-  <div class="bn-item" data-view="friends"><span class="ic">💌</span>Freunde</div>
+  <div class="bn-item more-btn" id="moreNavBtn"><span class="ic">⋯</span>Mehr</div>
+</div>
+
+<div id="moreMenuSheet">
+  <div class="sheet-backdrop" id="moreSheetBackdrop"></div>
+  <div class="sheet">
+    <strong style="font-size:.85rem;">Mehr</strong>
+    <div class="sheet-grid">
+      <div class="sheet-item" data-view="timetable"><span class="ic">🗓️</span>Plan</div>
+      <div class="sheet-item" data-view="calendar"><span class="ic">📅</span>Kalender</div>
+      <div class="sheet-item" data-view="notes"><span class="ic">📓</span>Notizen</div>
+      <div class="sheet-item" data-view="learn"><span class="ic">🧠</span>Lernen</div>
+      <div class="sheet-item" data-view="materials"><span class="ic">🗂️</span>Material</div>
+      <div class="sheet-item" data-view="friends"><span class="ic">💌</span>Freunde</div>
+      <div class="sheet-item" data-view="airsignal"><span class="ic">☁️</span>AirSignal</div>
+      <div class="sheet-item" data-view="security"><span class="ic">🔒</span>Sicherheit</div>
+      <div class="sheet-item" data-view="settings"><span class="ic">🎨</span>Einstellungen</div>
+      <div class="sheet-item" data-view="profile"><span class="ic">🙋</span>Profil</div>
+    </div>
+  </div>
 </div>
 
 <div id="modalRoot"></div>
 
 <script src="app.js"></script>
 <script src="notes.js"></script>
+<script src="flashcards.js"></script>
 <script src="realtime.js"></script>
 </body>
 </html>
