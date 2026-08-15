@@ -1,31 +1,48 @@
 /* ==========================================================================
-   Schoolify — flashcards.js
+   Schoolify — flashcards.js (v3, vollständig, Bugfix)
    Lernplan: Stapel (Decks) → Karteikarten → Lernmodus (Umdrehen).
-   Gleiche 3-Ebenen-Logik wie Notizen, aber im echten Karteikarten-Design.
    ========================================================================== */
 
 const DECK_COLORS = [
-  { key: 'lavender', css: 'linear-gradient(135deg, var(--lavender), var(--lavender-2))' },
   { key: 'mint', css: 'linear-gradient(135deg, var(--mint), var(--mint-2))' },
   { key: 'sky', css: 'linear-gradient(135deg, var(--sky), var(--sky-2))' },
+  { key: 'lavender', css: 'linear-gradient(135deg, var(--lavender), var(--lavender-2))' },
   { key: 'butter', css: 'linear-gradient(135deg, var(--butter), var(--butter-2))' },
   { key: 'peach', css: 'linear-gradient(135deg, var(--peach), var(--peach-2))' },
   { key: 'blush', css: 'linear-gradient(135deg, var(--blush), var(--blush-2))' },
 ];
 function deckCss(k) { return (DECK_COLORS.find(c => c.key === k) || DECK_COLORS[0]).css; }
 
-let learnView = 'decks'; // 'decks' | 'cards' | 'study'
+let learnView = 'decks';
 let activeDeckId = null;
 let studyIndex = 0;
 let studyOrder = [];
 
 RENDERERS.learn = function () { learnView = 'decks'; activeDeckId = null; renderLearnView(); };
 
+function renderLearnHead() {
+  const headActions = document.getElementById('learnHeadActions');
+  if (!headActions) return;
+  if (learnView === 'decks') {
+    headActions.innerHTML = `<button class="btn btn-sm" id="addDeckBtn">+ Stapel</button>`;
+    document.getElementById('addDeckBtn').addEventListener('click', openDeckCreateModal);
+  } else if (learnView === 'cards') {
+    const cards = AS.currentData.flashcards.filter(c => c.deckId === activeDeckId);
+    headActions.innerHTML = `<button class="btn btn-sm btn-outline" id="backToDecksBtn">← Stapel</button>${cards.length ? '<button class="btn btn-sm" id="studyDeckBtn">▶ Lernen</button>' : ''}`;
+    document.getElementById('backToDecksBtn').addEventListener('click', () => { learnView = 'decks'; renderLearnView(); });
+    const studyBtn = document.getElementById('studyDeckBtn');
+    if (studyBtn) studyBtn.addEventListener('click', () => { studyOrder = cards.map(c => c.id); studyIndex = 0; learnView = 'study'; renderLearnView(); });
+  } else if (learnView === 'study') {
+    headActions.innerHTML = `<button class="btn btn-sm btn-outline" id="backToCardsBtn">← Karten</button>`;
+    document.getElementById('backToCardsBtn').addEventListener('click', () => { learnView = 'cards'; renderLearnView(); });
+  }
+}
+
 function renderLearnView() {
   document.getElementById('learnDecksLayer').classList.toggle('hidden', learnView !== 'decks');
   document.getElementById('learnCardsLayer').classList.toggle('hidden', learnView !== 'cards');
   document.getElementById('learnStudyLayer').classList.toggle('hidden', learnView !== 'study');
-  document.getElementById('addDeckBtn').classList.toggle('hidden', learnView !== 'decks');
+  renderLearnHead();
 
   const crumbBox = document.getElementById('learnBreadcrumbs');
   const titleEl = document.getElementById('learnTitle');
@@ -52,11 +69,7 @@ function renderDeckGrid() {
   if (!decks.length) { grid.innerHTML = `<div class="empty" style="grid-column:1/-1;"><div class="em-ic">🧠</div>Noch keine Lernstapel — leg deinen ersten an!</div>`; return; }
   grid.innerHTML = decks.map(d => {
     const count = AS.currentData.flashcards.filter(c => c.deckId === d.id).length;
-    return `<div class="deck-tile" data-deck="${d.id}" style="background:${deckCss(d.color)};">
-      <span class="tile-del" data-deldeck="${d.id}">✕</span>
-      <strong>${escapeHtml(d.name)}</strong>
-      <span class="tiny">${count} Karte${count === 1 ? '' : 'n'}</span>
-    </div>`;
+    return `<div class="deck-tile" data-deck="${d.id}" style="background:${deckCss(d.color)};"><span class="tile-del" data-deldeck="${d.id}">✕</span><strong>${escapeHtml(d.name)}</strong><span class="tiny">${count} Karte${count === 1 ? '' : 'n'}</span></div>`;
   }).join('');
   grid.querySelectorAll('[data-deck]').forEach(el => el.addEventListener('click', (e) => { if (e.target.dataset.deldeck) return; activeDeckId = el.dataset.deck; learnView = 'cards'; renderLearnView(); }));
   grid.querySelectorAll('[data-deldeck]').forEach(el => el.addEventListener('click', (e) => {
@@ -68,7 +81,7 @@ function renderDeckGrid() {
     });
   }));
 }
-document.getElementById('addDeckBtn').addEventListener('click', () => {
+function openDeckCreateModal() {
   let chosenColor = DECK_COLORS[0].key;
   AS.modal(`<h3>Neuer Lernstapel 🧠</h3>
     <div class="field"><label>Name</label><input type="text" id="dName" placeholder="z. B. Englisch Vokabeln" maxlength="26"></div>
@@ -83,7 +96,7 @@ document.getElementById('addDeckBtn').addEventListener('click', () => {
       persist(); AS.closeModal(); renderLearnView(); AS.toast('Stapel erstellt ✦');
     };
   });
-});
+}
 
 function renderCardGrid() {
   const grid = document.getElementById('cardGrid');
@@ -91,15 +104,8 @@ function renderCardGrid() {
   let html = cards.map(c => `<div class="card-tile"><span class="tile-del" data-delcard="${c.id}">✕</span><strong style="font-size:.82rem;display:block;margin-bottom:4px;">${escapeHtml(c.front)}</strong><div class="tiny">${escapeHtml(c.back)}</div></div>`).join('');
   html += `<div class="card-tile" id="addCardTile" style="display:flex;align-items:center;justify-content:center;cursor:pointer;border:2px dashed var(--border);color:var(--ink-faint);min-height:80px;">+ Neue Karte</div>`;
   grid.innerHTML = html;
-  grid.querySelectorAll('[data-delcard]').forEach(el => el.addEventListener('click', () => { AS.currentData.flashcards = AS.currentData.flashcards.filter(c => c.id !== el.dataset.delcard); persist(); renderCardGrid(); }));
+  grid.querySelectorAll('[data-delcard]').forEach(el => el.addEventListener('click', () => { AS.currentData.flashcards = AS.currentData.flashcards.filter(c => c.id !== el.dataset.delcard); persist(); renderLearnView(); }));
   document.getElementById('addCardTile').addEventListener('click', openCardModal);
-
-  // Lernen-Button in den Head-Actions, wenn Karten vorhanden
-  const headActions = document.getElementById('learnHeadActions');
-  headActions.innerHTML = `<button class="btn btn-sm btn-outline" id="backToDecksBtn">← Stapel</button>${cards.length ? '<button class="btn btn-sm" id="studyDeckBtn">▶ Lernen</button>' : ''}`;
-  document.getElementById('backToDecksBtn').addEventListener('click', () => { learnView = 'decks'; renderLearnView(); });
-  const studyBtn = document.getElementById('studyDeckBtn');
-  if (studyBtn) studyBtn.addEventListener('click', () => { studyOrder = cards.map(c => c.id); studyIndex = 0; learnView = 'study'; renderLearnView(); });
 }
 function openCardModal() {
   AS.modal(`<h3>Neue Karteikarte ✎</h3>
@@ -111,15 +117,12 @@ function openCardModal() {
       const front = root.querySelector('#cFront').value.trim(); const back = root.querySelector('#cBack').value.trim();
       if (!front || !back) { AS.toast('Bitte Vorder- und Rückseite ausfüllen.'); return; }
       AS.currentData.flashcards.push({ id: 'c_' + Date.now(), deckId: activeDeckId, front, back });
-      persist(); AS.closeModal(); renderCardGrid();
+      persist(); AS.closeModal(); renderLearnView();
     };
   });
 }
 
 function renderStudyMode() {
-  document.getElementById('learnHeadActions').innerHTML = `<button class="btn btn-sm btn-outline" id="backToCardsBtn">← Karten</button>`;
-  document.getElementById('backToCardsBtn').addEventListener('click', () => { learnView = 'cards'; renderLearnView(); });
-
   const el = document.getElementById('flashcardEl');
   el.classList.remove('flipped');
   const card = AS.currentData.flashcards.find(c => c.id === studyOrder[studyIndex]);
@@ -128,7 +131,6 @@ function renderStudyMode() {
   document.getElementById('studyBack').textContent = card.back;
   document.getElementById('studyProgress').textContent = `Karte ${studyIndex + 1} von ${studyOrder.length}`;
   el.onclick = () => el.classList.toggle('flipped');
-
   document.getElementById('studyPrevBtn').onclick = () => { studyIndex = (studyIndex - 1 + studyOrder.length) % studyOrder.length; renderStudyMode(); };
   document.getElementById('studyNextBtn').onclick = () => { studyIndex = (studyIndex + 1) % studyOrder.length; renderStudyMode(); };
 }
