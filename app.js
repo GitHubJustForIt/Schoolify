@@ -1,13 +1,19 @@
 /* ==========================================================================
-   Schoolify — app.js (v3, vollständig)
+   Schoolify — app.js (v4, vollständig)
+   Kompakte Cloud-Speicherung: Bilder/Dateien als eigene, einmalig
+   hochgeladene "Blobs" statt eingebettet im Hauptdatensatz. Gebündelte
+   (debounced) Cloud-Schreibvorgänge. Echtes geräteübergreifendes Login
+   direkt vom Server, kein lokales Fallback nötig. Kein MB-Limit —
+   stattdessen automatische, unsichtbare Kompression.
+   Kompletter Neustart der Datenstruktur (keine Altdaten-Migration).
    ========================================================================== */
 
 const AS = (window.AS = {});
 
 /* ---------------------------------------------------------------------- */
-/* Cloud-Speicher (Personal Data Box) — nur aktiv nach Zustimmung          */
+/* Cloud-Speicher (Personal Data Box)                                     */
 /* ---------------------------------------------------------------------- */
-const CLOUD_BASE = "https://personal-data-box.lovable.app/api/public/v1/e823f868-9e3b-4d75-9b6f-762a84ac40a2";
+const CLOUD_BASE = "https://personal-data-box.lovable.app/api/public/v1/b179d2ca-a983-4ef7-869a-32466eaa6db1";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
@@ -24,33 +30,94 @@ async function cloudGet(key) {
 }
 async function cloudDelete(key) { try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {} }
 
+/* Gebündelte (debounced) Cloud-Uploads: verhindert, dass z.B. jeder
+   Tastendruck beim Tippen sofort einen eigenen Upload auslöst. */
+const _cloudDebounceTimers = {};
+function cloudPutDebounced(key, value, delay = 900) {
+  if (_cloudDebounceTimers[key]) clearTimeout(_cloudDebounceTimers[key]);
+  _cloudDebounceTimers[key] = setTimeout(() => { cloudPut(key, value); delete _cloudDebounceTimers[key]; }, delay);
+}
+function flushPendingCloudWrites() {
+  if (AS.currentUser && AS.currentData && AS.cloudEnabled()) cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData);
+  Object.keys(_cloudDebounceTimers).forEach(k => clearTimeout(_cloudDebounceTimers[k]));
+  Object.keys(_cloudDebounceTimers).forEach(k => delete _cloudDebounceTimers[k]);
+}
+window.flushPendingCloudWrites = flushPendingCloudWrites;
+window.addEventListener('beforeunload', flushPendingCloudWrites);
+
 AS.storage = {
   get(key, fallback) { try { const raw = localStorage.getItem(key); return raw === null ? fallback : JSON.parse(raw); } catch (e) { return fallback; } },
-  set(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); if (AS.cloudEnabled()) cloudPut(key, value); return true; }
-    catch (e) { AS.toast('Speicher ist voll — bitte alte Dateien/Notizen löschen.'); return false; }
+  set(key, value, opts) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      if (AS.cloudEnabled()) { if (opts && opts.immediate) cloudPut(key, value); else cloudPutDebounced(key, value); }
+      return true;
+    } catch (e) { AS.toast('Speicher ist voll — bitte alte Dateien/Notizen löschen.'); return false; }
   },
+  setLocalOnly(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; } },
   remove(key) { localStorage.removeItem(key); if (AS.cloudEnabled()) cloudDelete(key); }
 };
 
-async function hydrateFromCloudIfEnabled() {
-  if (!AS.cloudEnabled()) return;
-  const session = AS.getSession();
-  const keysToTry = [KEY_USERS, KEY_SESSION];
-  if (session.currentUserId) keysToTry.push(dataKey(session.currentUserId));
-  for (const k of keysToTry) { const remote = await cloudGet(k); if (remote !== undefined) localStorage.setItem(k, JSON.stringify(remote)); }
-}
-/* Nachträgliches Hochladen: falls jemand Cloud erst später aktiviert,
-   werden alle bereits vorhandenen lokalen Daten mit hochgeladen. */
-async function pushAllLocalToCloud() {
-  const users = AS.getUsers(); cloudPut(KEY_USERS, users);
-  const session = AS.getSession(); cloudPut(KEY_SESSION, session);
-  session.accounts.forEach(uid => { const d = AS.storage.get(dataKey(uid), null); if (d) cloudPut(dataKey(uid), d); });
-}
+/* ---------------------------------------------------------------------- */
+/* Blob-Speicher — Bilder/Dateien liegen NICHT im Hauptdatensatz, sondern  */
+/* unter eigenen, kleinen Schlüsseln. So bleibt jeder normale Speicher-    */
+/* vorgang (Häkchen setzen, Text tippen usw.) winzig klein.                */
+/* ---------------------------------------------------------------------- */
+const BLOB_CACHE_PREFIX = 'as_blob_';
+function blobKey(id) { return 'blob_' + id; }
 
+AS.saveBlob = async function (id, dataUrl) {
+  try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) { /* lokaler Cache voll — Cloud übernimmt trotzdem */ }
+  if (AS.cloudEnabled()) await cloudPut(blobKey(id), dataUrl);
+};
+AS.getBlobCached = function (id) { try { return localStorage.getItem(BLOB_CACHE_PREFIX + id); } catch (e) { return null; } };
+AS.getBlob = async function (id) {
+  const cached = AS.getBlobCached(id);
+  if (cached !== null) return cached;
+  if (AS.cloudEnabled()) {
+    const remote = await cloudGet(blobKey(id));
+    if (remote !== undefined && remote !== null) { try { localStorage.setItem(BLOB_CACHE_PREFIX + id, remote); } catch (e) {} return remote; }
+  }
+  return null;
+};
+AS.deleteBlob = function (id) { try { localStorage.removeItem(BLOB_CACHE_PREFIX + id); } catch (e) {} if (AS.cloudEnabled()) cloudDelete(blobKey(id)); };
+function asyncImg(blobId, onReady) {
+  if (!blobId) return;
+  const cached = AS.getBlobCached(blobId);
+  if (cached) { onReady(cached); return; }
+  AS.getBlob(blobId).then(data => { if (data) onReady(data); });
+}
+window.asyncImg = asyncImg;
+
+/* ---------------------------------------------------------------------- */
+/* Nutzer-Verzeichnis — global & geteilt. Beim Schreiben IMMER zuerst mit  */
+/* dem Server abgleichen, damit Accounts von anderen Geräten nie          */
+/* überschrieben werden.                                                  */
+/* ---------------------------------------------------------------------- */
 const KEY_USERS = 'as_users';
-const KEY_SESSION = 'as_session';
+const KEY_SESSION = 'as_session'; // rein lokal, gerätespezifisch — wird NIE zur Cloud synchronisiert
 const dataKey = (uid) => `as_data_${uid}`;
+
+AS.getUsers = () => AS.storage.get(KEY_USERS, {});
+AS.saveUsers = (u) => AS.storage.set(KEY_USERS, u, { immediate: true });
+AS.saveUsersLocalOnly = (u) => AS.storage.setLocalOnly(KEY_USERS, u);
+AS.getSession = () => AS.storage.get(KEY_SESSION, { currentUserId: null, accounts: [] });
+AS.saveSession = (s) => AS.storage.setLocalOnly(KEY_SESSION, s);
+
+async function upsertUserCloudSafe(userObj) {
+  let users = AS.getUsers();
+  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
+  users[userObj.uniqueId] = userObj;
+  AS.saveUsers(users);
+  return users;
+}
+window.upsertUserCloudSafe = upsertUserCloudSafe;
+async function deleteUserCloudSafe(uid) {
+  let users = AS.getUsers();
+  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
+  delete users[uid];
+  AS.saveUsers(users);
+}
 
 function defaultData() {
   return {
@@ -58,8 +125,7 @@ function defaultData() {
     noteFolders: [], notePages: [],
     tasks: [], timetable: [], materials: [], conversations: {}, calendarEvents: [],
     todoTemplate: { 0: [], 1: [], 2: [], 3: [], 4: [] },
-    todoLog: {}, todoStreak: 0, todoBestStreak: 0,
-    todoMode: 'checklist', // 'checklist' (alle sichtbar) | 'sequential' (nacheinander)
+    todoLog: {}, todoStreak: 0, todoBestStreak: 0, todoMode: 'checklist',
     decks: [], flashcards: [],
     devices: [{ id: 'device-' + Math.random().toString(36).slice(2, 8), label: navigator.userAgent.slice(0, 40), lastActive: Date.now() }],
     security: {
@@ -68,17 +134,9 @@ function defaultData() {
       onlineStatusVisible: true, onlineStatusFriendsOnly: true, activityStatus: true, readReceipts: true,
       airsignalActive: true, airsignalVisibility: 'friends', airsignalReceiveFrom: 'friends', airsignalAutoAccept: false,
     },
-    settings: {
-      accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false,
-      notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true
-    }
+    settings: { accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false, notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true }
   };
 }
-
-AS.getUsers = () => AS.storage.get(KEY_USERS, {});
-AS.saveUsers = (u) => AS.storage.set(KEY_USERS, u);
-AS.getSession = () => AS.storage.get(KEY_SESSION, { currentUserId: null, accounts: [] });
-AS.saveSession = (s) => AS.storage.set(KEY_SESSION, s);
 AS.getData = (uid) => {
   const d = AS.storage.get(dataKey(uid), defaultData());
   const def = defaultData();
@@ -90,7 +148,7 @@ AS.getData = (uid) => {
   if (!d.flashcards) d.flashcards = [];
   return d;
 };
-AS.saveData = (uid, d) => AS.storage.set(dataKey(uid), d);
+AS.saveData = (uid, d, opts) => AS.storage.set(dataKey(uid), d, opts);
 
 AS.currentUser = null;
 AS.currentData = null;
@@ -137,7 +195,7 @@ function confirmModal(title, msg, onYes) {
 window.confirmModal = confirmModal;
 
 /* ---------------------------------------------------------------------- */
-/* Bild-Kompression — hält Speicherverbrauch niedrig (KB statt MB)        */
+/* Bild-Kompression — kein Upload-Limit, aber automatisch platzsparend    */
 /* ---------------------------------------------------------------------- */
 function compressImage(file, maxDim, quality) {
   return new Promise((resolve, reject) => {
@@ -161,29 +219,36 @@ function compressImage(file, maxDim, quality) {
 window.compressImage = compressImage;
 function fileToDataUrl(file) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); }); }
 window.fileToDataUrl = fileToDataUrl;
-
 function limitsFor(kind) {
   const cloud = AS.cloudEnabled();
   const L = {
-    material:  { maxDim: cloud ? 1600 : 1100, quality: cloud ? 0.75 : 0.6, maxBytesRaw: cloud ? 6 * 1024 * 1024 : 2.5 * 1024 * 1024 },
-    chatFile:  { maxDim: cloud ? 1400 : 1000, quality: cloud ? 0.72 : 0.58, maxBytesRaw: cloud ? 5 * 1024 * 1024 : 2 * 1024 * 1024 },
-    noteImage: { maxDim: cloud ? 1200 : 900,  quality: cloud ? 0.7  : 0.55, maxBytesRaw: cloud ? 4 * 1024 * 1024 : 1.5 * 1024 * 1024 },
-    avatar:    { maxDim: 300, quality: 0.8, maxBytesRaw: 3 * 1024 * 1024 },
+    material:  { maxDim: cloud ? 1400 : 1000, quality: cloud ? 0.7 : 0.6 },
+    chatFile:  { maxDim: cloud ? 1200 : 900,  quality: cloud ? 0.68 : 0.58 },
+    noteImage: { maxDim: cloud ? 1100 : 850,  quality: cloud ? 0.65 : 0.55 },
+    avatar:    { maxDim: 260, quality: 0.75 },
   };
   return L[kind] || L.material;
 }
 window.limitsFor = limitsFor;
 
 /* ---------------------------------------------------------------------- */
-/* Avatars                                                                */
+/* Avatare — unterstützt sowohl Blob-Referenz (neu) als auch direkt       */
+/* mitgesendete Bilddaten von Freunden (live per WebRTC, kein Speicher).  */
 /* ---------------------------------------------------------------------- */
 const AVATAR_GRADIENTS = [['#B7E4D4', '#C3DFF7'], ['#F6D3B8', '#F8E39B'], ['#D9CBF2', '#C3DFF7'], ['#F6CBD6', '#B7E4D4'], ['#F8E39B', '#F6D3B8']];
 function avatarGradientFor(uid) { let h = 0; for (const c of uid) h = (h * 31 + c.charCodeAt(0)) >>> 0; return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length]; }
 function initials(user) { return ((user.firstName || '?')[0] + (user.lastName || '?')[0]).toUpperCase(); }
 function renderAvatar(el, user) {
   if (!user) { el.style.background = 'var(--border)'; el.innerHTML = ''; return; }
-  if (user.avatar) { el.style.background = 'transparent'; el.innerHTML = `<img src="${user.avatar}" alt="">`; }
-  else { const [a, b] = avatarGradientFor(user.uniqueId || user.username || 'x'); el.style.background = `linear-gradient(135deg, ${a}, ${b})`; el.innerHTML = initials(user); }
+  if (user.avatar) { el.style.background = 'transparent'; el.innerHTML = `<img src="${user.avatar}" alt="">`; return; }
+  const [a, b] = avatarGradientFor(user.uniqueId || user.username || 'x');
+  el.style.background = `linear-gradient(135deg, ${a}, ${b})`;
+  el.innerHTML = initials(user);
+  if (user.avatarBlobId) {
+    const cached = AS.getBlobCached(user.avatarBlobId);
+    if (cached) { el.style.background = 'transparent'; el.innerHTML = `<img src="${cached}" alt="">`; return; }
+    AS.getBlob(user.avatarBlobId).then(data => { if (data && el.isConnected) { el.style.background = 'transparent'; el.innerHTML = `<img src="${data}" alt="">`; } });
+  }
 }
 window.renderAvatar = renderAvatar;
 
@@ -231,14 +296,21 @@ function initConsentFlow(next) {
   if (existing) { next(); return; }
   const banner = document.getElementById('cookieBanner');
   banner.classList.remove('hidden');
-  document.getElementById('cookieAcceptBtn').addEventListener('click', () => {
-    AS.setConsent('cloud'); banner.classList.add('hidden'); pushAllLocalToCloud(); AS.toast('Online-Speicherung aktiviert ✓'); next();
+  document.getElementById('cookieAcceptBtn').addEventListener('click', async () => {
+    AS.setConsent('cloud'); banner.classList.add('hidden');
+    // vorhandene lokale Daten (falls schon ein Account existiert) einmalig hochladen
+    const session = AS.getSession();
+    if (session.accounts.length) {
+      cloudPut(KEY_USERS, AS.getUsers());
+      session.accounts.forEach(uid => { const d = AS.storage.get(dataKey(uid), null); if (d) cloudPut(dataKey(uid), d); });
+    }
+    AS.toast('Online-Speicherung aktiviert ✓'); next();
   });
   document.getElementById('cookieDeclineBtn').addEventListener('click', () => { AS.setConsent('local'); banner.classList.add('hidden'); next(); });
 }
 
 /* ---------------------------------------------------------------------- */
-/* Auth — Login mit Name + E-Mail, "Namen vergessen"-Flow                 */
+/* Auth — Login mit Name + E-Mail, geräteübergreifend über den Server     */
 /* ---------------------------------------------------------------------- */
 document.querySelectorAll('[data-authtab]').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -251,20 +323,38 @@ document.querySelectorAll('[data-authtab]').forEach(tab => {
     document.getElementById('authTabsBar').classList.remove('hidden');
   });
 });
-
 function normName(s) { return (s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
 
-document.getElementById('loginBtn').addEventListener('click', () => {
+document.getElementById('loginBtn').addEventListener('click', async () => {
   const name = document.getElementById('loginName').value.trim();
   const email = document.getElementById('loginEmail').value.trim().toLowerCase();
   if (!name || !email) { AS.toast('Bitte Name und E-Mail eingeben.'); return; }
   const btn = document.getElementById('loginBtn'); btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Anmelden…';
-  setTimeout(() => {
-    const users = AS.getUsers();
-    const found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
-    if (!found) { AS.toast('Name und E-Mail passen nicht zu einem Account auf diesem Gerät.'); btn.disabled = false; btn.textContent = 'Anmelden'; return; }
-    loginAs(found.uniqueId);
-  }, 350);
+
+  let users = AS.getUsers();
+  let found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
+
+  // Neues Gerät / lokal nicht bekannt: direkt vom Server nachsehen
+  if (!found && AS.cloudEnabled()) {
+    const remoteUsers = await cloudGet(KEY_USERS);
+    if (remoteUsers) {
+      users = { ...remoteUsers, ...users };
+      AS.saveUsersLocalOnly(users);
+      found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
+    }
+  }
+
+  if (!found) {
+    AS.toast(AS.cloudEnabled() ? 'Kein Account mit diesen Daten gefunden.' : 'Kein Account gefunden. Aktiviere in den Einstellungen die Online-Speicherung, um dich auf einem neuen Gerät anzumelden.');
+    btn.disabled = false; btn.textContent = 'Anmelden'; return;
+  }
+
+  // Aktuelle Account-Daten direkt vom Server laden (nicht nur lokal)
+  if (AS.cloudEnabled()) {
+    const remoteData = await cloudGet(dataKey(found.uniqueId));
+    if (remoteData) AS.storage.setLocalOnly(dataKey(found.uniqueId), remoteData);
+  }
+  loginAs(found.uniqueId);
 });
 
 /* Namen vergessen */
@@ -277,24 +367,29 @@ document.getElementById('forgotNameLink').addEventListener('click', () => {
   document.getElementById('forgotStep2').classList.add('hidden');
 });
 let forgotUid = null;
-document.getElementById('forgotFindBtn').addEventListener('click', () => {
+document.getElementById('forgotFindBtn').addEventListener('click', async () => {
   const email = document.getElementById('forgotEmail').value.trim().toLowerCase();
   if (!email) { AS.toast('Bitte E-Mail eingeben.'); return; }
-  const users = AS.getUsers();
-  const found = Object.values(users).find(u => u.email.toLowerCase() === email);
-  if (!found) { AS.toast('Keine E-Mail mit diesem Account auf diesem Gerät gefunden.'); return; }
+  let users = AS.getUsers();
+  let found = Object.values(users).find(u => u.email.toLowerCase() === email);
+  if (!found && AS.cloudEnabled()) {
+    const remoteUsers = await cloudGet(KEY_USERS);
+    if (remoteUsers) { users = { ...remoteUsers, ...users }; AS.saveUsersLocalOnly(users); found = Object.values(users).find(u => u.email.toLowerCase() === email); }
+  }
+  if (!found) { AS.toast('Keine E-Mail mit diesem Account gefunden.'); return; }
   forgotUid = found.uniqueId;
   document.getElementById('forgotStep1').classList.add('hidden');
   document.getElementById('forgotStep2').classList.remove('hidden');
 });
-document.getElementById('forgotSaveBtn').addEventListener('click', () => {
+document.getElementById('forgotSaveBtn').addEventListener('click', async () => {
   const n1 = document.getElementById('forgotNewName1').value.trim();
   const n2 = document.getElementById('forgotNewName2').value.trim();
   if (!n1 || !n2) { AS.toast('Bitte beide Felder ausfüllen.'); return; }
   if (normName(n1) !== normName(n2)) { AS.toast('Die beiden Namen stimmen nicht überein.'); return; }
   const parts = n1.split(' ');
   const first = parts[0]; const last = parts.slice(1).join(' ') || '';
-  const users = AS.getUsers();
+  let users = AS.getUsers();
+  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
   const u = users[forgotUid];
   if (!u) { AS.toast('Etwas ist schiefgelaufen — bitte erneut versuchen.'); return; }
   u.firstName = first; u.lastName = last;
@@ -308,14 +403,10 @@ document.getElementById('forgotSaveBtn').addEventListener('click', () => {
   document.querySelector('[data-authtab="login"]').classList.add('active');
   document.querySelector('[data-authtab="register"]').classList.remove('active');
 });
-document.getElementById('forgotBackToLogin1').addEventListener('click', () => {
-  document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden');
-});
-document.getElementById('forgotBackToLogin2').addEventListener('click', () => {
-  document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden');
-});
+document.getElementById('forgotBackToLogin1').addEventListener('click', () => { document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden'); });
+document.getElementById('forgotBackToLogin2').addEventListener('click', () => { document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden'); });
 
-/* Registrierung — mehrstufig; Namen dürfen mehrfach vorkommen, E-Mail muss einzigartig sein */
+/* Registrierung */
 function goToRegStep(n) {
   [1, 2, 3].forEach(i => document.getElementById('regStep' + i).classList.toggle('hidden', i !== n));
   document.querySelectorAll('#regStepDots span').forEach(d => { const step = +d.dataset.step; d.classList.toggle('active', step === n); d.classList.toggle('done', step < n); });
@@ -326,33 +417,36 @@ document.getElementById('regNext1').addEventListener('click', () => {
   goToRegStep(2);
 });
 document.getElementById('regBack2').addEventListener('click', () => goToRegStep(1));
-document.getElementById('regNext2').addEventListener('click', () => {
+document.getElementById('regNext2').addEventListener('click', async () => {
   const email = document.getElementById('regEmail').value.trim().toLowerCase();
   if (!email) { AS.toast('Bitte eine E-Mail angeben.'); return; }
   if (!email.includes('@') || !email.includes('.')) { AS.toast('Das sieht nicht nach einer gültigen E-Mail aus.'); return; }
-  const users = AS.getUsers();
+  let users = AS.getUsers();
+  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) { users = { ...remote, ...users }; AS.saveUsersLocalOnly(users); } }
   if (Object.values(users).some(u => u.email.toLowerCase() === email)) { AS.toast('Diese E-Mail-Adresse wird bereits verwendet.'); return; }
   document.getElementById('regReviewName').textContent = `${document.getElementById('regFirst').value.trim()} ${document.getElementById('regLast').value.trim()}`;
   document.getElementById('regReviewMail').textContent = email;
   goToRegStep(3);
 });
 document.getElementById('regBack3').addEventListener('click', () => goToRegStep(2));
-document.getElementById('registerBtn').addEventListener('click', () => {
+document.getElementById('registerBtn').addEventListener('click', async () => {
   const first = document.getElementById('regFirst').value.trim(), last = document.getElementById('regLast').value.trim();
   const email = document.getElementById('regEmail').value.trim().toLowerCase();
   const username = document.getElementById('regUsername').value.trim() || (first + last.charAt(0)).toLowerCase().replace(/\s+/g, '') + Math.floor(Math.random() * 900 + 100);
   if (!first || !last || !email) { AS.toast('Bitte fülle alle Felder aus.'); return; }
   const btn = document.getElementById('registerBtn'); btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Wird erstellt…';
-  setTimeout(() => {
-    const users = AS.getUsers();
-    if (Object.values(users).some(u => u.email.toLowerCase() === email)) { AS.toast('Diese E-Mail-Adresse wird bereits verwendet.'); btn.disabled = false; btn.textContent = 'Account erstellen ✦'; return; }
-    let finalUsername = username, n = 1;
-    while (Object.values(users).some(u => u.username.toLowerCase() === finalUsername.toLowerCase())) { finalUsername = username + n; n++; }
-    const uniqueId = generateUniqueId();
-    const user = { uniqueId, firstName: first, lastName: last, username: finalUsername, email, bio: '', avatar: null, createdAt: Date.now() };
-    users[uniqueId] = user; AS.saveUsers(users); AS.saveData(uniqueId, defaultData());
-    loginAs(uniqueId); AS.toast(`Willkommen, ${first}! Schoolify ist komplett kostenlos ✦`);
-  }, 500);
+  let users = AS.getUsers();
+  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
+  if (Object.values(users).some(u => u.email.toLowerCase() === email)) { AS.toast('Diese E-Mail-Adresse wird bereits verwendet.'); btn.disabled = false; btn.textContent = 'Account erstellen ✦'; return; }
+  let finalUsername = username, n = 1;
+  while (Object.values(users).some(u => u.username.toLowerCase() === finalUsername.toLowerCase())) { finalUsername = username + n; n++; }
+  const uniqueId = generateUniqueId();
+  const user = { uniqueId, firstName: first, lastName: last, username: finalUsername, email, bio: '', avatar: null, avatarBlobId: null, createdAt: Date.now() };
+  users[uniqueId] = user;
+  AS.saveUsers(users);
+  AS.saveData(uniqueId, defaultData(), { immediate: true });
+  loginAs(uniqueId);
+  AS.toast(`Willkommen, ${first}! Schoolify ist komplett kostenlos ✦`);
 });
 
 function loginAs(uniqueId) {
@@ -375,14 +469,14 @@ function renderLocalAccountsQuickList() {
   box.querySelectorAll('.av-mini').forEach(el => renderAvatar(el, users[el.dataset.uid]));
   box.querySelectorAll('[data-quicklogin]').forEach(el => el.addEventListener('click', () => loginAs(el.dataset.quicklogin)));
 }
-function logout() { const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); if (window.ASRealtime) window.ASRealtime.disconnect(); location.reload(); }
+function logout() { flushPendingCloudWrites(); const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); if (window.ASRealtime) window.ASRealtime.disconnect(); location.reload(); }
 document.getElementById('logoutBtn').addEventListener('click', logout);
-document.getElementById('logoutAllBtn').addEventListener('click', () => { AS.saveSession({ currentUserId: null, accounts: [] }); AS.toast('Von allen Geräten abgemeldet (lokal).'); setTimeout(() => location.reload(), 700); });
-document.getElementById('addAccountBtn').addEventListener('click', () => { const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); location.reload(); });
+document.getElementById('logoutAllBtn').addEventListener('click', () => { flushPendingCloudWrites(); AS.saveSession({ currentUserId: null, accounts: [] }); AS.toast('Von allen Geräten abgemeldet (lokal).'); setTimeout(() => location.reload(), 700); });
+document.getElementById('addAccountBtn').addEventListener('click', () => { flushPendingCloudWrites(); const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); location.reload(); });
 document.getElementById('deleteAccountBtn').addEventListener('click', () => {
-  confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan und deine Freundesliste werden unwiderruflich gelöscht.', () => {
+  confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan und deine Freundesliste werden unwiderruflich gelöscht.', async () => {
     const uid = AS.currentUser.uniqueId;
-    const users = AS.getUsers(); delete users[uid]; AS.saveUsers(users);
+    await deleteUserCloudSafe(uid);
     AS.storage.remove(dataKey(uid));
     const session = AS.getSession(); session.accounts = session.accounts.filter(a => a !== uid); session.currentUserId = null; AS.saveSession(session);
     AS.toast('Account gelöscht.'); setTimeout(() => location.reload(), 600);
@@ -394,11 +488,10 @@ document.getElementById('exportDataBtn').addEventListener('click', () => {
 });
 
 /* ---------------------------------------------------------------------- */
-/* Boot / Router — inkl. QR-Auto-Freundschaftsanfrage                     */
+/* Boot / Router                                                          */
 /* ---------------------------------------------------------------------- */
 function boot() {
   initConsentFlow(async () => {
-    await hydrateFromCloudIfEnabled();
     const session = AS.getSession(); const users = AS.getUsers();
     if (!session.currentUserId || !users[session.currentUserId]) {
       hideSplash();
@@ -415,11 +508,9 @@ function boot() {
     if (window.ASRealtime) window.ASRealtime.init(AS.currentUser.uniqueId);
     startTimetableClock();
     handleQrAutoFriend();
+    if (AS.currentUser.avatarBlobId) AS.getBlob(AS.currentUser.avatarBlobId); // Avatar-Cache vorwärmen
   });
 }
-
-/* Wenn die Seite über einen QR-Code-Link (?addfriend=UID) geöffnet wurde,
-   wird automatisch eine Freundschaftsanfrage an diese Person gesendet. */
 function handleQrAutoFriend() {
   const params = new URLSearchParams(location.search);
   const targetUid = params.get('addfriend');
@@ -433,10 +524,7 @@ function handleQrAutoFriend() {
   setTimeout(() => { if (window.ASRealtime) ASRealtime.sendReliable(targetUid, { type: 'friend_request', profile: publicProfile() }); }, 600);
 }
 
-const ACCENT_HEX = {
-  mint: ['#B7E4D4', '#E2F5EE'], sky: ['#C3DFF7', '#E7F2FC'], butter: ['#F8E39B', '#FCF3D6'],
-  peach: ['#F6D3B8', '#FCEEE2'], lavender: ['#D9CBF2', '#EFE7FA'], blush: ['#F6CBD6', '#FCE9EE']
-};
+const ACCENT_HEX = { mint: ['#B7E4D4', '#E2F5EE'], sky: ['#C3DFF7', '#E7F2FC'], butter: ['#F8E39B', '#FCF3D6'], peach: ['#F6D3B8', '#FCEEE2'], lavender: ['#D9CBF2', '#EFE7FA'], blush: ['#F6CBD6', '#FCE9EE'] };
 function applyTheme() {
   const s = AS.currentData.settings;
   document.documentElement.setAttribute('data-theme', s.darkMode ? 'dark' : 'light');
@@ -448,28 +536,19 @@ function applyTheme() {
 }
 function renderSidebarProfile() { document.getElementById('sidebarName').textContent = AS.currentUser.firstName; renderAvatar(document.getElementById('topbarAvatar'), AS.currentUser); }
 
-/* Nav-Gruppen ein-/ausklappen (Organisieren / Sozial) — weniger überwältigend */
-function initNavGroups() {
-  setupNavGroup('groupOrganisieren', 'groupOrganisierenBody', true);
-  setupNavGroup('groupSozial', 'groupSozialBody', true);
-}
+function initNavGroups() { setupNavGroup('groupOrganisieren', 'groupOrganisierenBody', true); setupNavGroup('groupSozial', 'groupSozialBody', true); }
 function setupNavGroup(headId, bodyId, defaultOpen) {
   const head = document.getElementById(headId), body = document.getElementById(bodyId);
   if (!head || !body) return;
   const key = 'as_navgroup_' + headId;
   const isOpen = localStorage.getItem(key) !== null ? localStorage.getItem(key) === '1' : defaultOpen;
   head.classList.toggle('open', isOpen); body.classList.toggle('open', isOpen);
-  head.onclick = () => {
-    const open = !body.classList.contains('open');
-    head.classList.toggle('open', open); body.classList.toggle('open', open);
-    localStorage.setItem(key, open ? '1' : '0');
-  };
+  head.onclick = () => { const open = !body.classList.contains('open'); head.classList.toggle('open', open); body.classList.toggle('open', open); localStorage.setItem(key, open ? '1' : '0'); };
 }
 
 const VIEWS = ['dashboard', 'timetable', 'tasks', 'todo', 'learn', 'calendar', 'notes', 'materials', 'friends', 'chat', 'airsignal', 'security', 'settings', 'profile'];
 const RENDERERS = {};
 window.RENDERERS = RENDERERS; window.VIEWS = VIEWS;
-
 function showView(name) {
   VIEWS.forEach(v => document.getElementById('view-' + v).classList.toggle('hidden', v !== name));
   document.querySelectorAll('.nav-item[data-view]').forEach(el => el.classList.toggle('active', el.dataset.view === name));
@@ -480,16 +559,12 @@ function showView(name) {
 }
 window.showView = showView;
 document.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
-
 function openMoreMenu() { document.getElementById('moreMenuSheet').classList.add('open'); }
 function closeMoreMenu() { document.getElementById('moreMenuSheet').classList.remove('open'); }
 document.getElementById('moreNavBtn').addEventListener('click', openMoreMenu);
 document.getElementById('moreSheetBackdrop').addEventListener('click', closeMoreMenu);
 document.querySelectorAll('#moreMenuSheet .sheet-item').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
 
-/* ---------------------------------------------------------------------- */
-/* Datums-Helfer                                                          */
-/* ---------------------------------------------------------------------- */
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function fmtDate(d) { if (!d) return ''; const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }); }
 function friendProfile(uid) { return (window.ASRealtime && window.ASRealtime.knownProfiles[uid]) || AS.getUsers()[uid] || null; }
@@ -527,10 +602,7 @@ RENDERERS.dashboard = function () {
   const online = window.ASRealtime ? window.ASRealtime.onlineFriends() : [];
   if (!AS.currentData.friends.length) box.innerHTML = `<span class="muted">Noch keine Freunde — füge welche über deine Unique ID hinzu.</span>`;
   else {
-    box.innerHTML = AS.currentData.friends.slice(0, 8).map(uid => {
-      const u = friendProfile(uid); const isOn = online.includes(uid);
-      return `<div style="text-align:center;position:relative;"><div class="avatar clickable friend-av" data-uid="${uid}" style="width:44px;height:44px;font-size:.8rem;margin:0 auto;position:relative;">${isOn ? '<span class="dot-online" style="right:0;bottom:0;"></span>' : ''}</div><div class="tiny" style="margin-top:3px;">${escapeHtml(u ? u.firstName : uid)}</div></div>`;
-    }).join('');
+    box.innerHTML = AS.currentData.friends.slice(0, 8).map(uid => { const u = friendProfile(uid); const isOn = online.includes(uid); return `<div style="text-align:center;position:relative;"><div class="avatar clickable friend-av" data-uid="${uid}" style="width:44px;height:44px;font-size:.8rem;margin:0 auto;position:relative;">${isOn ? '<span class="dot-online" style="right:0;bottom:0;"></span>' : ''}</div><div class="tiny" style="margin-top:3px;">${escapeHtml(u ? u.firstName : uid)}</div></div>`; }).join('');
     box.querySelectorAll('.friend-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
   }
   document.getElementById('dashAirsignal').textContent = AS.currentData.security.airsignalActive ? `AirSignal ist aktiv · ${(window.ASRealtime ? window.ASRealtime.onlineFriends().length : 0)} Freunde online` : 'AirSignal ist gerade deaktiviert.';
@@ -546,7 +618,6 @@ const DAYS_FULL = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag'];
 const LESSON_COLORS = ['sky', 'mint', 'lavender', 'butter', 'blush', 'peach'];
 let timetableClockInterval = null;
 function startTimetableClock() { if (timetableClockInterval) clearInterval(timetableClockInterval); timetableClockInterval = setInterval(() => { if (getCurrentViewSafe() === 'timetable') updateNowLine(); }, 30000); }
-
 RENDERERS.timetable = function () {
   const grid = document.getElementById('timetableGrid');
   const periods = 8; const byCell = {};
@@ -667,55 +738,41 @@ function openTaskModal(task) {
 }
 
 /* ======================================================================
-   TO-DO — College-Checkliste mit Häkchen-Animation
+   TO-DO
    ====================================================================== */
 let todoEditDay = todayDayIdx() >= 0 ? todayDayIdx() : 0;
 const MOTIVATE_MSGS = ['Weiter so! ✨', 'Du rockst das! 💪', 'Fast geschafft! 🌟', 'Klasse gemacht! 🎉', 'Ein Schritt näher am Cookie 🍪'];
-
 RENDERERS.todo = function () { renderTodoToday(); renderTodoTemplate(); };
-
 function computeStreak() {
   let streak = 0; let d = new Date();
   for (let i = 0; i < 365; i++) {
     const iso = d.toISOString().slice(0, 10);
     const log = AS.currentData.todoLog[iso];
     const isSchoolDay = d.getDay() !== 0 && d.getDay() !== 6;
-    if (isSchoolDay) {
-      if (log && log.started && log.items.length && log.items.every(it => it.current >= it.target)) streak++;
-      else if (iso === todayStr()) { /* heute läuft noch */ }
-      else break;
-    }
+    if (isSchoolDay) { if (log && log.started && log.items.length && log.items.every(it => it.current >= it.target)) streak++; else if (iso === todayStr()) { } else break; }
     d.setDate(d.getDate() - 1);
   }
   return streak;
 }
-
 function renderTodoToday() {
   const ts = todayStr();
   const box = document.getElementById('todoTodayBox');
   const dayIdx = todayDayIdx();
   if (dayIdx < 0) { box.innerHTML = `<div class="empty"><div class="em-ic">🌤️</div>Heute ist Wochenende — genieß die Pause!</div>`; return; }
-
   let log = AS.currentData.todoLog[ts];
   const template = AS.currentData.todoTemplate[dayIdx] || [];
   const streak = computeStreak();
   const streakHtml = streak > 0 ? `<div class="streak-badge">🔥 ${streak} Tage Streak</div>` : '';
-
   if (!log) {
     if (!template.length) { box.innerHTML = `${streakHtml}<div class="empty"><div class="em-ic">🍪</div>Für heute sind keine Ziele geplant. Leg unten welche fest!</div>`; return; }
     box.innerHTML = `${streakHtml}<div class="empty"><div class="em-ic">✨</div>Bereit für heute? <div class="motivate-msg">Kleine Schritte, große Wirkung!</div><button class="btn" id="startTodoBtn" style="margin-top:12px;">Start To-Do</button></div>`;
-    document.getElementById('startTodoBtn').addEventListener('click', () => {
-      AS.currentData.todoLog[ts] = { started: true, items: template.map(g => ({ id: g.id, label: g.label, target: g.target, current: 0 })), cookieBites: 0, rewardClaimed: false };
-      persist(); renderTodoToday(); if (getCurrentViewSafe() === 'dashboard') RENDERERS.dashboard();
-    });
+    document.getElementById('startTodoBtn').addEventListener('click', () => { AS.currentData.todoLog[ts] = { started: true, items: template.map(g => ({ id: g.id, label: g.label, target: g.target, current: 0 })), cookieBites: 0, rewardClaimed: false }; persist(); renderTodoToday(); if (getCurrentViewSafe() === 'dashboard') RENDERERS.dashboard(); });
     return;
   }
-
   const total = log.items.reduce((a, i) => a + i.target, 0);
   const cur = log.items.reduce((a, i) => a + Math.min(i.current, i.target), 0);
   const allDone = log.items.length > 0 && log.items.every(i => i.current >= i.target);
-  const mode = AS.currentData.todoMode; // 'checklist' | 'sequential'
-
+  const mode = AS.currentData.todoMode;
   let firstUnfinishedFound = false;
   let html = streakHtml;
   html += `<div class="row between" style="margin-bottom:6px;"><span class="tiny">Modus:</span><span class="pill" style="cursor:pointer;" id="todoModeToggle">${mode === 'sequential' ? '🔢 Nacheinander' : '📋 Alle sichtbar'}</span></div>`;
@@ -723,54 +780,25 @@ function renderTodoToday() {
     const done = i.current >= i.target;
     let locked = false;
     if (mode === 'sequential' && !done) { if (firstUnfinishedFound) locked = true; else firstUnfinishedFound = true; }
-    return `<div class="todo-check-row ${done ? 'done' : ''} ${locked ? 'locked' : ''}">
-      <div class="todo-checkbox ${done ? 'checked' : ''}" data-check="${i.id}">${done ? '✓' : ''}</div>
-      <div style="flex:1;"><div class="todo-check-label">${escapeHtml(i.label)}</div><div class="todo-check-target">${i.current}/${i.target}</div></div>
-      <span class="tiny" style="cursor:pointer;color:var(--danger);" data-delitem="${i.id}">🗑️</span>
-    </div>`;
+    return `<div class="todo-check-row ${done ? 'done' : ''} ${locked ? 'locked' : ''}"><div class="todo-checkbox ${done ? 'checked' : ''}" data-check="${i.id}">${done ? '✓' : ''}</div><div style="flex:1;"><div class="todo-check-label">${escapeHtml(i.label)}</div><div class="todo-check-target">${i.current}/${i.target}</div></div><span class="tiny" style="cursor:pointer;color:var(--danger);" data-delitem="${i.id}">🗑️</span></div>`;
   }).join('');
-
   if (!log.items.length) html += `<div class="empty"><div class="em-ic">🌿</div>Heute keine Ziele geplant — freier Tag!</div>`;
-  else {
-    html += `<div class="tiny" style="margin-top:8px;">Gesamt: ${cur}/${total} Punkte</div>`;
-    if (!allDone && cur > 0) html += `<div class="motivate-msg">${MOTIVATE_MSGS[Math.floor((cur / Math.max(total, 1)) * (MOTIVATE_MSGS.length - 1))]}</div>`;
-  }
+  else { html += `<div class="tiny" style="margin-top:8px;">Gesamt: ${cur}/${total} Punkte</div>`; if (!allDone && cur > 0) html += `<div class="motivate-msg">${MOTIVATE_MSGS[Math.floor((cur / Math.max(total, 1)) * (MOTIVATE_MSGS.length - 1))]}</div>`; }
   html += `<button class="btn btn-ghost btn-sm" id="addMoreGoalTodayBtn" style="margin-top:10px;">+ Weiteres Ziel für heute</button>`;
-  if (allDone) {
-    html += `<div class="cookie-card"><p style="font-family:var(--font-hand);font-size:1.3rem;font-weight:700;">Alles geschafft — gönn dir ein Cookie! 🎉</p><button class="cookie-btn" id="cookieBtn">${cookieEmoji(log.cookieBites)}</button><p class="tiny">${5 - log.cookieBites > 0 ? 'Klick, um am Cookie zu knabbern (' + (5 - log.cookieBites) + ' Bissen übrig)' : 'Aufgegessen — bis morgen! 🍪'}</p></div>`;
-  }
-
+  if (allDone) html += `<div class="cookie-card"><p style="font-family:var(--font-hand);font-size:1.3rem;font-weight:700;">Alles geschafft — gönn dir ein Cookie! 🎉</p><button class="cookie-btn" id="cookieBtn">${cookieEmoji(log.cookieBites)}</button><p class="tiny">${5 - log.cookieBites > 0 ? 'Klick, um am Cookie zu knabbern (' + (5 - log.cookieBites) + ' Bissen übrig)' : 'Aufgegessen — bis morgen! 🍪'}</p></div>`;
   box.innerHTML = html;
   document.getElementById('todoModeToggle').addEventListener('click', () => { AS.currentData.todoMode = mode === 'sequential' ? 'checklist' : 'sequential'; persist(); renderTodoToday(); });
-  box.querySelectorAll('[data-check]').forEach(el => el.addEventListener('click', () => {
-    if (el.closest('.locked')) return;
-    const item = log.items.find(i => i.id === el.dataset.check);
-    if (item.current < item.target) { item.current++; persist(); renderTodoToday(); if (getCurrentViewSafe() === 'dashboard') RENDERERS.dashboard(); }
-  }));
+  box.querySelectorAll('[data-check]').forEach(el => el.addEventListener('click', () => { if (el.closest('.locked')) return; const item = log.items.find(i => i.id === el.dataset.check); if (item.current < item.target) { item.current++; persist(); renderTodoToday(); if (getCurrentViewSafe() === 'dashboard') RENDERERS.dashboard(); } }));
   box.querySelectorAll('[data-delitem]').forEach(el => el.addEventListener('click', () => { log.items = log.items.filter(i => i.id !== el.dataset.delitem); persist(); renderTodoToday(); }));
-  const addMoreBtn = document.getElementById('addMoreGoalTodayBtn');
-  if (addMoreBtn) addMoreBtn.addEventListener('click', () => openQuickGoalModal(log));
+  const addMoreBtn = document.getElementById('addMoreGoalTodayBtn'); if (addMoreBtn) addMoreBtn.addEventListener('click', () => openQuickGoalModal(log));
   const cookieBtn = document.getElementById('cookieBtn');
-  if (cookieBtn) cookieBtn.addEventListener('click', () => {
-    if (log.cookieBites < 5) {
-      log.cookieBites++;
-      if (log.cookieBites >= 5 && !log.rewardClaimed) { log.rewardClaimed = true; AS.currentData.todoStreak = computeStreak(); if (AS.currentData.todoStreak > AS.currentData.todoBestStreak) AS.currentData.todoBestStreak = AS.currentData.todoStreak; }
-      persist(); renderTodoToday(); AS.toast(log.cookieBites >= 5 ? 'Mjam — Cookie aufgegessen! 🍪 Bis morgen!' : 'Knusper 🍪');
-    }
-  });
+  if (cookieBtn) cookieBtn.addEventListener('click', () => { if (log.cookieBites < 5) { log.cookieBites++; if (log.cookieBites >= 5 && !log.rewardClaimed) { log.rewardClaimed = true; AS.currentData.todoStreak = computeStreak(); if (AS.currentData.todoStreak > AS.currentData.todoBestStreak) AS.currentData.todoBestStreak = AS.currentData.todoStreak; } persist(); renderTodoToday(); AS.toast(log.cookieBites >= 5 ? 'Mjam — Cookie aufgegessen! 🍪 Bis morgen!' : 'Knusper 🍪'); } });
 }
 function cookieEmoji(bites) { const stages = ['🍪', '🍪', '🍪', '🍪', '🍪', '🫓']; return bites >= 5 ? '✨' : stages[bites]; }
 function openQuickGoalModal(log) {
-  AS.modal(`<h3>Weiteres Ziel für heute</h3>
-    <div class="field"><label>Was willst du noch erreichen?</label><input type="text" id="qgLabel" placeholder="z. B. 10 Minuten Vokabeln"></div>
-    <div class="field"><label>Zielwert</label><input type="number" id="qgTarget" min="1" value="1"></div>
-    <div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="qgCancel">Abbrechen</button><button class="btn btn-sm" id="qgSave">Hinzufügen</button></div>`, (root) => {
+  AS.modal(`<h3>Weiteres Ziel für heute</h3><div class="field"><label>Was willst du noch erreichen?</label><input type="text" id="qgLabel" placeholder="z. B. 10 Minuten Vokabeln"></div><div class="field"><label>Zielwert</label><input type="number" id="qgTarget" min="1" value="1"></div><div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="qgCancel">Abbrechen</button><button class="btn btn-sm" id="qgSave">Hinzufügen</button></div>`, (root) => {
     root.querySelector('#qgCancel').onclick = AS.closeModal;
-    root.querySelector('#qgSave').onclick = () => {
-      const label = root.querySelector('#qgLabel').value.trim(); const target = +root.querySelector('#qgTarget').value || 1;
-      if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; }
-      log.items.push({ id: 'g_' + Date.now(), label, target, current: 0 }); persist(); AS.closeModal(); renderTodoToday();
-    };
+    root.querySelector('#qgSave').onclick = () => { const label = root.querySelector('#qgLabel').value.trim(); const target = +root.querySelector('#qgTarget').value || 1; if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; } log.items.push({ id: 'g_' + Date.now(), label, target, current: 0 }); persist(); AS.closeModal(); renderTodoToday(); };
   });
 }
 function renderTodoTemplate() {
@@ -784,18 +812,9 @@ function renderTodoTemplate() {
   list.querySelectorAll('[data-delgoal]').forEach(el => el.addEventListener('click', () => { AS.currentData.todoTemplate[todoEditDay] = AS.currentData.todoTemplate[todoEditDay].filter(g => g.id !== el.dataset.delgoal); persist(); renderTodoTemplate(); }));
 }
 document.getElementById('addTodoGoalBtn').addEventListener('click', () => {
-  AS.modal(`<h3>Ziel für ${DAYS_FULL[todoEditDay]}</h3>
-    <div class="field"><label>Was willst du erreichen?</label><input type="text" id="goalLabel" placeholder="z. B. 4× melden"></div>
-    <div class="field"><label>Wie oft / Zielwert</label><input type="number" id="goalTarget" min="1" value="1"></div>
-    <div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="goalCancel">Abbrechen</button><button class="btn btn-sm" id="goalSave">Speichern</button></div>`, (root) => {
+  AS.modal(`<h3>Ziel für ${DAYS_FULL[todoEditDay]}</h3><div class="field"><label>Was willst du erreichen?</label><input type="text" id="goalLabel" placeholder="z. B. 4× melden"></div><div class="field"><label>Wie oft / Zielwert</label><input type="number" id="goalTarget" min="1" value="1"></div><div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="goalCancel">Abbrechen</button><button class="btn btn-sm" id="goalSave">Speichern</button></div>`, (root) => {
     root.querySelector('#goalCancel').onclick = AS.closeModal;
-    root.querySelector('#goalSave').onclick = () => {
-      const label = root.querySelector('#goalLabel').value.trim(); const target = +root.querySelector('#goalTarget').value || 1;
-      if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; }
-      if (!AS.currentData.todoTemplate[todoEditDay]) AS.currentData.todoTemplate[todoEditDay] = [];
-      AS.currentData.todoTemplate[todoEditDay].push({ id: 'g_' + Date.now(), label, target });
-      persist(); AS.closeModal(); renderTodoTemplate();
-    };
+    root.querySelector('#goalSave').onclick = () => { const label = root.querySelector('#goalLabel').value.trim(); const target = +root.querySelector('#goalTarget').value || 1; if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; } if (!AS.currentData.todoTemplate[todoEditDay]) AS.currentData.todoTemplate[todoEditDay] = []; AS.currentData.todoTemplate[todoEditDay].push({ id: 'g_' + Date.now(), label, target }); persist(); AS.closeModal(); renderTodoTemplate(); };
   });
 });
 
@@ -811,11 +830,7 @@ RENDERERS.calendar = function () {
   const todayIso = todayStr();
   const evByDate = {}; AS.currentData.calendarEvents.forEach(e => { (evByDate[e.date] = evByDate[e.date] || []).push(e); });
   let cellsHtml = '';
-  for (let i = 0; i < 42; i++) {
-    const d = new Date(gridStart); d.setDate(gridStart.getDate() + i);
-    const iso = d.toISOString().slice(0, 10); const out = d.getMonth() !== month; const isToday = iso === todayIso; const evs = evByDate[iso] || [];
-    cellsHtml += `<div class="cal-cell ${out ? 'out' : ''} ${isToday ? 'today' : ''}" data-date="${iso}"><div class="cal-num">${d.getDate()}</div><div>${evs.slice(0, 3).map(e => `<span class="cal-dot" style="background:var(--${e.color || 'mint'});"></span>`).join('')}</div></div>`;
-  }
+  for (let i = 0; i < 42; i++) { const d = new Date(gridStart); d.setDate(gridStart.getDate() + i); const iso = d.toISOString().slice(0, 10); const out = d.getMonth() !== month; const isToday = iso === todayIso; const evs = evByDate[iso] || []; cellsHtml += `<div class="cal-cell ${out ? 'out' : ''} ${isToday ? 'today' : ''}" data-date="${iso}"><div class="cal-num">${d.getDate()}</div><div>${evs.slice(0, 3).map(e => `<span class="cal-dot" style="background:var(--${e.color || 'mint'});"></span>`).join('')}</div></div>`; }
   document.getElementById('calGrid').innerHTML = cellsHtml;
   document.querySelectorAll('#calGrid .cal-cell').forEach(el => el.addEventListener('click', () => openCalDayModal(el.dataset.date)));
   const listBox = document.getElementById('calEventList');
@@ -835,17 +850,12 @@ function openCalDayModal(iso) {
     <div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="ceCancel">Schließen</button><button class="btn btn-sm" id="ceSave">Hinzufügen</button></div>`, (root) => {
     root.querySelector('#ceCancel').onclick = AS.closeModal;
     root.querySelectorAll('[data-quickdel]').forEach(el => el.addEventListener('click', () => { AS.currentData.calendarEvents = AS.currentData.calendarEvents.filter(e => e.id !== el.dataset.quickdel); persist(); AS.closeModal(); RENDERERS.calendar(); }));
-    root.querySelector('#ceSave').onclick = () => {
-      const title = root.querySelector('#ceTitle').value.trim();
-      if (!title) { AS.toast('Bitte einen Titel angeben.'); return; }
-      AS.currentData.calendarEvents.push({ id: 'ce_' + Date.now(), date: iso, title, time: root.querySelector('#ceTime').value.trim(), color: root.querySelector('#ceColor').value });
-      persist(); AS.closeModal(); RENDERERS.calendar(); AS.toast('Eintrag hinzugefügt.');
-    };
+    root.querySelector('#ceSave').onclick = () => { const title = root.querySelector('#ceTitle').value.trim(); if (!title) { AS.toast('Bitte einen Titel angeben.'); return; } AS.currentData.calendarEvents.push({ id: 'ce_' + Date.now(), date: iso, title, time: root.querySelector('#ceTime').value.trim(), color: root.querySelector('#ceColor').value }); persist(); AS.closeModal(); RENDERERS.calendar(); AS.toast('Eintrag hinzugefügt.'); };
   });
 }
 
 /* ======================================================================
-   MATERIALS — mit Kompression
+   MATERIALS — nutzt Blob-Speicher, asynchrones Laden/Download
    ====================================================================== */
 let materialQuery = '';
 RENDERERS.materials = function () {
@@ -856,9 +866,23 @@ RENDERERS.materials = function () {
   if (!list.length) { box.innerHTML = `<div class="empty" style="grid-column:1/-1;"><div class="em-ic">🗂️</div>Noch keine Dateien hochgeladen.</div>`; return; }
   box.innerHTML = list.map(m => {
     const isImg = (m.type || '').includes('image');
-    return `<div class="card no-margin" style="padding:0;overflow:hidden;"><div class="mat-thumb">${isImg ? `<img src="${m.dataUrl}" alt="">` : iconForType(m.type)}</div><div style="padding:12px;"><strong style="font-size:.85rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name)}</strong><div class="tiny">${escapeHtml(m.subject || 'Ohne Fach')}${m.topic ? ' · ' + escapeHtml(m.topic) : ''}</div><div class="tiny">${(m.size / 1024).toFixed(0)} KB</div><div class="row" style="margin-top:8px;gap:6px;"><a href="${m.dataUrl}" download="${escapeHtml(m.name)}" class="btn btn-sm btn-outline">Download</a><span class="tiny" style="cursor:pointer;margin-left:auto;color:var(--danger);" data-delm="${m.id}">🗑️</span></div></div></div>`;
+    return `<div class="card no-margin" style="padding:0;overflow:hidden;"><div class="mat-thumb" data-thumb="${m.id}">${isImg ? '⏳' : iconForType(m.type)}</div><div style="padding:12px;"><strong style="font-size:.85rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name)}</strong><div class="tiny">${escapeHtml(m.subject || 'Ohne Fach')}${m.topic ? ' · ' + escapeHtml(m.topic) : ''}</div><div class="tiny">${(m.size / 1024).toFixed(0)} KB</div><div class="row" style="margin-top:8px;gap:6px;"><span class="btn btn-sm btn-outline" data-download="${m.id}" style="cursor:pointer;">Download</span><span class="tiny" style="cursor:pointer;margin-left:auto;color:var(--danger);" data-delm="${m.id}">🗑️</span></div></div></div>`;
   }).join('');
-  box.querySelectorAll('[data-delm]').forEach(el => el.addEventListener('click', () => { AS.currentData.materials = AS.currentData.materials.filter(m => m.id !== el.dataset.delm); persist(); RENDERERS.materials(); }));
+  box.querySelectorAll('[data-thumb]').forEach(el => {
+    const m = list.find(x => x.id === el.dataset.thumb);
+    if ((m.type || '').includes('image') && m.blobId) asyncImg(m.blobId, (data) => { el.innerHTML = `<img src="${data}" alt="">`; });
+  });
+  box.querySelectorAll('[data-download]').forEach(el => el.addEventListener('click', async () => {
+    const m = list.find(x => x.id === el.dataset.download);
+    el.textContent = '…'; const data = await AS.getBlob(m.blobId); el.textContent = 'Download';
+    if (!data) { AS.toast('Datei konnte nicht geladen werden.'); return; }
+    const a = document.createElement('a'); a.href = data; a.download = m.name; a.click();
+  }));
+  box.querySelectorAll('[data-delm]').forEach(el => el.addEventListener('click', () => {
+    const m = AS.currentData.materials.find(x => x.id === el.dataset.delm);
+    if (m && m.blobId) AS.deleteBlob(m.blobId);
+    AS.currentData.materials = AS.currentData.materials.filter(x => x.id !== el.dataset.delm); persist(); RENDERERS.materials();
+  }));
 };
 function iconForType(t) { if (t.includes('pdf')) return '📕'; if (t.includes('image')) return '🖼️'; if (t.includes('presentation') || t.includes('powerpoint')) return '📊'; if (t.includes('word') || t.includes('document')) return '📄'; return '📁'; }
 document.getElementById('materialSearch').addEventListener('input', (e) => { materialQuery = e.target.value; RENDERERS.materials(); });
@@ -868,42 +892,33 @@ document.getElementById('materialFileInput').addEventListener('change', async (e
   const lim = limitsFor('material');
   let added = 0;
   for (const file of files) {
-    if (file.size > lim.maxBytesRaw) { AS.toast(`"${file.name}" ist zu groß (max. ${(lim.maxBytesRaw / 1024 / 1024).toFixed(1)} MB).`); continue; }
     try {
       const isImg = (file.type || '').includes('image');
       const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
+      const blobId = 'mat_' + Date.now() + Math.random().toString(36).slice(2, 7);
+      await AS.saveBlob(blobId, dataUrl);
       const approxBytes = Math.round(dataUrl.length * 0.75);
-      AS.currentData.materials.push({ id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6), name: file.name, subject: '', topic: '', type: file.type || 'application/octet-stream', size: approxBytes, dataUrl, favorite: false, addedAt: Date.now() });
+      AS.currentData.materials.push({ id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6), name: file.name, subject: '', topic: '', type: file.type || 'application/octet-stream', size: approxBytes, blobId, favorite: false, addedAt: Date.now() });
       added++;
-    } catch (err) { AS.toast(`Upload von "${file.name}" fehlgeschlagen.`); }
+    } catch (err) { AS.toast(`"${file.name}" konnte nicht verarbeitet werden.`); }
   }
-  if (added) { persist(); RENDERERS.materials(); AS.toast(`${added} Datei(en) hinzugefügt (komprimiert).`); }
+  if (added) { persist(); RENDERERS.materials(); AS.toast(`${added} Datei(en) hinzugefügt — platzsparend gespeichert.`); }
   e.target.value = '';
 });
 
 /* ======================================================================
-   SETTINGS — sinnvoll kategorisiert, mit logischen Abhängigkeiten
+   SETTINGS
    ====================================================================== */
 const ACCENTS = [['mint', 'Mint'], ['sky', 'Babyblau'], ['butter', 'Buttergelb'], ['peach', 'Pfirsich'], ['lavender', 'Lavendel'], ['blush', 'Rosa']];
 RENDERERS.settings = function () {
   const box = document.getElementById('settingsCategories');
   box.innerHTML = `
     <div class="settings-cat-title">Darstellung</div>
-    <div class="card">
-      <strong style="font-size:.85rem;">🎨 Akzentfarbe</strong>
-      <div class="row wrap" id="accentPicker" style="margin-top:10px;gap:8px;"></div>
-    </div>
-    <div class="card" style="margin-top:14px;">
-      <strong style="font-size:.85rem;">📝 Papier-Stil (Notizen &amp; Hintergrund)</strong>
-      <div class="row wrap" id="paperStylePicker" style="margin-top:10px;gap:8px;"></div>
-    </div>
-    <div class="card" style="margin-top:14px;">
-      <div class="row between list-row"><span>🌙 Dark Mode</span><label class="switch"><input type="checkbox" id="darkModeToggle"><span class="track"></span></label></div>
-      <div class="row between list-row"><span>🍃 Animationen reduzieren</span><label class="switch"><input type="checkbox" id="reduceMotionToggle"><span class="track"></span></label></div>
-    </div>
+    <div class="card"><strong style="font-size:.85rem;">🎨 Akzentfarbe</strong><div class="row wrap" id="accentPicker" style="margin-top:10px;gap:8px;"></div></div>
+    <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">📝 Papier-Stil (Notizen &amp; Hintergrund)</strong><div class="row wrap" id="paperStylePicker" style="margin-top:10px;gap:8px;"></div></div>
+    <div class="card" style="margin-top:14px;"><div class="row between list-row"><span>🌙 Dark Mode</span><label class="switch"><input type="checkbox" id="darkModeToggle"><span class="track"></span></label></div><div class="row between list-row"><span>🍃 Animationen reduzieren</span><label class="switch"><input type="checkbox" id="reduceMotionToggle"><span class="track"></span></label></div></div>
     <div class="settings-cat-title">Benachrichtigungen</div>
-    <div class="card"><div id="notifSettingsList"></div></div>
-  `;
+    <div class="card"><div id="notifSettingsList"></div></div>`;
   const accentBox = document.getElementById('accentPicker');
   accentBox.innerHTML = ACCENTS.map(([k, l]) => `<div class="pill" data-accent="${k}" style="cursor:pointer;background:var(--${k}-2);border:2px solid ${AS.currentData.settings.accent === k ? 'var(--ink)' : 'transparent'};">${l}</div>`).join('');
   accentBox.querySelectorAll('[data-accent]').forEach(el => el.addEventListener('click', () => { AS.currentData.settings.accent = el.dataset.accent; persist(); applyTheme(); RENDERERS.settings(); AS.toast('Theme aktualisiert.'); }));
@@ -919,15 +934,17 @@ RENDERERS.settings = function () {
   notifBox.innerHTML = notifFields.map(([k, l]) => `<div class="row between list-row"><span>${l}</span><label class="switch"><input type="checkbox" data-notif="${k}" ${AS.currentData.settings[k] ? 'checked' : ''}><span class="track"></span></label></div>`).join('');
   notifBox.querySelectorAll('[data-notif]').forEach(el => el.addEventListener('change', () => { AS.currentData.settings[el.dataset.notif] = el.checked; persist(); }));
 };
-
 document.getElementById('cloudSyncToggle').addEventListener('change', (e) => {
   AS.setConsent(e.target.checked ? 'cloud' : 'local');
-  if (e.target.checked) { pushAllLocalToCloud(); AS.toast('Online-Speicherung aktiviert — bereits vorhandene Daten werden jetzt mit hochgeladen.'); }
-  else AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
+  if (e.target.checked) {
+    cloudPut(KEY_USERS, AS.getUsers());
+    cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData);
+    AS.toast('Online-Speicherung aktiviert — bereits vorhandene Daten werden jetzt hochgeladen.');
+  } else AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
 });
 
 /* ======================================================================
-   PROFILE — QR-Code führt zu automatischer Freundschaftsanfrage
+   PROFILE
    ====================================================================== */
 RENDERERS.profile = function () {
   const u = AS.currentUser;
@@ -945,32 +962,47 @@ RENDERERS.profile = function () {
   const accBox = document.getElementById('accountSwitcherList');
   accBox.innerHTML = session.accounts.filter(id => users[id]).map(id => { const acc = users[id]; return `<div class="list-row" style="cursor:pointer;${id === u.uniqueId ? 'font-weight:800;' : ''}" data-switch="${id}"><div class="avatar sw-av" data-uid="${id}" style="width:30px;height:30px;font-size:.7rem;"></div><span style="flex:1;">${escapeHtml(acc.firstName)} ${escapeHtml(acc.lastName)} ${id === u.uniqueId ? '(aktiv)' : ''}</span></div>`; }).join('');
   accBox.querySelectorAll('.sw-av').forEach(el => renderAvatar(el, users[el.dataset.uid]));
-  accBox.querySelectorAll('[data-switch]').forEach(el => el.addEventListener('click', () => { if (el.dataset.switch === u.uniqueId) return; const s = AS.getSession(); s.currentUserId = el.dataset.switch; AS.saveSession(s); if (window.ASRealtime) window.ASRealtime.disconnect(); location.reload(); }));
+  accBox.querySelectorAll('[data-switch]').forEach(el => el.addEventListener('click', () => { if (el.dataset.switch === u.uniqueId) return; flushPendingCloudWrites(); const s = AS.getSession(); s.currentUserId = el.dataset.switch; AS.saveSession(s); if (window.ASRealtime) window.ASRealtime.disconnect(); location.reload(); }));
 };
-document.getElementById('saveProfileBtn').addEventListener('click', () => {
-  const users = AS.getUsers(); const newUsername = document.getElementById('editUsername').value.trim();
+document.getElementById('saveProfileBtn').addEventListener('click', async () => {
+  const newUsername = document.getElementById('editUsername').value.trim();
+  let users = AS.getUsers();
+  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
   const clash = Object.values(users).find(x => x.uniqueId !== AS.currentUser.uniqueId && x.username.toLowerCase() === newUsername.toLowerCase());
   if (clash) { AS.toast('Dieser Username ist schon vergeben.'); return; }
   AS.currentUser.firstName = document.getElementById('editFirst').value.trim(); AS.currentUser.lastName = document.getElementById('editLast').value.trim();
   AS.currentUser.username = newUsername; AS.currentUser.bio = document.getElementById('editBio').value.trim();
-  users[AS.currentUser.uniqueId] = AS.currentUser; AS.saveUsers(users);
+  await upsertUserCloudSafe(AS.currentUser);
   renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate(); AS.toast('Profil gespeichert.');
 });
-function broadcastProfileUpdate() { if (!window.ASRealtime || !window.publicProfile) return; AS.currentData.friends.forEach(uid => ASRealtime.sendTo(uid, { type: 'hello', profile: publicProfile() })); }
+function publicProfile() {
+  const u = AS.currentUser;
+  let avatarData = null;
+  if (mySecSafe().avatarVisibility !== 'nobody') avatarData = u.avatarBlobId ? AS.getBlobCached(u.avatarBlobId) : (u.avatar || null);
+  return { uniqueId: u.uniqueId, firstName: u.firstName, lastName: u.lastName, username: u.username, avatar: avatarData, bio: u.bio };
+}
+window.publicProfile = publicProfile;
+function mySecSafe() { return AS.currentData.security; }
+function broadcastProfileUpdate() { if (!window.ASRealtime) return; AS.currentData.friends.forEach(uid => ASRealtime.sendTo(uid, { type: 'hello', profile: publicProfile() })); }
 window.broadcastProfileUpdate = broadcastProfileUpdate;
 document.getElementById('changeAvatarBtn').addEventListener('click', () => document.getElementById('avatarFileInput').click());
 document.getElementById('avatarFileInput').addEventListener('change', async (e) => {
   const file = e.target.files[0]; if (!file) return;
   const lim = limitsFor('avatar');
-  if (file.size > lim.maxBytesRaw) { AS.toast('Bild ist zu groß (max. 3 MB).'); return; }
   try {
     const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
-    const users = AS.getUsers(); AS.currentUser.avatar = dataUrl; users[AS.currentUser.uniqueId] = AS.currentUser; AS.saveUsers(users);
-    renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate(); AS.toast('Profilbild aktualisiert — deine Freunde sehen es sofort.');
+    const blobId = 'av_' + AS.currentUser.uniqueId;
+    await AS.saveBlob(blobId, dataUrl);
+    AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = blobId;
+    await upsertUserCloudSafe(AS.currentUser);
+    renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate();
+    AS.toast('Profilbild aktualisiert — deine Freunde sehen es sofort.');
   } catch (err) { AS.toast('Bild konnte nicht verarbeitet werden.'); }
 });
-document.getElementById('removeAvatarBtn').addEventListener('click', () => {
-  const users = AS.getUsers(); AS.currentUser.avatar = null; users[AS.currentUser.uniqueId] = AS.currentUser; AS.saveUsers(users);
+document.getElementById('removeAvatarBtn').addEventListener('click', async () => {
+  if (AS.currentUser.avatarBlobId) AS.deleteBlob(AS.currentUser.avatarBlobId);
+  AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = null;
+  await upsertUserCloudSafe(AS.currentUser);
   renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate();
 });
 document.getElementById('openQrFullBtn').addEventListener('click', () => {
