@@ -1,8 +1,10 @@
 /* ==========================================================================
-   Schoolify — realtime.js (v3, vollständig)
-   Zuverlässiges PeerJS mit STUN/TURN + Dauer-Reconnect, kategorisierte
-   Sicherheitseinstellungen mit Live-Effekten, AirSignal-Direktauswahl,
-   umstrukturierter Chat, funktionierendes Blockieren/Entblocken.
+   Schoolify — realtime.js (v4, vollständig)
+   Chat-Dateien nutzen jetzt Blob-Speicher (kleine Referenz im
+   Hauptdatensatz statt eingebettetem Base64). Zuverlässiges PeerJS mit
+   STUN/TURN + Dauer-Reconnect. Kategorisierte, live wirksame
+   Sicherheitseinstellungen. AirSignal-Direktauswahl. Funktionierendes
+   Blockieren/Entblocken.
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
@@ -13,17 +15,9 @@ const ASRealtime = (window.ASRealtime = {
 function myData() { return AS.currentData; }
 function mySec() { return AS.currentData.security; }
 
-function publicProfile() {
-  const u = AS.currentUser;
-  return { uniqueId: u.uniqueId, firstName: u.firstName, lastName: u.lastName, username: u.username, avatar: mySec().avatarVisibility !== 'nobody' ? u.avatar : null, bio: u.bio };
-}
-window.publicProfile = publicProfile;
-
 const ICE_CONFIG = {
   iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:global.stun.twilio.com:3478' },
+    { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }, { urls: 'stun:global.stun.twilio.com:3478' },
     { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
     { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
     { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
@@ -53,24 +47,15 @@ ASRealtime._createPeer = function (uid) {
     setTimeout(() => { if (AS.currentUser && (!this.peer || this.peer.destroyed)) this._createPeer(AS.currentUser.uniqueId); }, 3000);
   });
 };
-ASRealtime._reconnectAllFriends = function () {
-  if (!AS.currentData) return;
-  myData().friends.forEach(fid => { if (myData().blocked.includes(fid)) return; if (!(this.conns[fid] && this.conns[fid].open)) this.connectToPeer(fid, true); });
-};
-ASRealtime.disconnect = function () {
-  if (this._reconnectTimer) clearInterval(this._reconnectTimer);
-  Object.values(this.conns).forEach(c => { try { c.close(); } catch (e) {} });
-  this.conns = {};
-  if (this.peer) { try { this.peer.destroy(); } catch (e) {} }
-};
+ASRealtime._reconnectAllFriends = function () { if (!AS.currentData) return; myData().friends.forEach(fid => { if (myData().blocked.includes(fid)) return; if (!(this.conns[fid] && this.conns[fid].open)) this.connectToPeer(fid, true); }); };
+ASRealtime.disconnect = function () { if (this._reconnectTimer) clearInterval(this._reconnectTimer); Object.values(this.conns).forEach(c => { try { c.close(); } catch (e) {} }); this.conns = {}; if (this.peer) { try { this.peer.destroy(); } catch (e) {} } };
 ASRealtime.connectToPeer = function (uid, silent) {
   return new Promise((resolve) => {
     if (myData().blocked.includes(uid)) { resolve(null); return; }
     if (this.conns[uid] && this.conns[uid].open) { resolve(this.conns[uid]); return; }
     if (!this.peer || this.peer.destroyed) { resolve(null); return; }
     let settled = false; let conn;
-    try { conn = this.peer.connect(uid, { reliable: true, metadata: { from: AS.currentUser.uniqueId } }); }
-    catch (e) { resolve(null); return; }
+    try { conn = this.peer.connect(uid, { reliable: true, metadata: { from: AS.currentUser.uniqueId } }); } catch (e) { resolve(null); return; }
     const timeout = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, 8000);
     conn.on('open', () => { this.conns[uid] = conn; this.wireConnection(conn); this.sendTo(uid, { type: 'hello', profile: publicProfile() }); settled = true; clearTimeout(timeout); resolve(conn); this.refreshPresenceUI(); });
     conn.on('error', () => { if (!settled) { settled = true; clearTimeout(timeout); resolve(null); } });
@@ -81,16 +66,9 @@ ASRealtime.handleIncomingConnection = function (conn) {
   if (myData().blocked.includes(fromUid)) { conn.close(); return; }
   conn.on('open', () => { this.conns[fromUid] = conn; this.wireConnection(conn); this.sendTo(fromUid, { type: 'hello', profile: publicProfile() }); this.refreshPresenceUI(); });
 };
-ASRealtime.wireConnection = function (conn) {
-  conn.off && conn.off('data');
-  conn.on('data', (msg) => this.handleMessage(conn.peer, msg));
-  conn.on('close', () => { delete this.conns[conn.peer]; this.refreshPresenceUI(); });
-  conn.on('error', () => { delete this.conns[conn.peer]; this.refreshPresenceUI(); });
-};
+ASRealtime.wireConnection = function (conn) { conn.off && conn.off('data'); conn.on('data', (msg) => this.handleMessage(conn.peer, msg)); conn.on('close', () => { delete this.conns[conn.peer]; this.refreshPresenceUI(); }); conn.on('error', () => { delete this.conns[conn.peer]; this.refreshPresenceUI(); }); };
 ASRealtime.sendTo = function (uid, obj) { const c = this.conns[uid]; if (c && c.open) { c.send(obj); return true; } return false; };
 ASRealtime.onlineFriends = function () { return myData().friends.filter(f => this.conns[f] && this.conns[f].open); };
-
-/* Zuverlässiger Versand: wiederholt automatisch bis zu 5× über 15 Sek. */
 ASRealtime.sendReliable = async function (uid, payload, key) {
   const attemptKey = key || uid + '_' + payload.type;
   let tries = 0;
@@ -103,8 +81,7 @@ ASRealtime._retryOne = async function (key) {
   const conn = await this.connectToPeer(p.uid, true);
   if (conn && this.sendTo(p.uid, p.payload)) { delete this._pendingRequests[key]; AS.toast('Verbindung hergestellt — Anfrage zugestellt ✓'); return; }
   p.tries++;
-  if (p.tries < 6) setTimeout(() => this._retryOne(key), 3000);
-  else delete this._pendingRequests[key];
+  if (p.tries < 6) setTimeout(() => this._retryOne(key), 3000); else delete this._pendingRequests[key];
 };
 ASRealtime._retryPendingRequests = function () { Object.keys(this._pendingRequests).forEach(key => this._retryOne(key)); };
 
@@ -148,10 +125,7 @@ ASRealtime.handleMessage = function (fromUid, msg) {
       if (this.knownProfiles[fromUid]) this.knownProfiles[fromUid].geo = msg.geo;
       if (getCurrentView() === 'airsignal') RENDERERS.airsignal();
       break;
-    case 'block_notice':
-      delete this.conns[fromUid];
-      if (getCurrentView() === 'friends') RENDERERS.friends();
-      break;
+    case 'block_notice': delete this.conns[fromUid]; if (getCurrentView() === 'friends') RENDERERS.friends(); break;
   }
 };
 function getCurrentView() { return VIEWS.find(v => !document.getElementById('view-' + v).classList.contains('hidden')); }
@@ -199,26 +173,14 @@ RENDERERS.friends = function () {
 
   const blockedBox = document.getElementById('blockedList');
   blockedBox.innerHTML = myData().blocked.length ? myData().blocked.map(uid => `<div class="list-row"><span style="flex:1;" class="tiny">${uid}</span><button class="btn btn-sm btn-ghost" data-unblock="${uid}">Entsperren</button></div>`).join('') : `<span class="muted tiny">Niemand blockiert.</span>`;
-  blockedBox.querySelectorAll('[data-unblock]').forEach(el => el.addEventListener('click', () => {
-    const uid = el.dataset.unblock;
-    myData().blocked = myData().blocked.filter(u => u !== uid);
-    persist(); RENDERERS.friends();
-    if (myData().friends.includes(uid)) ASRealtime.connectToPeer(uid, true);
-    AS.toast('Entsperrt — Verbindung wird wiederhergestellt.');
-  }));
+  blockedBox.querySelectorAll('[data-unblock]').forEach(el => el.addEventListener('click', () => { const uid = el.dataset.unblock; myData().blocked = myData().blocked.filter(u => u !== uid); persist(); RENDERERS.friends(); if (myData().friends.includes(uid)) ASRealtime.connectToPeer(uid, true); AS.toast('Entsperrt — Verbindung wird wiederhergestellt.'); }));
 
   const listBox = document.getElementById('friendsListFull');
   if (!myData().friends.length) { listBox.innerHTML = `<div class="empty"><div class="em-ic">💌</div>Füge deine ersten Freunde über ihre Unique ID hinzu.</div>`; return; }
   listBox.innerHTML = myData().friends.map(uid => {
     const p = friendProfile(uid) || { firstName: uid, lastName: '', username: '', uniqueId: uid };
     const online = ASRealtime.conns[uid] && ASRealtime.conns[uid].open;
-    return `<div class="list-row">
-      <div class="avatar clickable fl-av" data-uid="${uid}" style="width:38px;height:38px;font-size:.75rem;position:relative;">${online ? '<span class="dot-online" style="right:-1px;bottom:-1px;"></span>' : ''}</div>
-      <div style="flex:1;"><strong style="font-size:.85rem;">${escapeHtml(p.firstName)} ${escapeHtml(p.lastName)}</strong><div class="tiny">${uid} ${online ? '· online' : '· offline'}</div></div>
-      <button class="btn btn-sm btn-ghost" data-chat="${uid}">Chat</button>
-      <button class="btn btn-sm btn-ghost" data-remove="${uid}">Entfernen</button>
-      <button class="btn btn-sm btn-danger" data-block="${uid}">Blockieren</button>
-    </div>`;
+    return `<div class="list-row"><div class="avatar clickable fl-av" data-uid="${uid}" style="width:38px;height:38px;font-size:.75rem;position:relative;">${online ? '<span class="dot-online" style="right:-1px;bottom:-1px;"></span>' : ''}</div><div style="flex:1;"><strong style="font-size:.85rem;">${escapeHtml(p.firstName)} ${escapeHtml(p.lastName)}</strong><div class="tiny">${uid} ${online ? '· online' : '· offline'}</div></div><button class="btn btn-sm btn-ghost" data-chat="${uid}">Chat</button><button class="btn btn-sm btn-ghost" data-remove="${uid}">Entfernen</button><button class="btn btn-sm btn-danger" data-block="${uid}">Blockieren</button></div>`;
   }).join('');
   listBox.querySelectorAll('.fl-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
   listBox.querySelectorAll('[data-chat]').forEach(el => el.addEventListener('click', () => { showView('chat'); openConversation(el.dataset.chat); }));
@@ -236,7 +198,7 @@ RENDERERS.friends = function () {
 };
 
 /* ======================================================================
-   CHAT
+   CHAT — Dateien als Blob-Referenz statt eingebettetem Base64
    ====================================================================== */
 function renderChatConvoList() {
   const box = document.getElementById('chatConvoList');
@@ -276,14 +238,30 @@ function renderChatMessages(uid) {
     if (day !== lastDay) { html += `<div class="chat-date-sep">${day}</div>`; lastDay = day; }
     const bubbleBg = m.from === 'me' ? 'var(--accent)' : 'var(--cream-2)';
     let content = '';
-    if (m.file) { const isImg = (m.file.type || '').includes('image'); content = isImg ? `<img src="${m.file.dataUrl}" style="max-width:180px;border-radius:12px;display:block;margin-bottom:${m.text ? '6px' : '0'};">` : `<a href="${m.file.dataUrl}" download="${escapeHtml(m.file.name)}" class="chat-file-chip">📎 <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.file.name)}</span></a>`; }
+    if (m.file) {
+      const isImg = (m.file.type || '').includes('image');
+      if (isImg) content = `<div class="chat-img-slot" data-blobslot="${m.file.blobId}" style="width:180px;height:130px;border-radius:12px;background:var(--cream-2);display:flex;align-items:center;justify-content:center;margin-bottom:${m.text ? '6px' : '0'};">⏳</div>`;
+      else content = `<span class="chat-file-chip" data-filedownload="${m.file.blobId}" data-filename="${escapeHtml(m.file.name)}" style="cursor:pointer;">📎 <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.file.name)}</span></span>`;
+    }
     html += `<div style="align-self:${m.from === 'me' ? 'flex-end' : 'flex-start'};max-width:78%;">
       <div style="background:${bubbleBg};padding:9px 13px;border-radius:16px;font-size:.87rem;">${content}${m.text ? escapeHtml(m.text) : ''}</div>
       <div class="tiny" style="text-align:${m.from === 'me' ? 'right' : 'left'};margin-top:2px;">${new Date(m.ts).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}${m.from === 'me' ? ' <span data-delmsg="' + (m.id || '') + '" style="cursor:pointer;">🗑️</span>' : ''}</div>
     </div>`;
   });
   box.innerHTML = html; box.scrollTop = box.scrollHeight;
-  box.querySelectorAll('[data-delmsg]').forEach(el => el.addEventListener('click', () => { if (!el.dataset.delmsg) return; myData().conversations[uid] = myData().conversations[uid].filter(m => m.id !== el.dataset.delmsg); persist(); renderChatMessages(uid); renderChatConvoList(); }));
+  box.querySelectorAll('[data-blobslot]').forEach(el => asyncImg(el.dataset.blobslot, (data) => { el.outerHTML = `<img src="${data}" style="max-width:180px;border-radius:12px;display:block;">`; }));
+  box.querySelectorAll('[data-filedownload]').forEach(el => el.addEventListener('click', async () => {
+    const data = await AS.getBlob(el.dataset.filedownload);
+    if (!data) { AS.toast('Datei konnte nicht geladen werden.'); return; }
+    const a = document.createElement('a'); a.href = data; a.download = el.dataset.filename; a.click();
+  }));
+  box.querySelectorAll('[data-delmsg]').forEach(el => el.addEventListener('click', () => {
+    if (!el.dataset.delmsg) return;
+    const m = myData().conversations[uid].find(x => x.id === el.dataset.delmsg);
+    if (m && m.file && m.file.blobId) AS.deleteBlob(m.file.blobId);
+    myData().conversations[uid] = myData().conversations[uid].filter(m => m.id !== el.dataset.delmsg);
+    persist(); renderChatMessages(uid); renderChatConvoList();
+  }));
 }
 function addIncomingChatMessage(fromUid, text, file) {
   if (!myData().conversations[fromUid]) myData().conversations[fromUid] = [];
@@ -312,15 +290,18 @@ document.getElementById('chatImgBtn').addEventListener('click', () => { document
 document.getElementById('chatFileInput').addEventListener('change', async (e) => {
   const uid = ASRealtime.activeChatUid; const file = e.target.files[0]; e.target.value = ''; document.getElementById('chatFileInput').accept = 'image/*,.pdf,.doc,.docx,.txt';
   if (!uid || !file) return;
-  const lim = limitsFor('chatFile');
-  if (file.size > lim.maxBytesRaw) { AS.toast(`Datei ist zu groß (max. ${(lim.maxBytesRaw / 1024 / 1024).toFixed(1)} MB).`); return; }
   const conn = await ASRealtime.connectToPeer(uid, true);
   if (!conn) { AS.toast('Diese Person ist gerade nicht erreichbar.'); return; }
   try {
+    const lim = limitsFor('chatFile');
     const isImg = (file.type || '').includes('image');
     const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
-    const fileObj = { name: file.name, type: file.type, dataUrl };
-    ASRealtime.sendTo(uid, { type: 'chat', text: '', file: fileObj });
+    const blobId = 'cf_' + Date.now() + Math.random().toString(36).slice(2, 7);
+    await AS.saveBlob(blobId, dataUrl);
+    const fileObj = { name: file.name, type: file.type, blobId };
+    // Wird per WebRTC direkt an den Freund mitgesendet, damit dieser das Bild
+    // sofort sieht (nicht erst über die Cloud warten muss).
+    ASRealtime.sendTo(uid, { type: 'chat', text: '', file: { ...fileObj, dataUrl } });
     if (!myData().conversations[uid]) myData().conversations[uid] = [];
     myData().conversations[uid].push({ id: 'msg_' + Date.now(), from: 'me', text: '', file: fileObj, ts: Date.now() });
     persist(); renderChatMessages(uid); renderChatConvoList();
@@ -369,15 +350,8 @@ document.getElementById('airQuickSendBtn').addEventListener('click', () => {
     document.getElementById('airQuickText').value = ''; fileInput.value = '';
     ASRealtime.airSelected.clear(); RENDERERS.airsignal();
   };
-  if (file) {
-    const lim = limitsFor('chatFile');
-    if (file.size > lim.maxBytesRaw) { AS.toast(`Datei ist zu groß (max. ${(lim.maxBytesRaw / 1024 / 1024).toFixed(1)} MB).`); return; }
-    (async () => {
-      const isImg = (file.type || '').includes('image');
-      const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
-      send([{ name: file.name, type: file.type, dataUrl }]);
-    })();
-  } else send([]);
+  if (file) { (async () => { const lim = limitsFor('chatFile'); const isImg = (file.type || '').includes('image'); const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file); send([{ name: file.name, type: file.type, dataUrl }]); })(); }
+  else send([]);
 });
 function requestGeoAndBroadcast() {
   if (!navigator.geolocation) { AS.toast('Geolocation wird von diesem Browser nicht unterstützt.'); return; }
@@ -409,16 +383,10 @@ function showAirsignalPopup(fromUid, payload) {
     };
   });
 }
-ASRealtime.refreshPresenceUI = function () {
-  const v = getCurrentView();
-  if (v === 'friends') RENDERERS.friends();
-  if (v === 'chat') renderChatConvoList();
-  if (v === 'airsignal') RENDERERS.airsignal();
-  if (v === 'dashboard') RENDERERS.dashboard();
-};
+ASRealtime.refreshPresenceUI = function () { const v = getCurrentView(); if (v === 'friends') RENDERERS.friends(); if (v === 'chat') renderChatConvoList(); if (v === 'airsignal') RENDERERS.airsignal(); if (v === 'dashboard') RENDERERS.dashboard(); };
 
 /* ======================================================================
-   SECURITY — sinnvoll kategorisiert, ohne widersprüchliche Optionen
+   SECURITY
    ====================================================================== */
 RENDERERS.security = function () {
   const box = document.getElementById('securityCategories');
@@ -450,9 +418,7 @@ RENDERERS.security = function () {
       </div>
     </div>
   `;
-  // Werte setzen
   box.querySelectorAll('[data-sec]').forEach(el => { const key = el.dataset.sec; if (el.type === 'checkbox') el.checked = !!s[key]; else el.value = s[key]; });
-  // logische Abhängigkeit: "nur für Freunde" ergibt nur Sinn, wenn Status überhaupt sichtbar ist
   function syncDependentRows() {
     document.getElementById('rowOnlineFriendsOnly').style.opacity = s.onlineStatusVisible ? '1' : '.4';
     document.getElementById('rowOnlineFriendsOnly').style.pointerEvents = s.onlineStatusVisible ? 'auto' : 'none';
@@ -461,16 +427,13 @@ RENDERERS.security = function () {
   }
   syncDependentRows();
   box.querySelectorAll('[data-sec]').forEach(el => el.addEventListener('change', () => {
-    const key = el.dataset.sec;
-    s[key] = el.type === 'checkbox' ? el.checked : el.value;
-    persist();
+    const key = el.dataset.sec; s[key] = el.type === 'checkbox' ? el.checked : el.value; persist();
     AS.toast('Einstellung gespeichert — sofort aktiv.');
     if (key === 'avatarVisibility' || key === 'profileVisibility') broadcastProfileUpdate();
     if (getCurrentView() === 'airsignal') RENDERERS.airsignal();
     if (getCurrentView() === 'dashboard') RENDERERS.dashboard();
     syncDependentRows();
   }));
-
   const devBox = document.getElementById('deviceList');
   devBox.innerHTML = myData().devices.map(d => `<div class="list-row"><span style="flex:1;" class="tiny">${escapeHtml(d.label)}</span><span class="tiny">${new Date(d.lastActive).toLocaleDateString('de-DE')}</span></div>`).join('');
 };
