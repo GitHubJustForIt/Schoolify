@@ -27,75 +27,91 @@
   </div>
 </div>
 
-<!-- AUTH -->
+<!-- ================= AUTH SCREEN ================= -->
 <div id="authScreen" class="auth-wrap hidden">
-  <div class="auth-card">
-    <div class="row" style="justify-content:center;gap:8px;">
-      <span class="dot" style="width:15px;height:15px;border-radius:5px;background:linear-gradient(135deg,var(--mint),var(--sky));display:inline-block;transform:rotate(-8deg);"></span>
-      <span style="font-family:var(--font-display);font-weight:700;font-size:1.15rem;">Schoolify</span>
-    </div>
-    <div class="auth-tabs" id="authTabsBar">
-      <div class="tab active" data-authtab="login">Anmelden</div>
-      <div class="tab" data-authtab="register">Account erstellen</div>
-    </div>
-
-    <!-- LOGIN: Name + E-Mail -->
-    <div id="loginPane">
-      <div class="auth-title">Schön, dich zu sehen ✦</div>
-      <p class="auth-sub">Melde dich mit deinem Namen und deiner E-Mail an.</p>
-      <div class="field"><label>Vor- &amp; Nachname</label><input type="text" id="loginName" placeholder="z. B. Emma Schmidt"></div>
-      <div class="field"><label>E-Mail-Adresse</label><input type="email" id="loginEmail" placeholder="z. B. emma@example.com"></div>
-      <button class="btn" style="width:100%;justify-content:center;" id="loginBtn">Anmelden</button>
-      <span class="forgot-link" id="forgotNameLink">Namen vergessen?</span>
-      <div class="free-badge">✦ 100% kostenlos</div>
-      <div id="localAccountsList" style="margin-top:16px;"></div>
-    </div>
-
-    <!-- NAMEN VERGESSEN — eigener Ablauf -->
-    <div id="forgotPane" class="hidden">
-      <div id="forgotStep1">
-        <div class="auth-title">Namen vergessen? 🔎</div>
-        <p class="auth-sub">Gib deine E-Mail-Adresse ein, dann kannst du deinen Namen zurücksetzen.</p>
-        <div class="field"><label>E-Mail-Adresse</label><input type="email" id="forgotEmail" placeholder="deine E-Mail"></div>
-        <button class="btn" style="width:100%;justify-content:center;" id="forgotFindBtn">Weiter →</button>
-        <span class="forgot-link" id="forgotBackToLogin1">← Zurück zum Login</span>
-      </div>
-      <div id="forgotStep2" class="hidden">
-        <div class="auth-title">Neuen Namen festlegen ✎</div>
-        <p class="auth-sub">Gib deinen neuen Namen zweimal ein, um ihn zu bestätigen.</p>
-        <div class="field"><label>Neuer Vor- &amp; Nachname</label><input type="text" id="forgotNewName1" placeholder="z. B. Emma Schmidt"></div>
-        <div class="field"><label>Nochmal zur Bestätigung</label><input type="text" id="forgotNewName2" placeholder="Name wiederholen"></div>
-        <button class="btn" style="width:100%;justify-content:center;" id="forgotSaveBtn">Namen speichern ✓</button>
-        <span class="forgot-link" id="forgotBackToLogin2">← Zurück zum Login</span>
-      </div>
-    </div>
-
-    <!-- REGISTER — mehrstufig -->
-    <div id="registerPane" class="hidden">
-      <div class="step-dots" id="regStepDots"><span class="active" data-step="1"></span><span data-step="2"></span><span data-step="3"></span></div>
-      <div class="auth-step" id="regStep1">
-        <div class="auth-title">Wie heißt du? ✎</div>
-        <p class="auth-sub">Namen dürfen mehrfach vorkommen — kein Problem.</p>
-        <div class="field"><label>Vorname</label><input type="text" id="regFirst"></div>
-        <div class="field"><label>Nachname</label><input type="text" id="regLast"></div>
-        <button class="btn" style="width:100%;justify-content:center;" id="regNext1">Weiter →</button>
-      </div>
-      <div class="auth-step hidden" id="regStep2">
-        <div class="auth-title">Deine E-Mail ♡</div>
-        <p class="auth-sub">Nur als eindeutige Kennung — keine Verifizierung nötig. Optional: Username für dein Profil.</p>
-        <div class="field"><label>E-Mail-Adresse (muss einzigartig sein)</label><input type="email" id="regEmail" placeholder="beliebige E-Mail"></div>
-        <div class="field"><label>Username (optional)</label><input type="text" id="regUsername" placeholder="z. B. emma.s"></div>
-        <div class="row" style="gap:8px;"><button class="btn btn-ghost btn-sm" id="regBack2">← Zurück</button><button class="btn" style="flex:1;justify-content:center;" id="regNext2">Weiter →</button></div>
-      </div>
-      <div class="auth-step hidden" id="regStep3">
-        <div class="auth-title">Fast fertig 🎀</div>
-        <p class="auth-sub">Kurz prüfen, dann geht's los.</p>
-        <div class="card no-margin" style="margin-bottom:16px;">
-          <div class="tiny">Name</div><strong id="regReviewName" style="display:block;margin-bottom:8px;"></strong>
-          <div class="tiny">E-Mail</div><strong id="regReviewMail" style="display:block;"></strong>
+  <div class="auth-shell">
+    <!-- Linke Seite: Vorstellung -->
+    <div class="auth-hero">
+      <div class="auth-hero-content">
+        <div class="hero-badge">📚</div>
+        <h1>Willkommen bei<br>Schoolify ✦</h1>
+        <p class="lead">Deine Schulwelt an einem Ort: Stundenplan, Aufgaben, Notizen, Karteikarten und Freunde — alles im gemütlichen Collegeblock-Look.</p>
+        <div class="hero-feature-list">
+          <div class="hero-feature"><span class="hf-ic">🗓️</span><div class="hf-text"><strong>Stundenplan &amp; To-Do</strong><span>Live-Zeitlinie und motivierende Tages-Checklisten</span></div></div>
+          <div class="hero-feature"><span class="hf-ic">📓</span><div class="hf-text"><strong>Notizen &amp; Karteikarten</strong><span>Schreiben, zeichnen, lernen — alles handschriftlich</span></div></div>
+          <div class="hero-feature"><span class="hf-ic">💌</span><div class="hf-text"><strong>Freunde &amp; Chat</strong><span>Direkt verbunden, ganz ohne Server in der Mitte</span></div></div>
         </div>
-        <div class="row" style="gap:8px;"><button class="btn btn-ghost btn-sm" id="regBack3">← Zurück</button><button class="btn" style="flex:1;justify-content:center;" id="registerBtn">Account erstellen ✦</button></div>
-        <div class="free-badge">✦ 100% kostenlos, keine versteckten Kosten</div>
+        <div class="hero-free-note">für Schüler, komplett kostenlos 🎀</div>
+      </div>
+    </div>
+
+    <!-- Rechte Seite: Login / Registrierung -->
+    <div class="auth-panel">
+      <div class="auth-card">
+        <div class="auth-tabs" id="authTabsBar">
+          <div class="tab active" data-authtab="login">Anmelden</div>
+          <div class="tab" data-authtab="register">Account erstellen</div>
+        </div>
+
+        <!-- LOGIN: Name + E-Mail -->
+        <div id="loginPane">
+          <div class="auth-title">Schön, dich zu sehen ✦</div>
+          <p class="auth-sub">Melde dich mit deinem Namen und deiner E-Mail an.</p>
+          <div class="field"><label>Vor- &amp; Nachname</label><input type="text" id="loginName" placeholder="z. B. Emma Schmidt"></div>
+          <div class="field"><label>E-Mail-Adresse</label><input type="email" id="loginEmail" placeholder="z. B. emma@example.com"></div>
+          <button class="btn" style="width:100%;justify-content:center;" id="loginBtn">Anmelden</button>
+          <span class="forgot-link" id="forgotNameLink">Namen vergessen?</span>
+          <div class="free-badge">✦ 100% kostenlos</div>
+          <div id="localAccountsList" style="margin-top:16px;"></div>
+        </div>
+
+        <!-- NAMEN VERGESSEN -->
+        <div id="forgotPane" class="hidden">
+          <div id="forgotStep1">
+            <div class="auth-title">Namen vergessen? 🔎</div>
+            <p class="auth-sub">Gib deine E-Mail-Adresse ein, dann kannst du deinen Namen zurücksetzen.</p>
+            <div class="field"><label>E-Mail-Adresse</label><input type="email" id="forgotEmail" placeholder="deine E-Mail"></div>
+            <button class="btn" style="width:100%;justify-content:center;" id="forgotFindBtn">Weiter →</button>
+            <span class="forgot-link" id="forgotBackToLogin1">← Zurück zum Login</span>
+          </div>
+          <div id="forgotStep2" class="hidden">
+            <div class="auth-title">Neuen Namen festlegen ✎</div>
+            <p class="auth-sub">Gib deinen neuen Namen zweimal ein, um ihn zu bestätigen.</p>
+            <div class="field"><label>Neuer Vor- &amp; Nachname</label><input type="text" id="forgotNewName1" placeholder="z. B. Emma Schmidt"></div>
+            <div class="field"><label>Nochmal zur Bestätigung</label><input type="text" id="forgotNewName2" placeholder="Name wiederholen"></div>
+            <button class="btn" style="width:100%;justify-content:center;" id="forgotSaveBtn">Namen speichern ✓</button>
+            <span class="forgot-link" id="forgotBackToLogin2">← Zurück zum Login</span>
+          </div>
+        </div>
+
+        <!-- REGISTER — mehrstufig -->
+        <div id="registerPane" class="hidden">
+          <div class="step-dots" id="regStepDots"><span class="active" data-step="1"></span><span data-step="2"></span><span data-step="3"></span></div>
+          <div class="auth-step" id="regStep1">
+            <div class="auth-title">Wie heißt du? ✎</div>
+            <p class="auth-sub">Namen dürfen mehrfach vorkommen — kein Problem.</p>
+            <div class="field"><label>Vorname</label><input type="text" id="regFirst"></div>
+            <div class="field"><label>Nachname</label><input type="text" id="regLast"></div>
+            <button class="btn" style="width:100%;justify-content:center;" id="regNext1">Weiter →</button>
+          </div>
+          <div class="auth-step hidden" id="regStep2">
+            <div class="auth-title">Deine E-Mail ♡</div>
+            <p class="auth-sub">Nur als eindeutige Kennung — keine Verifizierung nötig. Optional: Username für dein Profil.</p>
+            <div class="field"><label>E-Mail-Adresse (muss einzigartig sein)</label><input type="email" id="regEmail" placeholder="beliebige E-Mail"></div>
+            <div class="field"><label>Username (optional)</label><input type="text" id="regUsername" placeholder="z. B. emma.s"></div>
+            <div class="row" style="gap:8px;"><button class="btn btn-ghost btn-sm" id="regBack2">← Zurück</button><button class="btn" style="flex:1;justify-content:center;" id="regNext2">Weiter →</button></div>
+          </div>
+          <div class="auth-step hidden" id="regStep3">
+            <div class="auth-title">Fast fertig 🎀</div>
+            <p class="auth-sub">Kurz prüfen, dann geht's los.</p>
+            <div class="card no-margin" style="margin-bottom:16px;">
+              <div class="tiny">Name</div><strong id="regReviewName" style="display:block;margin-bottom:8px;"></strong>
+              <div class="tiny">E-Mail</div><strong id="regReviewMail" style="display:block;"></strong>
+            </div>
+            <div class="row" style="gap:8px;"><button class="btn btn-ghost btn-sm" id="regBack3">← Zurück</button><button class="btn" style="flex:1;justify-content:center;" id="registerBtn">Account erstellen ✦</button></div>
+            <div class="free-badge">✦ 100% kostenlos, keine versteckten Kosten</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
