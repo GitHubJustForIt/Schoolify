@@ -221,11 +221,14 @@ function renderPageEditor() {
     const files = Array.from(e.target.files).slice(0, 6);
     const lim = limitsFor('noteImage');
     for (const file of files) {
-      try {
+          try {
         const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
+        if (window.isOverLimit(dataUrl.length)) { AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) — bitte alte Dateien löschen.`); break; }
         const blobId = 'nimg_' + Date.now() + Math.random().toString(36).slice(2, 7);
         await AS.saveBlob(blobId, dataUrl);
-        page.imageBlobIds.push(blobId); page.updatedAt = Date.now(); persist(); renderImgStrip(page);
+        if (!page.imageBytesList) page.imageBytesList = [];
+        page.imageBlobIds.push(blobId); page.imageBytesList.push(dataUrl.length);
+        page.updatedAt = Date.now(); persist(); renderImgStrip(page);
       } catch (err) { AS.toast(`"${file.name}" konnte nicht verarbeitet werden.`); }
     }
     imgInput.value = '';
@@ -242,7 +245,8 @@ function renderImgStrip(page) {
     const idx = +el.dataset.delimg;
     const blobId = page.imageBlobIds[idx];
     if (blobId) AS.deleteBlob(blobId);
-    page.imageBlobIds.splice(idx, 1); page.updatedAt = Date.now(); persist(); renderImgStrip(page);
+        page.imageBlobIds.splice(idx, 1); if (page.imageBytesList) page.imageBytesList.splice(idx, 1);
+    page.updatedAt = Date.now(); persist(); renderImgStrip(page);
   }));
 }
 
@@ -276,9 +280,9 @@ function setupCanvas(page, canvas) {
       // Transparentes WebP/PNG — behält den durchsichtigen Hintergrund,
       // damit der Text darunter sichtbar bleibt.
       const dataUrl = DRAW_QUALITY !== undefined ? canvas.toDataURL(DRAW_MIME, DRAW_QUALITY) : canvas.toDataURL(DRAW_MIME);
-      const blobId = page.drawingBlobId || ('draw_' + page.id);
+            const blobId = page.drawingBlobId || ('draw_' + page.id);
       await AS.saveBlob(blobId, dataUrl);
-      page.drawingBlobId = blobId; page.updatedAt = Date.now(); persist();
+      page.drawingBlobId = blobId; page.drawingBytes = dataUrl.length; page.updatedAt = Date.now(); persist();
     }, 800);
   }
   canvas.onmousedown = start; canvas.onmousemove = move; window.addEventListener('mouseup', end);
