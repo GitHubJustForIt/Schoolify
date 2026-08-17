@@ -955,7 +955,8 @@ document.getElementById('materialFileInput').addEventListener('change', async (e
   for (const file of files) {
     try {
       const isImg = (file.type || '').includes('image');
-      const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
+            const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
+      if (isOverLimit(dataUrl.length)) { AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) — bitte alte Dateien löschen.`); continue; }
       const blobId = 'mat_' + Date.now() + Math.random().toString(36).slice(2, 7);
       await AS.saveBlob(blobId, dataUrl);
       const approxBytes = Math.round(dataUrl.length * 0.75);
