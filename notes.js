@@ -1,8 +1,10 @@
 /* ==========================================================================
-   Schoolify — notes.js (v4, vollständig)
-   Notizen im GoodNotes-Stil. Bilder & Zeichnungen liegen jetzt als eigene
-   Blobs (asyncImg/AS.saveBlob) statt eingebettet im Hauptdatensatz — hält
-   die Cloud-Uploads winzig klein, egal wie viele Bilder man einfügt.
+   Schoolify — notes.js (v6, vollständig)
+   Fix: Zeichnen wurde schwarz, weil JPEG keine Transparenz kann. Jetzt wird
+   die Zeichnung als transparentes WebP/PNG gespeichert (Fallback), und
+   Text + Zeichnung liegen gemeinsam auf EINER Seite übereinander — kein
+   Umschalten zwischen zwei getrennten "Seiten" mehr, nur ein Stift-Modus,
+   der bestimmt, ob man gerade tippt oder zeichnet.
    ========================================================================== */
 
 const FOLDER_COLORS = [
@@ -27,6 +29,15 @@ let activeFolderId = null;
 let activePageId = null;
 let drawCtx = null, drawing = false, lastPt = null, currentPenColor = PEN_COLORS[0];
 let drawSaveTimer = null;
+let penActive = false; // UI-Zustand: gerade zeichnen oder tippen? (nicht gespeichert)
+
+/* Erkennt, ob der Browser WebP mit Transparenz kann (fast überall ja) */
+function supportsTransparentWebp() {
+  try { const c = document.createElement('canvas'); c.width = 1; c.height = 1; return c.toDataURL('image/webp').indexOf('data:image/webp') === 0; }
+  catch (e) { return false; }
+}
+const DRAW_MIME = supportsTransparentWebp() ? 'image/webp' : 'image/png';
+const DRAW_QUALITY = DRAW_MIME === 'image/webp' ? 0.8 : undefined;
 
 RENDERERS.notes = function () { notesView = 'folders'; activeFolderId = null; activePageId = null; renderNotesView(); };
 
@@ -35,7 +46,6 @@ function renderNotesHead() {
   if (notesView === 'folders') { headActions.innerHTML = `<button class="btn btn-sm" id="addFolderBtn">+ Ordner</button>`; document.getElementById('addFolderBtn').addEventListener('click', openFolderCreateModal); }
   else headActions.innerHTML = '';
 }
-
 function renderNotesView() {
   document.getElementById('notesFoldersLayer').classList.toggle('hidden', notesView !== 'folders');
   document.getElementById('notesPagesLayer').classList.toggle('hidden', notesView !== 'pages');
@@ -56,12 +66,13 @@ function renderNotesView() {
     titleEl.textContent = page ? (page.title || 'Notizseite') : 'Notizseite';
     crumbBox.innerHTML = `<span class="crumb" data-back="folders">📓 Ordner</span><span class="tiny">/</span><span class="crumb" data-back="pages">${escapeHtml(folder ? folder.name : '')}</span><span class="tiny">/</span><span class="tiny">${escapeHtml(page ? (page.title || 'ohne Titel') : '')}</span>`;
     crumbBox.querySelectorAll('[data-back]').forEach(el => el.addEventListener('click', () => { notesView = el.dataset.back; renderNotesView(); }));
+    penActive = false;
     renderPageEditor();
   }
 }
 
 /* ---------------------------------------------------------------------- */
-/* Ebene 1: Ordner — löschbar (löscht auch alle Bild-Blobs der Seiten)    */
+/* Ebene 1: Ordner                                                        */
 /* ---------------------------------------------------------------------- */
 function renderFolderGrid() {
   const grid = document.getElementById('folderGrid');
@@ -106,7 +117,7 @@ function openFolderCreateModal() {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Ebene 2: Seiten — löschbar (löscht auch Bild-Blobs)                    */
+/* Ebene 2: Seiten                                                        */
 /* ---------------------------------------------------------------------- */
 function renderPageGrid() {
   const grid = document.getElementById('pageGrid');
@@ -115,7 +126,7 @@ function renderPageGrid() {
     <div class="page-tile" data-page="${p.id}">
       <span class="tile-del" data-delpage="${p.id}">✕</span>
       <div class="page-thumb ${p.paper === 'kariert' ? 'kariert' : ''}" data-pagethumb="${p.id}">
-        ${p.mode === 'draw' && p.drawingBlobId ? '⏳' : p.mode === 'write' ? `<div style="padding:14px 14px 14px 18px;font-size:.62rem;color:var(--ink-soft);overflow:hidden;max-height:100%;line-height:1.5;">${escapeHtml((p.body || '').slice(0, 140))}</div>` : ''}
+        ${p.drawingBlobId ? '⏳' : (p.body ? `<div style="padding:14px 14px 14px 18px;font-size:.62rem;color:var(--ink-soft);overflow:hidden;max-height:100%;line-height:1.5;">${escapeHtml((p.body || '').slice(0, 140))}</div>` : '')}
       </div>
       <div class="page-name">${escapeHtml(p.title || 'ohne Titel')}</div>
     </div>`).join('');
@@ -123,7 +134,7 @@ function renderPageGrid() {
   grid.innerHTML = html || `<div class="empty" style="grid-column:1/-1;"><div class="em-ic">✎</div>Noch keine Seiten in diesem Ordner.</div>`;
   grid.querySelectorAll('[data-pagethumb]').forEach(el => {
     const p = pages.find(x => x.id === el.dataset.pagethumb);
-    if (p.mode === 'draw' && p.drawingBlobId) asyncImg(p.drawingBlobId, (data) => { el.innerHTML = `<img src="${data}" alt="">`; });
+    if (p.drawingBlobId) asyncImg(p.drawingBlobId, (data) => { el.innerHTML = `<img src="${data}" alt="">`; });
   });
   grid.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', (e) => { if (e.target.dataset.delpage) return; activePageId = el.dataset.page; notesView = 'editor'; renderNotesView(); }));
   grid.querySelectorAll('[data-delpage]').forEach(el => el.addEventListener('click', (e) => {
@@ -141,13 +152,13 @@ function renderPageGrid() {
 function createNewPage() {
   const pages = AS.currentData.notePages.filter(p => p.folderId === activeFolderId);
   if (pages.length >= MAX_PAGES) { AS.toast(`Maximal ${MAX_PAGES} Seiten pro Ordner möglich.`); return; }
-  const page = { id: 'p_' + Date.now(), folderId: activeFolderId, title: '', mode: 'write', paper: AS.currentData.settings.paperStyle || 'kariert', body: '', drawingBlobId: null, imageBlobIds: [], updatedAt: Date.now() };
+  const page = { id: 'p_' + Date.now(), folderId: activeFolderId, title: '', paper: AS.currentData.settings.paperStyle || 'kariert', body: '', drawingBlobId: null, imageBlobIds: [], updatedAt: Date.now() };
   AS.currentData.notePages.push(page); persist();
   activePageId = page.id; notesView = 'editor'; renderNotesView();
 }
 
 /* ---------------------------------------------------------------------- */
-/* Ebene 3: Seiten-Editor                                                 */
+/* Ebene 3: Editor — Text UND Zeichnung gemeinsam auf einer Seite         */
 /* ---------------------------------------------------------------------- */
 function renderPageEditor() {
   const page = AS.currentData.notePages.find(p => p.id === activePageId);
@@ -165,30 +176,31 @@ function renderPageEditor() {
 
   function applyPaperClass() { surface.classList.toggle('kariert', page.paper === 'kariert'); }
   applyPaperClass();
-  function applyModeUI() {
-    document.getElementById('modeWriteBtn').classList.toggle('active', page.mode === 'write');
-    document.getElementById('modeDrawBtn').classList.toggle('active', page.mode === 'draw');
-    textarea.classList.toggle('hidden', page.mode !== 'write');
-    canvas.classList.toggle('hidden', page.mode !== 'draw');
-    document.getElementById('clearDrawBtn').style.display = page.mode === 'draw' ? '' : 'none';
-    penColorRow.style.display = page.mode === 'draw' ? 'flex' : 'none';
+
+  function applyPenUI() {
+    document.getElementById('modeWriteBtn').classList.toggle('active', !penActive);
+    document.getElementById('modeDrawBtn').classList.toggle('active', penActive);
+    canvas.classList.toggle('pen-active', penActive);
+    document.getElementById('clearDrawBtn').style.display = '';
+    penColorRow.style.display = penActive ? 'flex' : 'none';
     document.getElementById('paperKariertBtn').classList.toggle('active', page.paper === 'kariert');
     document.getElementById('paperLiniertBtn').classList.toggle('active', page.paper === 'liniert');
+    if (!penActive) textarea.focus();
   }
   penColorRow.innerHTML = PEN_COLORS.map((c) => `<div class="pen-color-dot ${c === currentPenColor ? 'selected' : ''}" data-pen="${c}" style="background:${c};"></div>`).join('');
   penColorRow.querySelectorAll('[data-pen]').forEach(el => el.addEventListener('click', () => { currentPenColor = el.dataset.pen; penColorRow.querySelectorAll('[data-pen]').forEach(x => x.classList.remove('selected')); el.classList.add('selected'); if (drawCtx) drawCtx.strokeStyle = currentPenColor; }));
-  applyModeUI();
+  applyPenUI();
 
   textarea.value = page.body || '';
   textarea.oninput = () => { page.body = textarea.value; page.updatedAt = Date.now(); persist(); };
 
-  document.getElementById('modeWriteBtn').onclick = () => { page.mode = 'write'; persist(); applyModeUI(); };
-  document.getElementById('modeDrawBtn').onclick = () => { page.mode = 'draw'; persist(); applyModeUI(); setupCanvas(page, canvas); };
-  document.getElementById('paperKariertBtn').onclick = () => { page.paper = 'kariert'; persist(); applyPaperClass(); applyModeUI(); };
-  document.getElementById('paperLiniertBtn').onclick = () => { page.paper = 'liniert'; persist(); applyPaperClass(); applyModeUI(); };
+  document.getElementById('modeWriteBtn').onclick = () => { penActive = false; applyPenUI(); };
+  document.getElementById('modeDrawBtn').onclick = () => { penActive = true; applyPenUI(); };
+  document.getElementById('paperKariertBtn').onclick = () => { page.paper = 'kariert'; persist(); applyPaperClass(); applyPenUI(); };
+  document.getElementById('paperLiniertBtn').onclick = () => { page.paper = 'liniert'; persist(); applyPaperClass(); applyPenUI(); };
   document.getElementById('clearDrawBtn').onclick = () => {
     if (!drawCtx) return;
-    confirmModal('Zeichnung löschen?', 'Die aktuelle Zeichnung auf dieser Seite wird entfernt.', () => {
+    confirmModal('Zeichnung löschen?', 'Die aktuelle Zeichnung auf dieser Seite wird entfernt (dein Text bleibt erhalten).', () => {
       drawCtx.clearRect(0, 0, canvas.width, canvas.height);
       if (page.drawingBlobId) { AS.deleteBlob(page.drawingBlobId); page.drawingBlobId = null; }
       page.updatedAt = Date.now(); persist(); AS.toast('Zeichnung gelöscht.');
@@ -219,7 +231,7 @@ function renderPageEditor() {
     imgInput.value = '';
   };
   renderImgStrip(page);
-  if (page.mode === 'draw') setupCanvas(page, canvas);
+  setupCanvas(page, canvas); // Canvas ist ab jetzt IMMER aktiv, unabhängig vom Stift-Modus
 }
 
 function renderImgStrip(page) {
@@ -236,27 +248,34 @@ function renderImgStrip(page) {
 
 function setupCanvas(page, canvas) {
   const rectW = canvas.parentElement.clientWidth;
-  const rectH = Math.max(500, window.innerHeight * 0.6);
+  const rectH = canvas.parentElement.clientHeight || 820;
   const dpr = window.devicePixelRatio || 1;
   canvas.width = rectW * dpr; canvas.height = rectH * dpr;
   canvas.style.width = rectW + 'px'; canvas.style.height = rectH + 'px';
   drawCtx = canvas.getContext('2d');
+  drawCtx.clearRect(0, 0, canvas.width, canvas.height); // TRANSPARENT lassen — kein weißer/schwarzer Hintergrund!
   drawCtx.scale(dpr, dpr);
   drawCtx.lineCap = 'round'; drawCtx.lineJoin = 'round';
   drawCtx.strokeStyle = currentPenColor; drawCtx.lineWidth = 2.6;
 
-  if (page.drawingBlobId) { asyncImg(page.drawingBlobId, (data) => { const img = new Image(); img.onload = () => drawCtx.drawImage(img, 0, 0, rectW, rectH); img.src = data; }); }
+  if (page.drawingBlobId) {
+    asyncImg(page.drawingBlobId, (data) => {
+      const img = new Image();
+      img.onload = () => drawCtx.drawImage(img, 0, 0, rectW, rectH);
+      img.src = data;
+    });
+  }
 
   function getPos(e) { const rect = canvas.getBoundingClientRect(); const t = e.touches ? e.touches[0] : e; return { x: t.clientX - rect.left, y: t.clientY - rect.top }; }
-  function start(e) { drawCtx.strokeStyle = currentPenColor; drawing = true; lastPt = getPos(e); e.preventDefault(); }
+  function start(e) { if (!canvas.classList.contains('pen-active')) return; drawCtx.strokeStyle = currentPenColor; drawing = true; lastPt = getPos(e); e.preventDefault(); }
   function move(e) { if (!drawing) return; const p = getPos(e); drawCtx.beginPath(); drawCtx.moveTo(lastPt.x, lastPt.y); drawCtx.lineTo(p.x, p.y); drawCtx.stroke(); lastPt = p; e.preventDefault(); }
   function end() {
     if (!drawing) return; drawing = false;
-    // Zeichnung wird gedrosselt (800ms nach letztem Strich) als EIN Blob gespeichert,
-    // statt bei jedem einzelnen Strich neu hochzuladen.
     if (drawSaveTimer) clearTimeout(drawSaveTimer);
     drawSaveTimer = setTimeout(async () => {
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+      // Transparentes WebP/PNG — behält den durchsichtigen Hintergrund,
+      // damit der Text darunter sichtbar bleibt.
+      const dataUrl = DRAW_QUALITY !== undefined ? canvas.toDataURL(DRAW_MIME, DRAW_QUALITY) : canvas.toDataURL(DRAW_MIME);
       const blobId = page.drawingBlobId || ('draw_' + page.id);
       await AS.saveBlob(blobId, dataUrl);
       page.drawingBlobId = blobId; page.updatedAt = Date.now(); persist();
