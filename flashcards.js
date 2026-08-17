@@ -1,6 +1,7 @@
 /* ==========================================================================
-   Schoolify — flashcards.js (v3, vollständig, Bugfix)
-   Lernplan: Stapel (Decks) → Karteikarten → Lernmodus (Umdrehen).
+   Schoolify — flashcards.js (v6, vollständig)
+   Neu: 🔗 Teilen-Button pro Stapel — QR-Code überträgt den kompletten
+   Kartensatz direkt in den Account der scannenden Person.
    ========================================================================== */
 
 const DECK_COLORS = [
@@ -43,10 +44,8 @@ function renderLearnView() {
   document.getElementById('learnCardsLayer').classList.toggle('hidden', learnView !== 'cards');
   document.getElementById('learnStudyLayer').classList.toggle('hidden', learnView !== 'study');
   renderLearnHead();
-
   const crumbBox = document.getElementById('learnBreadcrumbs');
   const titleEl = document.getElementById('learnTitle');
-
   if (learnView === 'decks') { titleEl.textContent = 'Karteikarten'; crumbBox.innerHTML = ''; renderDeckGrid(); }
   else if (learnView === 'cards') {
     const deck = AS.currentData.decks.find(d => d.id === activeDeckId);
@@ -69,9 +68,14 @@ function renderDeckGrid() {
   if (!decks.length) { grid.innerHTML = `<div class="empty" style="grid-column:1/-1;"><div class="em-ic">🧠</div>Noch keine Lernstapel — leg deinen ersten an!</div>`; return; }
   grid.innerHTML = decks.map(d => {
     const count = AS.currentData.flashcards.filter(c => c.deckId === d.id).length;
-    return `<div class="deck-tile" data-deck="${d.id}" style="background:${deckCss(d.color)};"><span class="tile-del" data-deldeck="${d.id}">✕</span><strong>${escapeHtml(d.name)}</strong><span class="tiny">${count} Karte${count === 1 ? '' : 'n'}</span></div>`;
+    return `<div class="deck-tile" data-deck="${d.id}" style="background:${deckCss(d.color)};">
+      <span class="tile-del" data-deldeck="${d.id}">✕</span>
+      <span class="tile-share" data-sharedeck="${d.id}" title="Per QR-Code teilen">🔗</span>
+      <strong>${escapeHtml(d.name)}</strong>
+      <span class="tiny">${count} Karte${count === 1 ? '' : 'n'}</span>
+    </div>`;
   }).join('');
-  grid.querySelectorAll('[data-deck]').forEach(el => el.addEventListener('click', (e) => { if (e.target.dataset.deldeck) return; activeDeckId = el.dataset.deck; learnView = 'cards'; renderLearnView(); }));
+  grid.querySelectorAll('[data-deck]').forEach(el => el.addEventListener('click', (e) => { if (e.target.dataset.deldeck || e.target.dataset.sharedeck) return; activeDeckId = el.dataset.deck; learnView = 'cards'; renderLearnView(); }));
   grid.querySelectorAll('[data-deldeck]').forEach(el => el.addEventListener('click', (e) => {
     e.stopPropagation();
     confirmModal('Stapel löschen?', 'Alle Karteikarten in diesem Stapel werden ebenfalls gelöscht.', () => {
@@ -79,6 +83,11 @@ function renderDeckGrid() {
       AS.currentData.flashcards = AS.currentData.flashcards.filter(c => c.deckId !== el.dataset.deldeck);
       persist(); renderDeckGrid();
     });
+  }));
+  grid.querySelectorAll('[data-sharedeck]').forEach(el => el.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const deck = decks.find(d => d.id === el.dataset.sharedeck);
+    if (deck) shareDeck(deck);
   }));
 }
 function openDeckCreateModal() {
