@@ -1051,7 +1051,7 @@ document.getElementById('avatarFileInput').addEventListener('change', async (e) 
     const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
     const blobId = 'av_' + AS.currentUser.uniqueId;
     await AS.saveBlob(blobId, dataUrl);
-    AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = blobId;
+       AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = blobId; AS.currentUser.avatarBytes = dataUrl.length;
     await upsertUserCloudSafe(AS.currentUser);
     renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate();
     AS.toast('Profilbild aktualisiert — deine Freunde sehen es sofort.');
