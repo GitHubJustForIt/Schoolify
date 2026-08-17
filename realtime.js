@@ -296,9 +296,10 @@ document.getElementById('chatFileInput').addEventListener('change', async (e) =>
     const lim = limitsFor('chatFile');
     const isImg = (file.type || '').includes('image');
     const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
+        if (window.isOverLimit(dataUrl.length)) { AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) — bitte alte Dateien löschen.`); return; }
     const blobId = 'cf_' + Date.now() + Math.random().toString(36).slice(2, 7);
     await AS.saveBlob(blobId, dataUrl);
-    const fileObj = { name: file.name, type: file.type, blobId };
+    const fileObj = { name: file.name, type: file.type, blobId, bytes: dataUrl.length };
     // Wird per WebRTC direkt an den Freund mitgesendet, damit dieser das Bild
     // sofort sieht (nicht erst über die Cloud warten muss).
     ASRealtime.sendTo(uid, { type: 'chat', text: '', file: { ...fileObj, dataUrl } });
