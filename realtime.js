@@ -437,4 +437,5 @@ RENDERERS.security = function () {
   }));
   const devBox = document.getElementById('deviceList');
   devBox.innerHTML = myData().devices.map(d => `<div class="list-row"><span style="flex:1;" class="tiny">${escapeHtml(d.label)}</span><span class="tiny">${new Date(d.lastActive).toLocaleDateString('de-DE')}</span></div>`).join('');
+    renderStorageBar();
 };
