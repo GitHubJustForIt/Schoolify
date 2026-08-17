@@ -1,11 +1,8 @@
 /* ==========================================================================
-   Schoolify — app.js (v4, vollständig)
-   Kompakte Cloud-Speicherung: Bilder/Dateien als eigene, einmalig
-   hochgeladene "Blobs" statt eingebettet im Hauptdatensatz. Gebündelte
-   (debounced) Cloud-Schreibvorgänge. Echtes geräteübergreifendes Login
-   direkt vom Server, kein lokales Fallback nötig. Kein MB-Limit —
-   stattdessen automatische, unsichtbare Kompression.
-   Kompletter Neustart der Datenstruktur (keine Altdaten-Migration).
+   Schoolify — app.js (v5, vollständig)
+   Vollständige Account-Löschung (inkl. aller Cloud-Blobs), QR-Teilen für
+   Schulmaterial & Karteikarten-Stapel. Ansonsten wie v4: kompakte
+   Cloud-Speicherung mit Blob-System, geräteübergreifendes Login.
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -30,8 +27,6 @@ async function cloudGet(key) {
 }
 async function cloudDelete(key) { try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {} }
 
-/* Gebündelte (debounced) Cloud-Uploads: verhindert, dass z.B. jeder
-   Tastendruck beim Tippen sofort einen eigenen Upload auslöst. */
 const _cloudDebounceTimers = {};
 function cloudPutDebounced(key, value, delay = 900) {
   if (_cloudDebounceTimers[key]) clearTimeout(_cloudDebounceTimers[key]);
@@ -59,25 +54,19 @@ AS.storage = {
 };
 
 /* ---------------------------------------------------------------------- */
-/* Blob-Speicher — Bilder/Dateien liegen NICHT im Hauptdatensatz, sondern  */
-/* unter eigenen, kleinen Schlüsseln. So bleibt jeder normale Speicher-    */
-/* vorgang (Häkchen setzen, Text tippen usw.) winzig klein.                */
+/* Blob-Speicher                                                          */
 /* ---------------------------------------------------------------------- */
 const BLOB_CACHE_PREFIX = 'as_blob_';
 function blobKey(id) { return 'blob_' + id; }
-
 AS.saveBlob = async function (id, dataUrl) {
-  try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) { /* lokaler Cache voll — Cloud übernimmt trotzdem */ }
+  try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
   if (AS.cloudEnabled()) await cloudPut(blobKey(id), dataUrl);
 };
 AS.getBlobCached = function (id) { try { return localStorage.getItem(BLOB_CACHE_PREFIX + id); } catch (e) { return null; } };
 AS.getBlob = async function (id) {
   const cached = AS.getBlobCached(id);
   if (cached !== null) return cached;
-  if (AS.cloudEnabled()) {
-    const remote = await cloudGet(blobKey(id));
-    if (remote !== undefined && remote !== null) { try { localStorage.setItem(BLOB_CACHE_PREFIX + id, remote); } catch (e) {} return remote; }
-  }
+  if (AS.cloudEnabled()) { const remote = await cloudGet(blobKey(id)); if (remote !== undefined && remote !== null) { try { localStorage.setItem(BLOB_CACHE_PREFIX + id, remote); } catch (e) {} return remote; } }
   return null;
 };
 AS.deleteBlob = function (id) { try { localStorage.removeItem(BLOB_CACHE_PREFIX + id); } catch (e) {} if (AS.cloudEnabled()) cloudDelete(blobKey(id)); };
@@ -90,12 +79,62 @@ function asyncImg(blobId, onReady) {
 window.asyncImg = asyncImg;
 
 /* ---------------------------------------------------------------------- */
-/* Nutzer-Verzeichnis — global & geteilt. Beim Schreiben IMMER zuerst mit  */
-/* dem Server abgleichen, damit Accounts von anderen Geräten nie          */
-/* überschrieben werden.                                                  */
+/* Teilen per QR-Code (Schulmaterial & Karteikarten-Stapel)               */
+/* ---------------------------------------------------------------------- */
+function shareKey(id) { return 'share_' + id; }
+function genShareId() { const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 10; i++) s += chars[Math.floor(Math.random() * chars.length)]; return s; }
+async function createShareAndShowQr(pkg, titleForModal) {
+  if (!AS.cloudEnabled()) { AS.toast('Bitte aktiviere zuerst die Online-Speicherung (Einstellungen → Sicherheit), um per QR-Code zu teilen.'); return; }
+  const id = genShareId();
+  await cloudPut(shareKey(id), pkg);
+  const paramName = pkg.type === 'deck' ? 'importDeck' : 'importMaterial';
+  const url = `${location.origin}${location.pathname}?${paramName}=${id}`;
+  AS.modal(`<div style="text-align:center;"><h3>${titleForModal} 📤</h3><div id="shareQrWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="tiny">Scannen überträgt den Inhalt direkt in den Account der Person (dort muss die Online-Speicherung ebenfalls aktiv sein).</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="shareQrClose">Schließen</button></div></div>`,
+    (root) => { new QRCode(root.querySelector('#shareQrWrap'), { text: url, width: 200, height: 200, colorDark: '#3C4340', colorLight: '#ffffff' }); root.querySelector('#shareQrClose').onclick = AS.closeModal; });
+}
+window.createShareAndShowQr = createShareAndShowQr;
+async function shareMaterialCollection() {
+  const items = AS.currentData.materials.map(m => ({ name: m.name, type: m.type, size: m.size, blobId: m.blobId, subject: m.subject, topic: m.topic }));
+  if (!items.length) { AS.toast('Noch kein Schulmaterial zum Teilen vorhanden.'); return; }
+  await createShareAndShowQr({ type: 'material', items }, 'Schulmaterial teilen');
+}
+window.shareMaterialCollection = shareMaterialCollection;
+async function shareDeck(deck) {
+  const cards = AS.currentData.flashcards.filter(c => c.deckId === deck.id).map(c => ({ front: c.front, back: c.back }));
+  if (!cards.length) { AS.toast('Dieser Stapel hat noch keine Karten.'); return; }
+  await createShareAndShowQr({ type: 'deck', name: deck.name, color: deck.color, cards }, `"${deck.name}" teilen`);
+}
+window.shareDeck = shareDeck;
+async function handleImportShare() {
+  const params = new URLSearchParams(location.search);
+  const importDeck = params.get('importDeck');
+  const importMaterial = params.get('importMaterial');
+  if (!importDeck && !importMaterial) return;
+  history.replaceState({}, '', location.pathname);
+  if (!AS.cloudEnabled()) { AS.toast('Aktiviere die Online-Speicherung in den Einstellungen, um geteilte Inhalte zu empfangen.'); return; }
+  if (importDeck) {
+    const pkg = await cloudGet(shareKey(importDeck));
+    if (!pkg || pkg.type !== 'deck') { AS.toast('Dieser Teilen-Link ist nicht mehr gültig.'); return; }
+    const newDeckId = 'd_' + Date.now();
+    AS.currentData.decks.push({ id: newDeckId, name: pkg.name, color: pkg.color || 'mint' });
+    (pkg.cards || []).forEach(c => AS.currentData.flashcards.push({ id: 'c_' + Date.now() + Math.random().toString(36).slice(2, 6), deckId: newDeckId, front: c.front, back: c.back }));
+    persist(); AS.toast(`Karteikarten-Stapel "${pkg.name}" wurde hinzugefügt ✦`);
+    if (getCurrentViewSafe() === 'learn') RENDERERS.learn();
+  }
+  if (importMaterial) {
+    const pkg = await cloudGet(shareKey(importMaterial));
+    if (!pkg || pkg.type !== 'material') { AS.toast('Dieser Teilen-Link ist nicht mehr gültig.'); return; }
+    (pkg.items || []).forEach(it => AS.currentData.materials.push({ id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6), name: it.name, subject: it.subject || '', topic: it.topic || '', type: it.type, size: it.size || 0, blobId: it.blobId, favorite: false, addedAt: Date.now() }));
+    persist(); AS.toast('Schulmaterial wurde übernommen ✦');
+    if (getCurrentViewSafe() === 'materials') RENDERERS.materials();
+  }
+}
+
+/* ---------------------------------------------------------------------- */
+/* Nutzer-Verzeichnis                                                     */
 /* ---------------------------------------------------------------------- */
 const KEY_USERS = 'as_users';
-const KEY_SESSION = 'as_session'; // rein lokal, gerätespezifisch — wird NIE zur Cloud synchronisiert
+const KEY_SESSION = 'as_session';
 const dataKey = (uid) => `as_data_${uid}`;
 
 AS.getUsers = () => AS.storage.get(KEY_USERS, {});
@@ -155,9 +194,6 @@ AS.currentData = null;
 function persist() { AS.saveData(AS.currentUser.uniqueId, AS.currentData); }
 window.persist = persist;
 
-/* ---------------------------------------------------------------------- */
-/* Unique ID                                                              */
-/* ---------------------------------------------------------------------- */
 function generateUniqueId() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const users = AS.getUsers();
@@ -167,9 +203,6 @@ function generateUniqueId() {
   return id;
 }
 
-/* ---------------------------------------------------------------------- */
-/* Toasts + Modal                                                         */
-/* ---------------------------------------------------------------------- */
 AS.toast = function (msg) {
   const el = document.createElement('div');
   el.className = 'toast'; el.textContent = msg;
@@ -195,7 +228,7 @@ function confirmModal(title, msg, onYes) {
 window.confirmModal = confirmModal;
 
 /* ---------------------------------------------------------------------- */
-/* Bild-Kompression — kein Upload-Limit, aber automatisch platzsparend    */
+/* Bild-Kompression                                                       */
 /* ---------------------------------------------------------------------- */
 function compressImage(file, maxDim, quality) {
   return new Promise((resolve, reject) => {
@@ -222,18 +255,17 @@ window.fileToDataUrl = fileToDataUrl;
 function limitsFor(kind) {
   const cloud = AS.cloudEnabled();
   const L = {
-    material:  { maxDim: cloud ? 1400 : 1000, quality: cloud ? 0.7 : 0.6 },
-    chatFile:  { maxDim: cloud ? 1200 : 900,  quality: cloud ? 0.68 : 0.58 },
-    noteImage: { maxDim: cloud ? 1100 : 850,  quality: cloud ? 0.65 : 0.55 },
-    avatar:    { maxDim: 260, quality: 0.75 },
+    material: { maxDim: cloud ? 1400 : 1000, quality: cloud ? 0.7 : 0.6 },
+    chatFile: { maxDim: cloud ? 1200 : 900, quality: cloud ? 0.68 : 0.58 },
+    noteImage: { maxDim: cloud ? 1100 : 850, quality: cloud ? 0.65 : 0.55 },
+    avatar: { maxDim: 260, quality: 0.75 },
   };
   return L[kind] || L.material;
 }
 window.limitsFor = limitsFor;
 
 /* ---------------------------------------------------------------------- */
-/* Avatare — unterstützt sowohl Blob-Referenz (neu) als auch direkt       */
-/* mitgesendete Bilddaten von Freunden (live per WebRTC, kein Speicher).  */
+/* Avatare                                                                */
 /* ---------------------------------------------------------------------- */
 const AVATAR_GRADIENTS = [['#B7E4D4', '#C3DFF7'], ['#F6D3B8', '#F8E39B'], ['#D9CBF2', '#C3DFF7'], ['#F6CBD6', '#B7E4D4'], ['#F8E39B', '#F6D3B8']];
 function avatarGradientFor(uid) { let h = 0; for (const c of uid) h = (h * 31 + c.charCodeAt(0)) >>> 0; return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length]; }
@@ -288,9 +320,6 @@ document.addEventListener('click', (e) => {
 
 function hideSplash() { const s = document.getElementById('splash'); if (!s) return; s.classList.add('fade-out'); setTimeout(() => s.remove(), 450); }
 
-/* ---------------------------------------------------------------------- */
-/* Cookie-/Speicher-Consent                                               */
-/* ---------------------------------------------------------------------- */
 function initConsentFlow(next) {
   const existing = AS.getConsent();
   if (existing) { next(); return; }
@@ -298,19 +327,15 @@ function initConsentFlow(next) {
   banner.classList.remove('hidden');
   document.getElementById('cookieAcceptBtn').addEventListener('click', async () => {
     AS.setConsent('cloud'); banner.classList.add('hidden');
-    // vorhandene lokale Daten (falls schon ein Account existiert) einmalig hochladen
     const session = AS.getSession();
-    if (session.accounts.length) {
-      cloudPut(KEY_USERS, AS.getUsers());
-      session.accounts.forEach(uid => { const d = AS.storage.get(dataKey(uid), null); if (d) cloudPut(dataKey(uid), d); });
-    }
+    if (session.accounts.length) { cloudPut(KEY_USERS, AS.getUsers()); session.accounts.forEach(uid => { const d = AS.storage.get(dataKey(uid), null); if (d) cloudPut(dataKey(uid), d); }); }
     AS.toast('Online-Speicherung aktiviert ✓'); next();
   });
   document.getElementById('cookieDeclineBtn').addEventListener('click', () => { AS.setConsent('local'); banner.classList.add('hidden'); next(); });
 }
 
 /* ---------------------------------------------------------------------- */
-/* Auth — Login mit Name + E-Mail, geräteübergreifend über den Server     */
+/* Auth                                                                   */
 /* ---------------------------------------------------------------------- */
 document.querySelectorAll('[data-authtab]').forEach(tab => {
   tab.addEventListener('click', () => {
@@ -330,34 +355,17 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
   const email = document.getElementById('loginEmail').value.trim().toLowerCase();
   if (!name || !email) { AS.toast('Bitte Name und E-Mail eingeben.'); return; }
   const btn = document.getElementById('loginBtn'); btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Anmelden…';
-
   let users = AS.getUsers();
   let found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
-
-  // Neues Gerät / lokal nicht bekannt: direkt vom Server nachsehen
   if (!found && AS.cloudEnabled()) {
     const remoteUsers = await cloudGet(KEY_USERS);
-    if (remoteUsers) {
-      users = { ...remoteUsers, ...users };
-      AS.saveUsersLocalOnly(users);
-      found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
-    }
+    if (remoteUsers) { users = { ...remoteUsers, ...users }; AS.saveUsersLocalOnly(users); found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name)); }
   }
-
-  if (!found) {
-    AS.toast(AS.cloudEnabled() ? 'Kein Account mit diesen Daten gefunden.' : 'Kein Account gefunden. Aktiviere in den Einstellungen die Online-Speicherung, um dich auf einem neuen Gerät anzumelden.');
-    btn.disabled = false; btn.textContent = 'Anmelden'; return;
-  }
-
-  // Aktuelle Account-Daten direkt vom Server laden (nicht nur lokal)
-  if (AS.cloudEnabled()) {
-    const remoteData = await cloudGet(dataKey(found.uniqueId));
-    if (remoteData) AS.storage.setLocalOnly(dataKey(found.uniqueId), remoteData);
-  }
+  if (!found) { AS.toast(AS.cloudEnabled() ? 'Kein Account mit diesen Daten gefunden.' : 'Kein Account gefunden. Aktiviere in den Einstellungen die Online-Speicherung, um dich auf einem neuen Gerät anzumelden.'); btn.disabled = false; btn.textContent = 'Anmelden'; return; }
+  if (AS.cloudEnabled()) { const remoteData = await cloudGet(dataKey(found.uniqueId)); if (remoteData) AS.storage.setLocalOnly(dataKey(found.uniqueId), remoteData); }
   loginAs(found.uniqueId);
 });
 
-/* Namen vergessen */
 document.getElementById('forgotNameLink').addEventListener('click', () => {
   document.getElementById('authTabsBar').classList.add('hidden');
   document.getElementById('loginPane').classList.add('hidden');
@@ -372,10 +380,7 @@ document.getElementById('forgotFindBtn').addEventListener('click', async () => {
   if (!email) { AS.toast('Bitte E-Mail eingeben.'); return; }
   let users = AS.getUsers();
   let found = Object.values(users).find(u => u.email.toLowerCase() === email);
-  if (!found && AS.cloudEnabled()) {
-    const remoteUsers = await cloudGet(KEY_USERS);
-    if (remoteUsers) { users = { ...remoteUsers, ...users }; AS.saveUsersLocalOnly(users); found = Object.values(users).find(u => u.email.toLowerCase() === email); }
-  }
+  if (!found && AS.cloudEnabled()) { const remoteUsers = await cloudGet(KEY_USERS); if (remoteUsers) { users = { ...remoteUsers, ...users }; AS.saveUsersLocalOnly(users); found = Object.values(users).find(u => u.email.toLowerCase() === email); } }
   if (!found) { AS.toast('Keine E-Mail mit diesem Account gefunden.'); return; }
   forgotUid = found.uniqueId;
   document.getElementById('forgotStep1').classList.add('hidden');
@@ -386,8 +391,7 @@ document.getElementById('forgotSaveBtn').addEventListener('click', async () => {
   const n2 = document.getElementById('forgotNewName2').value.trim();
   if (!n1 || !n2) { AS.toast('Bitte beide Felder ausfüllen.'); return; }
   if (normName(n1) !== normName(n2)) { AS.toast('Die beiden Namen stimmen nicht überein.'); return; }
-  const parts = n1.split(' ');
-  const first = parts[0]; const last = parts.slice(1).join(' ') || '';
+  const parts = n1.split(' '); const first = parts[0]; const last = parts.slice(1).join(' ') || '';
   let users = AS.getUsers();
   if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
   const u = users[forgotUid];
@@ -406,7 +410,6 @@ document.getElementById('forgotSaveBtn').addEventListener('click', async () => {
 document.getElementById('forgotBackToLogin1').addEventListener('click', () => { document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden'); });
 document.getElementById('forgotBackToLogin2').addEventListener('click', () => { document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden'); });
 
-/* Registrierung */
 function goToRegStep(n) {
   [1, 2, 3].forEach(i => document.getElementById('regStep' + i).classList.toggle('hidden', i !== n));
   document.querySelectorAll('#regStepDots span').forEach(d => { const step = +d.dataset.step; d.classList.toggle('active', step === n); d.classList.toggle('done', step < n); });
@@ -473,13 +476,23 @@ function logout() { flushPendingCloudWrites(); const session = AS.getSession(); 
 document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('logoutAllBtn').addEventListener('click', () => { flushPendingCloudWrites(); AS.saveSession({ currentUserId: null, accounts: [] }); AS.toast('Von allen Geräten abgemeldet (lokal).'); setTimeout(() => location.reload(), 700); });
 document.getElementById('addAccountBtn').addEventListener('click', () => { flushPendingCloudWrites(); const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); location.reload(); });
+
+/* Vollständige Account-Löschung: alle Blobs (Avatar, Material, Notiz-
+   Bilder/Zeichnungen, Chat-Dateien) UND der Hauptdatensatz UND der
+   Eintrag im globalen Nutzerverzeichnis werden auch online entfernt. */
 document.getElementById('deleteAccountBtn').addEventListener('click', () => {
-  confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan und deine Freundesliste werden unwiderruflich gelöscht.', async () => {
+  confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan, deine Freundesliste und alle hochgeladenen Dateien werden unwiderruflich gelöscht — auch online.', async () => {
     const uid = AS.currentUser.uniqueId;
+    const data = AS.currentData;
+    if (AS.currentUser.avatarBlobId) AS.deleteBlob(AS.currentUser.avatarBlobId);
+    (data.materials || []).forEach(m => { if (m.blobId) AS.deleteBlob(m.blobId); });
+    (data.notePages || []).forEach(p => { if (p.drawingBlobId) AS.deleteBlob(p.drawingBlobId); (p.imageBlobIds || []).forEach(id => AS.deleteBlob(id)); });
+    Object.values(data.conversations || {}).forEach(msgs => { msgs.forEach(m => { if (m.file && m.file.blobId) AS.deleteBlob(m.file.blobId); }); });
     await deleteUserCloudSafe(uid);
     AS.storage.remove(dataKey(uid));
     const session = AS.getSession(); session.accounts = session.accounts.filter(a => a !== uid); session.currentUserId = null; AS.saveSession(session);
-    AS.toast('Account gelöscht.'); setTimeout(() => location.reload(), 600);
+    AS.toast('Account und alle zugehörigen Daten wurden gelöscht.');
+    setTimeout(() => location.reload(), 700);
   });
 });
 document.getElementById('exportDataBtn').addEventListener('click', () => {
@@ -508,7 +521,8 @@ function boot() {
     if (window.ASRealtime) window.ASRealtime.init(AS.currentUser.uniqueId);
     startTimetableClock();
     handleQrAutoFriend();
-    if (AS.currentUser.avatarBlobId) AS.getBlob(AS.currentUser.avatarBlobId); // Avatar-Cache vorwärmen
+    handleImportShare();
+    if (AS.currentUser.avatarBlobId) AS.getBlob(AS.currentUser.avatarBlobId);
   });
 }
 function handleQrAutoFriend() {
@@ -535,7 +549,6 @@ function applyTheme() {
   document.documentElement.style.setProperty('--accent-2', accent2);
 }
 function renderSidebarProfile() { document.getElementById('sidebarName').textContent = AS.currentUser.firstName; renderAvatar(document.getElementById('topbarAvatar'), AS.currentUser); }
-
 function initNavGroups() { setupNavGroup('groupOrganisieren', 'groupOrganisierenBody', true); setupNavGroup('groupSozial', 'groupSozialBody', true); }
 function setupNavGroup(headId, bodyId, defaultOpen) {
   const head = document.getElementById(headId), body = document.getElementById(bodyId);
@@ -855,10 +868,17 @@ function openCalDayModal(iso) {
 }
 
 /* ======================================================================
-   MATERIALS — nutzt Blob-Speicher, asynchrones Laden/Download
+   MATERIALS — inkl. "🔗 Teilen"-Button (ganze Sammlung per QR-Code)
    ====================================================================== */
 let materialQuery = '';
 RENDERERS.materials = function () {
+  const headParent = document.getElementById('uploadMaterialBtn').parentElement;
+  if (!document.getElementById('shareMaterialBtn')) {
+    const shareBtn = document.createElement('button');
+    shareBtn.id = 'shareMaterialBtn'; shareBtn.className = 'btn btn-sm btn-outline'; shareBtn.textContent = '🔗 Teilen'; shareBtn.style.marginRight = '8px';
+    headParent.insertBefore(shareBtn, document.getElementById('uploadMaterialBtn'));
+    shareBtn.addEventListener('click', shareMaterialCollection);
+  }
   let list = [...AS.currentData.materials];
   if (materialQuery) list = list.filter(m => (m.name + ' ' + m.subject + ' ' + m.topic).toLowerCase().includes(materialQuery.toLowerCase()));
   list.sort((a, b) => b.addedAt - a.addedAt);
@@ -868,21 +888,9 @@ RENDERERS.materials = function () {
     const isImg = (m.type || '').includes('image');
     return `<div class="card no-margin" style="padding:0;overflow:hidden;"><div class="mat-thumb" data-thumb="${m.id}">${isImg ? '⏳' : iconForType(m.type)}</div><div style="padding:12px;"><strong style="font-size:.85rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name)}</strong><div class="tiny">${escapeHtml(m.subject || 'Ohne Fach')}${m.topic ? ' · ' + escapeHtml(m.topic) : ''}</div><div class="tiny">${(m.size / 1024).toFixed(0)} KB</div><div class="row" style="margin-top:8px;gap:6px;"><span class="btn btn-sm btn-outline" data-download="${m.id}" style="cursor:pointer;">Download</span><span class="tiny" style="cursor:pointer;margin-left:auto;color:var(--danger);" data-delm="${m.id}">🗑️</span></div></div></div>`;
   }).join('');
-  box.querySelectorAll('[data-thumb]').forEach(el => {
-    const m = list.find(x => x.id === el.dataset.thumb);
-    if ((m.type || '').includes('image') && m.blobId) asyncImg(m.blobId, (data) => { el.innerHTML = `<img src="${data}" alt="">`; });
-  });
-  box.querySelectorAll('[data-download]').forEach(el => el.addEventListener('click', async () => {
-    const m = list.find(x => x.id === el.dataset.download);
-    el.textContent = '…'; const data = await AS.getBlob(m.blobId); el.textContent = 'Download';
-    if (!data) { AS.toast('Datei konnte nicht geladen werden.'); return; }
-    const a = document.createElement('a'); a.href = data; a.download = m.name; a.click();
-  }));
-  box.querySelectorAll('[data-delm]').forEach(el => el.addEventListener('click', () => {
-    const m = AS.currentData.materials.find(x => x.id === el.dataset.delm);
-    if (m && m.blobId) AS.deleteBlob(m.blobId);
-    AS.currentData.materials = AS.currentData.materials.filter(x => x.id !== el.dataset.delm); persist(); RENDERERS.materials();
-  }));
+  box.querySelectorAll('[data-thumb]').forEach(el => { const m = list.find(x => x.id === el.dataset.thumb); if ((m.type || '').includes('image') && m.blobId) asyncImg(m.blobId, (data) => { el.innerHTML = `<img src="${data}" alt="">`; }); });
+  box.querySelectorAll('[data-download]').forEach(el => el.addEventListener('click', async () => { const m = list.find(x => x.id === el.dataset.download); el.textContent = '…'; const data = await AS.getBlob(m.blobId); el.textContent = 'Download'; if (!data) { AS.toast('Datei konnte nicht geladen werden.'); return; } const a = document.createElement('a'); a.href = data; a.download = m.name; a.click(); }));
+  box.querySelectorAll('[data-delm]').forEach(el => el.addEventListener('click', () => { const m = AS.currentData.materials.find(x => x.id === el.dataset.delm); if (m && m.blobId) AS.deleteBlob(m.blobId); AS.currentData.materials = AS.currentData.materials.filter(x => x.id !== el.dataset.delm); persist(); RENDERERS.materials(); }));
 };
 function iconForType(t) { if (t.includes('pdf')) return '📕'; if (t.includes('image')) return '🖼️'; if (t.includes('presentation') || t.includes('powerpoint')) return '📊'; if (t.includes('word') || t.includes('document')) return '📄'; return '📁'; }
 document.getElementById('materialSearch').addEventListener('input', (e) => { materialQuery = e.target.value; RENDERERS.materials(); });
@@ -936,11 +944,8 @@ RENDERERS.settings = function () {
 };
 document.getElementById('cloudSyncToggle').addEventListener('change', (e) => {
   AS.setConsent(e.target.checked ? 'cloud' : 'local');
-  if (e.target.checked) {
-    cloudPut(KEY_USERS, AS.getUsers());
-    cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData);
-    AS.toast('Online-Speicherung aktiviert — bereits vorhandene Daten werden jetzt hochgeladen.');
-  } else AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
+  if (e.target.checked) { cloudPut(KEY_USERS, AS.getUsers()); cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData); AS.toast('Online-Speicherung aktiviert — bereits vorhandene Daten werden jetzt hochgeladen.'); }
+  else AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
 });
 
 /* ======================================================================
