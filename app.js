@@ -1,1073 +1,441 @@
 /* ==========================================================================
-   Schoolify — app.js (v5, vollständig)
-   Vollständige Account-Löschung (inkl. aller Cloud-Blobs), QR-Teilen für
-   Schulmaterial & Karteikarten-Stapel. Ansonsten wie v4: kompakte
-   Cloud-Speicherung mit Blob-System, geräteübergreifendes Login.
+   Schoolify — realtime.js (v4, vollständig)
+   Chat-Dateien nutzen jetzt Blob-Speicher (kleine Referenz im
+   Hauptdatensatz statt eingebettetem Base64). Zuverlässiges PeerJS mit
+   STUN/TURN + Dauer-Reconnect. Kategorisierte, live wirksame
+   Sicherheitseinstellungen. AirSignal-Direktauswahl. Funktionierendes
+   Blockieren/Entblocken.
    ========================================================================== */
 
-const AS = (window.AS = {});
+const ASRealtime = (window.ASRealtime = {
+  peer: null, conns: {}, knownProfiles: {}, pendingSearch: null, activeChatUid: null, lastGeo: null, airSelected: new Set(),
+  _reconnectTimer: null, _pendingRequests: {},
+});
+
+function myData() { return AS.currentData; }
+function mySec() { return AS.currentData.security; }
+
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }, { urls: 'stun:global.stun.twilio.com:3478' },
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  ]
+};
 
 /* ---------------------------------------------------------------------- */
-/* Cloud-Speicher (Personal Data Box)                                     */
+/* Connection lifecycle — mit automatischem Dauer-Reconnect               */
 /* ---------------------------------------------------------------------- */
-const CLOUD_BASE = "https://personal-data-box.lovable.app/api/public/v1/b179d2ca-a983-4ef7-869a-32466eaa6db1";
-const CONSENT_KEY = 'as_consent';
-
-AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
-AS.setConsent = (v) => localStorage.setItem(CONSENT_KEY, v);
-AS.cloudEnabled = () => AS.getConsent() === 'cloud';
-
-async function cloudPut(key, value) {
-  try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }); }
-  catch (e) {}
-}
-async function cloudGet(key) {
-  try { const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`); if (!res.ok) return undefined; const data = await res.json(); return data && data.value !== undefined ? data.value : data; }
-  catch (e) { return undefined; }
-}
-async function cloudDelete(key) { try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {} }
-
-const _cloudDebounceTimers = {};
-function cloudPutDebounced(key, value, delay = 900) {
-  if (_cloudDebounceTimers[key]) clearTimeout(_cloudDebounceTimers[key]);
-  _cloudDebounceTimers[key] = setTimeout(() => { cloudPut(key, value); delete _cloudDebounceTimers[key]; }, delay);
-}
-function flushPendingCloudWrites() {
-  if (AS.currentUser && AS.currentData && AS.cloudEnabled()) cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData);
-  Object.keys(_cloudDebounceTimers).forEach(k => clearTimeout(_cloudDebounceTimers[k]));
-  Object.keys(_cloudDebounceTimers).forEach(k => delete _cloudDebounceTimers[k]);
-}
-window.flushPendingCloudWrites = flushPendingCloudWrites;
-window.addEventListener('beforeunload', flushPendingCloudWrites);
-
-const CLOUD_LIMIT_BYTES = 12 * 1024 * 1024; const LOCAL_LIMIT_BYTES = 5 * 1024 * 1024; function usageLimitBytes() { return AS.cloudEnabled() ? CLOUD_LIMIT_BYTES : LOCAL_LIMIT_BYTES; }
-
-function computeUsageBytes() { if (!AS.currentUser || !AS.currentData) return 0; let total = 0; try { total += JSON.stringify(AS.currentData).length; } catch (e) {} total += AS.currentUser.avatarBytes || 0; (AS.currentData.materials || []).forEach(m => { total += m.size || 0; }); (AS.currentData.notePages || []).forEach(p => { total += p.drawingBytes || 0; total += (p.imageBytesList || []).reduce((a, b) => a + (b || 0), 0); }); Object.values(AS.currentData.conversations || {}).forEach(msgs => { msgs.forEach(m => { if (m.file) total += m.file.bytes || 0; }); }); return total; } function isOverLimit(extraBytes) { return (computeUsageBytes() + (extraBytes || 0)) > usageLimitBytes(); } function formatBytes(b) { if (b < 1024) return b + ' B'; if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB'; return (b / 1024 / 1024).toFixed(1) + ' MB'; } window.isOverLimit = isOverLimit; window.computeUsageBytes = computeUsageBytes; window.usageLimitBytes = usageLimitBytes; window.formatBytes = formatBytes;
-
-function renderStorageBar() { const fill = document.getElementById('storageBarFill'); if (!fill || !AS.currentUser) return; const used = computeUsageBytes(); const limit = usageLimitBytes(); const pct = Math.min(100, Math.round((used / limit) * 100)); fill.style.width = pct + '%'; fill.classList.toggle('warn', pct >= 70 && pct < 92); fill.classList.toggle('full', pct >= 92); document.getElementById('storageUsedLabel').textContent = ${formatBytes(used)} von ${formatBytes(limit)} (${AS.cloudEnabled() ? 'online' : 'lokal'}); document.getElementById('storagePercentLabel').textContent = pct + '%'; const msgEl = document.getElementById('storageFullMsg'); if (pct >= 100) { msgEl.style.display = 'block'; msgEl.textContent = Speicher voll! Bitte lösche alte Dateien/Notizen — oder deinen Account, falls du Schoolify nicht mehr brauchst, damit der Platz für andere Schüler frei wird.; } else if (pct >= 92) { msgEl.style.display = 'block'; msgEl.textContent = 'Fast voll — bald solltest du aufräumen.'; } else msgEl.style.display = 'none'; } window.renderStorageBar = renderStorageBar;
-
-/* ---------------------------------------------------------------------- */
-/* Speicher-Kontingent: 12 MB online (Cloudflare KV), 5 MB rein lokal     */
-/* ---------------------------------------------------------------------- */
-const CLOUD_LIMIT_BYTES = 12 * 1024 * 1024;
-const LOCAL_LIMIT_BYTES = 5 * 1024 * 1024;
-function usageLimitBytes() { return AS.cloudEnabled() ? CLOUD_LIMIT_BYTES : LOCAL_LIMIT_BYTES; }
-
-function computeUsageBytes() {
-  if (!AS.currentUser || !AS.currentData) return 0;
-  let total = 0;
-  try { total += JSON.stringify(AS.currentData).length; } catch (e) {}
-  total += AS.currentUser.avatarBytes || 0;
-  (AS.currentData.materials || []).forEach(m => { total += m.size || 0; });
-  (AS.currentData.notePages || []).forEach(p => {
-    total += p.drawingBytes || 0;
-    total += (p.imageBytesList || []).reduce((a, b) => a + (b || 0), 0);
+ASRealtime.init = function (uid) {
+  if (this.peer && !this.peer.destroyed) return;
+  this._createPeer(uid);
+  if (this._reconnectTimer) clearInterval(this._reconnectTimer);
+  this._reconnectTimer = setInterval(() => this._reconnectAllFriends(), 5000);
+};
+ASRealtime._createPeer = function (uid) {
+  try { this.peer = new Peer(uid, { debug: 0, config: ICE_CONFIG }); }
+  catch (e) { AS.toast('Echtzeit-Verbindung konnte nicht gestartet werden.'); return; }
+  this.peer.on('open', () => { this._reconnectAllFriends(); this._retryPendingRequests(); });
+  this.peer.on('connection', (conn) => this.handleIncomingConnection(conn));
+  this.peer.on('disconnected', () => { if (this.peer && !this.peer.destroyed) { try { this.peer.reconnect(); } catch (e) {} } });
+  this.peer.on('close', () => { setTimeout(() => { if (AS.currentUser) this._createPeer(AS.currentUser.uniqueId); }, 2000); });
+  this.peer.on('error', (err) => {
+    const msg = String(err);
+    if (msg.includes('unavailable-id')) { AS.toast('Dieses Gerät ist bereits mit deinem Account verbunden (anderer Tab?).'); return; }
+    if (msg.includes('peer-unavailable')) return;
+    setTimeout(() => { if (AS.currentUser && (!this.peer || this.peer.destroyed)) this._createPeer(AS.currentUser.uniqueId); }, 3000);
   });
-  Object.values(AS.currentData.conversations || {}).forEach(msgs => {
-    msgs.forEach(m => { if (m.file) total += m.file.bytes || 0; });
+};
+ASRealtime._reconnectAllFriends = function () { if (!AS.currentData) return; myData().friends.forEach(fid => { if (myData().blocked.includes(fid)) return; if (!(this.conns[fid] && this.conns[fid].open)) this.connectToPeer(fid, true); }); };
+ASRealtime.disconnect = function () { if (this._reconnectTimer) clearInterval(this._reconnectTimer); Object.values(this.conns).forEach(c => { try { c.close(); } catch (e) {} }); this.conns = {}; if (this.peer) { try { this.peer.destroy(); } catch (e) {} } };
+ASRealtime.connectToPeer = function (uid, silent) {
+  return new Promise((resolve) => {
+    if (myData().blocked.includes(uid)) { resolve(null); return; }
+    if (this.conns[uid] && this.conns[uid].open) { resolve(this.conns[uid]); return; }
+    if (!this.peer || this.peer.destroyed) { resolve(null); return; }
+    let settled = false; let conn;
+    try { conn = this.peer.connect(uid, { reliable: true, metadata: { from: AS.currentUser.uniqueId } }); } catch (e) { resolve(null); return; }
+    const timeout = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, 8000);
+    conn.on('open', () => { this.conns[uid] = conn; this.wireConnection(conn); this.sendTo(uid, { type: 'hello', profile: publicProfile() }); settled = true; clearTimeout(timeout); resolve(conn); this.refreshPresenceUI(); });
+    conn.on('error', () => { if (!settled) { settled = true; clearTimeout(timeout); resolve(null); } });
   });
-  return total;
-}
-function isOverLimit(extraBytes) { return (computeUsageBytes() + (extraBytes || 0)) > usageLimitBytes(); }
-function formatBytes(b) { if (b < 1024) return b + ' B'; if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB'; return (b / 1024 / 1024).toFixed(1) + ' MB'; }
-window.isOverLimit = isOverLimit;
-window.computeUsageBytes = computeUsageBytes;
-window.usageLimitBytes = usageLimitBytes;
-window.formatBytes = formatBytes;
-
-function renderStorageBar() {
-  const fill = document.getElementById('storageBarFill');
-  if (!fill || !AS.currentUser) return;
-  const used = computeUsageBytes();
-  const limit = usageLimitBytes();
-  const pct = Math.min(100, Math.round((used / limit) * 100));
-  fill.style.width = pct + '%';
-  fill.classList.toggle('warn', pct >= 70 && pct < 92);
-  fill.classList.toggle('full', pct >= 92);
-  document.getElementById('storageUsedLabel').textContent = `${formatBytes(used)} von ${formatBytes(limit)} (${AS.cloudEnabled() ? 'online' : 'lokal'})`;
-  document.getElementById('storagePercentLabel').textContent = pct + '%';
-  const msgEl = document.getElementById('storageFullMsg');
-  if (pct >= 100) { msgEl.style.display = 'block'; msgEl.textContent = `Speicher voll! Bitte lösche alte Dateien/Notizen — oder deinen Account, falls du Schoolify nicht mehr brauchst, damit der Platz für andere Schüler frei wird.`; }
-  else if (pct >= 92) { msgEl.style.display = 'block'; msgEl.textContent = 'Fast voll — bald solltest du aufräumen.'; }
-  else msgEl.style.display = 'none';
-}
-window.renderStorageBar = renderStorageBar;
-
-AS.storage = {
-  get(key, fallback) { try { const raw = localStorage.getItem(key); return raw === null ? fallback : JSON.parse(raw); } catch (e) { return fallback; } },
-  set(key, value, opts) {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-      if (AS.cloudEnabled()) { if (opts && opts.immediate) cloudPut(key, value); else cloudPutDebounced(key, value); }
-      return true;
-    } catch (e) { AS.toast('Speicher ist voll — bitte alte Dateien/Notizen löschen.'); return false; }
-  },
-  setLocalOnly(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; } },
-  remove(key) { localStorage.removeItem(key); if (AS.cloudEnabled()) cloudDelete(key); }
 };
+ASRealtime.handleIncomingConnection = function (conn) {
+  const fromUid = conn.peer;
+  if (myData().blocked.includes(fromUid)) { conn.close(); return; }
+  conn.on('open', () => { this.conns[fromUid] = conn; this.wireConnection(conn); this.sendTo(fromUid, { type: 'hello', profile: publicProfile() }); this.refreshPresenceUI(); });
+};
+ASRealtime.wireConnection = function (conn) { conn.off && conn.off('data'); conn.on('data', (msg) => this.handleMessage(conn.peer, msg)); conn.on('close', () => { delete this.conns[conn.peer]; this.refreshPresenceUI(); }); conn.on('error', () => { delete this.conns[conn.peer]; this.refreshPresenceUI(); }); };
+ASRealtime.sendTo = function (uid, obj) { const c = this.conns[uid]; if (c && c.open) { c.send(obj); return true; } return false; };
+ASRealtime.onlineFriends = function () { return myData().friends.filter(f => this.conns[f] && this.conns[f].open); };
+ASRealtime.sendReliable = async function (uid, payload, key) {
+  const attemptKey = key || uid + '_' + payload.type;
+  let tries = 0;
+  const tryOnce = async () => { tries++; const conn = await this.connectToPeer(uid, true); if (conn && this.sendTo(uid, payload)) { delete this._pendingRequests[attemptKey]; return true; } return false; };
+  const ok = await tryOnce();
+  if (!ok) { this._pendingRequests[attemptKey] = { uid, payload, tries }; setTimeout(() => this._retryOne(attemptKey), 3000); }
+};
+ASRealtime._retryOne = async function (key) {
+  const p = this._pendingRequests[key]; if (!p) return;
+  const conn = await this.connectToPeer(p.uid, true);
+  if (conn && this.sendTo(p.uid, p.payload)) { delete this._pendingRequests[key]; AS.toast('Verbindung hergestellt — Anfrage zugestellt ✓'); return; }
+  p.tries++;
+  if (p.tries < 6) setTimeout(() => this._retryOne(key), 3000); else delete this._pendingRequests[key];
+};
+ASRealtime._retryPendingRequests = function () { Object.keys(this._pendingRequests).forEach(key => this._retryOne(key)); };
 
 /* ---------------------------------------------------------------------- */
-/* Blob-Speicher                                                          */
+/* Incoming message router                                                */
 /* ---------------------------------------------------------------------- */
-const BLOB_CACHE_PREFIX = 'as_blob_';
-function blobKey(id) { return 'blob_' + id; }
-AS.saveBlob = async function (id, dataUrl) {
-  try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
-  if (AS.cloudEnabled()) await cloudPut(blobKey(id), dataUrl);
-};
-AS.getBlobCached = function (id) { try { return localStorage.getItem(BLOB_CACHE_PREFIX + id); } catch (e) { return null; } };
-AS.getBlob = async function (id) {
-  const cached = AS.getBlobCached(id);
-  if (cached !== null) return cached;
-  if (AS.cloudEnabled()) { const remote = await cloudGet(blobKey(id)); if (remote !== undefined && remote !== null) { try { localStorage.setItem(BLOB_CACHE_PREFIX + id, remote); } catch (e) {} return remote; } }
-  return null;
-};
-AS.deleteBlob = function (id) { try { localStorage.removeItem(BLOB_CACHE_PREFIX + id); } catch (e) {} if (AS.cloudEnabled()) cloudDelete(blobKey(id)); };
-function asyncImg(blobId, onReady) {
-  if (!blobId) return;
-  const cached = AS.getBlobCached(blobId);
-  if (cached) { onReady(cached); return; }
-  AS.getBlob(blobId).then(data => { if (data) onReady(data); });
-}
-window.asyncImg = asyncImg;
-
-/* ---------------------------------------------------------------------- */
-/* Teilen per QR-Code (Schulmaterial & Karteikarten-Stapel)               */
-/* ---------------------------------------------------------------------- */
-function shareKey(id) { return 'share_' + id; }
-function genShareId() { const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 10; i++) s += chars[Math.floor(Math.random() * chars.length)]; return s; }
-async function createShareAndShowQr(pkg, titleForModal) {
-  if (!AS.cloudEnabled()) { AS.toast('Bitte aktiviere zuerst die Online-Speicherung (Einstellungen → Sicherheit), um per QR-Code zu teilen.'); return; }
-  const id = genShareId();
-  await cloudPut(shareKey(id), pkg);
-  const paramName = pkg.type === 'deck' ? 'importDeck' : 'importMaterial';
-  const url = `${location.origin}${location.pathname}?${paramName}=${id}`;
-  AS.modal(`<div style="text-align:center;"><h3>${titleForModal} 📤</h3><div id="shareQrWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="tiny">Scannen überträgt den Inhalt direkt in den Account der Person (dort muss die Online-Speicherung ebenfalls aktiv sein).</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="shareQrClose">Schließen</button></div></div>`,
-    (root) => { new QRCode(root.querySelector('#shareQrWrap'), { text: url, width: 200, height: 200, colorDark: '#3C4340', colorLight: '#ffffff' }); root.querySelector('#shareQrClose').onclick = AS.closeModal; });
-}
-window.createShareAndShowQr = createShareAndShowQr;
-async function shareMaterialCollection() {
-  const items = AS.currentData.materials.map(m => ({ name: m.name, type: m.type, size: m.size, blobId: m.blobId, subject: m.subject, topic: m.topic }));
-  if (!items.length) { AS.toast('Noch kein Schulmaterial zum Teilen vorhanden.'); return; }
-  await createShareAndShowQr({ type: 'material', items }, 'Schulmaterial teilen');
-}
-window.shareMaterialCollection = shareMaterialCollection;
-async function shareDeck(deck) {
-  const cards = AS.currentData.flashcards.filter(c => c.deckId === deck.id).map(c => ({ front: c.front, back: c.back }));
-  if (!cards.length) { AS.toast('Dieser Stapel hat noch keine Karten.'); return; }
-  await createShareAndShowQr({ type: 'deck', name: deck.name, color: deck.color, cards }, `"${deck.name}" teilen`);
-}
-window.shareDeck = shareDeck;
-async function handleImportShare() {
-  const params = new URLSearchParams(location.search);
-  const importDeck = params.get('importDeck');
-  const importMaterial = params.get('importMaterial');
-  if (!importDeck && !importMaterial) return;
-  history.replaceState({}, '', location.pathname);
-  if (!AS.cloudEnabled()) { AS.toast('Aktiviere die Online-Speicherung in den Einstellungen, um geteilte Inhalte zu empfangen.'); return; }
-  if (importDeck) {
-    const pkg = await cloudGet(shareKey(importDeck));
-    if (!pkg || pkg.type !== 'deck') { AS.toast('Dieser Teilen-Link ist nicht mehr gültig.'); return; }
-    const newDeckId = 'd_' + Date.now();
-    AS.currentData.decks.push({ id: newDeckId, name: pkg.name, color: pkg.color || 'mint' });
-    (pkg.cards || []).forEach(c => AS.currentData.flashcards.push({ id: 'c_' + Date.now() + Math.random().toString(36).slice(2, 6), deckId: newDeckId, front: c.front, back: c.back }));
-    persist(); AS.toast(`Karteikarten-Stapel "${pkg.name}" wurde hinzugefügt ✦`);
-    if (getCurrentViewSafe() === 'learn') RENDERERS.learn();
+ASRealtime.handleMessage = function (fromUid, msg) {
+  if (myData().blocked.includes(fromUid)) return;
+  switch (msg.type) {
+    case 'hello':
+      this.knownProfiles[fromUid] = msg.profile;
+      if (this.pendingSearch === fromUid) renderFriendSearchResult(msg.profile);
+      if (getCurrentView() === 'friends') RENDERERS.friends();
+      if (getCurrentView() === 'chat') { renderChatConvoList(); if (ASRealtime.activeChatUid === fromUid) refreshChatHeader(fromUid); }
+      if (getCurrentView() === 'airsignal') RENDERERS.airsignal();
+      if (getCurrentView() === 'dashboard') RENDERERS.dashboard();
+      break;
+    case 'friend_request':
+      if (mySec().whoCanFriendRequest === 'nobody') return;
+      if (!myData().friendRequestsIn.find(r => r.from === fromUid) && !myData().friends.includes(fromUid)) {
+        myData().friendRequestsIn.push({ from: fromUid, profile: msg.profile, ts: Date.now() });
+        persist();
+        if (myData().settings.notifFriendRequests) AS.toast(`${msg.profile.firstName} möchte mit dir befreundet sein ✦`);
+        if (getCurrentView() === 'friends') RENDERERS.friends();
+      }
+      break;
+    case 'friend_response':
+      if (msg.accepted) { if (!myData().friends.includes(fromUid)) myData().friends.push(fromUid); myData().friendRequestsOut = myData().friendRequestsOut.filter(u => u !== fromUid); persist(); AS.toast(`Ihr seid jetzt befreundet ♡`); }
+      else { myData().friendRequestsOut = myData().friendRequestsOut.filter(u => u !== fromUid); persist(); }
+      if (getCurrentView() === 'friends') RENDERERS.friends();
+      break;
+    case 'chat':
+      if (mySec().whoCanMessage === 'friends' && !myData().friends.includes(fromUid)) return;
+      addIncomingChatMessage(fromUid, msg.text, msg.file || null);
+      break;
+    case 'airsignal':
+      if (mySec().airsignalReceiveFrom === 'friends' && !myData().friends.includes(fromUid)) return;
+      if (mySec().airsignalAutoAccept) autoAcceptAirsignal(fromUid, msg.payload); else showAirsignalPopup(fromUid, msg.payload);
+      break;
+    case 'presence_geo':
+      if (this.knownProfiles[fromUid]) this.knownProfiles[fromUid].geo = msg.geo;
+      if (getCurrentView() === 'airsignal') RENDERERS.airsignal();
+      break;
+    case 'block_notice': delete this.conns[fromUid]; if (getCurrentView() === 'friends') RENDERERS.friends(); break;
   }
-  if (importMaterial) {
-    const pkg = await cloudGet(shareKey(importMaterial));
-    if (!pkg || pkg.type !== 'material') { AS.toast('Dieser Teilen-Link ist nicht mehr gültig.'); return; }
-    (pkg.items || []).forEach(it => AS.currentData.materials.push({ id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6), name: it.name, subject: it.subject || '', topic: it.topic || '', type: it.type, size: it.size || 0, blobId: it.blobId, favorite: false, addedAt: Date.now() }));
-    persist(); AS.toast('Schulmaterial wurde übernommen ✦');
-    if (getCurrentViewSafe() === 'materials') RENDERERS.materials();
-  }
-}
-
-/* ---------------------------------------------------------------------- */
-/* Nutzer-Verzeichnis                                                     */
-/* ---------------------------------------------------------------------- */
-const KEY_USERS = 'as_users';
-const KEY_SESSION = 'as_session';
-const dataKey = (uid) => `as_data_${uid}`;
-
-AS.getUsers = () => AS.storage.get(KEY_USERS, {});
-AS.saveUsers = (u) => AS.storage.set(KEY_USERS, u, { immediate: true });
-AS.saveUsersLocalOnly = (u) => AS.storage.setLocalOnly(KEY_USERS, u);
-AS.getSession = () => AS.storage.get(KEY_SESSION, { currentUserId: null, accounts: [] });
-AS.saveSession = (s) => AS.storage.setLocalOnly(KEY_SESSION, s);
-
-async function upsertUserCloudSafe(userObj) {
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
-  users[userObj.uniqueId] = userObj;
-  AS.saveUsers(users);
-  return users;
-}
-window.upsertUserCloudSafe = upsertUserCloudSafe;
-async function deleteUserCloudSafe(uid) {
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
-  delete users[uid];
-  AS.saveUsers(users);
-}
-
-function defaultData() {
-  return {
-    friends: [], friendRequestsIn: [], friendRequestsOut: [], blocked: [],
-    noteFolders: [], notePages: [],
-    tasks: [], timetable: [], materials: [], conversations: {}, calendarEvents: [],
-    todoTemplate: { 0: [], 1: [], 2: [], 3: [], 4: [] },
-    todoLog: {}, todoStreak: 0, todoBestStreak: 0, todoMode: 'checklist',
-    decks: [], flashcards: [],
-    devices: [{ id: 'device-' + Math.random().toString(36).slice(2, 8), label: navigator.userAgent.slice(0, 40), lastActive: Date.now() }],
-    security: {
-      profileVisibility: 'everyone', avatarVisibility: 'everyone', discoverableByUid: true,
-      whoCanFriendRequest: 'everyone', whoCanMessage: 'friends', blockUnknown: true,
-      onlineStatusVisible: true, onlineStatusFriendsOnly: true, activityStatus: true, readReceipts: true,
-      airsignalActive: true, airsignalVisibility: 'friends', airsignalReceiveFrom: 'friends', airsignalAutoAccept: false,
-    },
-    settings: { accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false, notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true }
-  };
-}
-AS.getData = (uid) => {
-  const d = AS.storage.get(dataKey(uid), defaultData());
-  const def = defaultData();
-  Object.keys(def).forEach(k => { if (d[k] === undefined) d[k] = def[k]; });
-  Object.keys(def.security).forEach(k => { if (d.security[k] === undefined) d.security[k] = def.security[k]; });
-  Object.keys(def.settings).forEach(k => { if (d.settings[k] === undefined) d.settings[k] = def.settings[k]; });
-  if (!d.todoMode) d.todoMode = 'checklist';
-  if (!d.decks) d.decks = [];
-  if (!d.flashcards) d.flashcards = [];
-  return d;
 };
-AS.saveData = (uid, d, opts) => AS.storage.set(dataKey(uid), d, opts);
+function getCurrentView() { return VIEWS.find(v => !document.getElementById('view-' + v).classList.contains('hidden')); }
 
-AS.currentUser = null;
-AS.currentData = null;
-function persist() { AS.saveData(AS.currentUser.uniqueId, AS.currentData); }
-window.persist = persist;
-
-function generateUniqueId() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  const users = AS.getUsers();
-  let id;
-  do { id = ''; for (let i = 0; i < 8; i++) id += chars[Math.floor(Math.random() * chars.length)]; }
-  while (users[id]);
-  return id;
+/* ======================================================================
+   FRIENDS
+   ====================================================================== */
+document.getElementById('friendSearchBtn').addEventListener('click', async () => {
+  const uid = document.getElementById('friendSearchInput').value.trim().toUpperCase();
+  const resBox = document.getElementById('friendSearchResult');
+  if (!uid) return;
+  if (uid === AS.currentUser.uniqueId) { AS.toast('Das ist deine eigene Unique ID 😄'); return; }
+  if (myData().blocked.includes(uid)) { AS.toast('Diese Person ist blockiert.'); return; }
+  resBox.innerHTML = `<span class="muted row" style="gap:8px;"><span class="spinner-sm"></span> Verbinde…</span>`;
+  ASRealtime.pendingSearch = uid;
+  const conn = await ASRealtime.connectToPeer(uid);
+  if (!conn) { resBox.innerHTML = `<span class="muted">Niemand mit dieser Unique ID ist gerade online. Bitte später erneut versuchen.</span>`; return; }
+  setTimeout(() => { if (!ASRealtime.knownProfiles[uid]) resBox.innerHTML = `<span class="muted">Verbunden, warte auf Profil…</span>`; }, 400);
+});
+function renderFriendSearchResult(profile) {
+  const resBox = document.getElementById('friendSearchResult');
+  const already = myData().friends.includes(profile.uniqueId); const requested = myData().friendRequestsOut.includes(profile.uniqueId);
+  resBox.innerHTML = `<div class="list-row"><div class="avatar clickable sr-av" data-uid="${profile.uniqueId}" style="width:40px;height:40px;font-size:.85rem;"></div><div style="flex:1;"><strong>${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</strong><div class="tiny">@${escapeHtml(profile.username)} · ${profile.uniqueId}</div></div>${already ? '<span class="pill">Schon befreundet</span>' : requested ? '<span class="pill">Angefragt</span>' : '<button class="btn btn-sm" id="sendFriendReq">Freund hinzufügen</button>'}</div>`;
+  renderAvatar(resBox.querySelector('.sr-av'), profile);
+  const btn = resBox.querySelector('#sendFriendReq');
+  if (btn) btn.addEventListener('click', () => {
+    AS.modal(`<h3>Freund hinzufügen? 💌</h3><div class="row" style="gap:10px;margin:14px 0;"><div class="avatar cf-av" style="width:44px;height:44px;"></div><div><strong>${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</strong><div class="tiny">${profile.uniqueId}</div></div></div><div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="cfCancel">Abbrechen</button><button class="btn btn-sm" id="cfOk">Anfrage senden</button></div>`,
+      (root) => { renderAvatar(root.querySelector('.cf-av'), profile); root.querySelector('#cfCancel').onclick = AS.closeModal;
+        root.querySelector('#cfOk').onclick = () => { myData().friendRequestsOut.push(profile.uniqueId); persist(); ASRealtime.sendReliable(profile.uniqueId, { type: 'friend_request', profile: publicProfile() }); AS.toast('Freundschaftsanfrage wird zugestellt…'); AS.closeModal(); RENDERERS.friends(); }; });
+  });
 }
+RENDERERS.friends = function () {
+  const reqBox = document.getElementById('friendRequestsList');
+  const incoming = myData().friendRequestsIn;
+  reqBox.innerHTML = incoming.length ? incoming.map(r => `
+    <div class="list-row">
+      <div class="avatar clickable rq-av" data-uid="${r.from}" data-p='${JSON.stringify(r.profile)}' style="width:36px;height:36px;font-size:.75rem;"></div>
+      <div style="flex:1;"><strong style="font-size:.85rem;">${escapeHtml(r.profile.firstName)} ${escapeHtml(r.profile.lastName)}</strong><div class="tiny">${r.from}</div></div>
+      <button class="btn btn-sm" data-acc="${r.from}">Annehmen</button>
+      <button class="btn btn-sm btn-ghost" data-dec="${r.from}">Ablehnen</button>
+    </div>`).join('') : `<span class="muted tiny">Keine offenen Anfragen.</span>`;
+  reqBox.querySelectorAll('.rq-av').forEach(el => renderAvatar(el, JSON.parse(el.dataset.p)));
+  reqBox.querySelectorAll('[data-acc]').forEach(el => el.addEventListener('click', () => { const uid = el.dataset.acc; if (!myData().friends.includes(uid)) myData().friends.push(uid); myData().friendRequestsIn = myData().friendRequestsIn.filter(r => r.from !== uid); persist(); ASRealtime.sendReliable(uid, { type: 'friend_response', accepted: true }); AS.toast('Ihr seid jetzt befreundet ♡'); RENDERERS.friends(); ASRealtime.connectToPeer(uid, true); }));
+  reqBox.querySelectorAll('[data-dec]').forEach(el => el.addEventListener('click', () => { const uid = el.dataset.dec; myData().friendRequestsIn = myData().friendRequestsIn.filter(r => r.from !== uid); persist(); ASRealtime.sendReliable(uid, { type: 'friend_response', accepted: false }); RENDERERS.friends(); }));
 
-AS.toast = function (msg) {
-  const el = document.createElement('div');
-  el.className = 'toast'; el.textContent = msg;
-  document.getElementById('toasts').appendChild(el);
-  setTimeout(() => el.remove(), 3800);
+  const blockedBox = document.getElementById('blockedList');
+  blockedBox.innerHTML = myData().blocked.length ? myData().blocked.map(uid => `<div class="list-row"><span style="flex:1;" class="tiny">${uid}</span><button class="btn btn-sm btn-ghost" data-unblock="${uid}">Entsperren</button></div>`).join('') : `<span class="muted tiny">Niemand blockiert.</span>`;
+  blockedBox.querySelectorAll('[data-unblock]').forEach(el => el.addEventListener('click', () => { const uid = el.dataset.unblock; myData().blocked = myData().blocked.filter(u => u !== uid); persist(); RENDERERS.friends(); if (myData().friends.includes(uid)) ASRealtime.connectToPeer(uid, true); AS.toast('Entsperrt — Verbindung wird wiederhergestellt.'); }));
+
+  const listBox = document.getElementById('friendsListFull');
+  if (!myData().friends.length) { listBox.innerHTML = `<div class="empty"><div class="em-ic">💌</div>Füge deine ersten Freunde über ihre Unique ID hinzu.</div>`; return; }
+  listBox.innerHTML = myData().friends.map(uid => {
+    const p = friendProfile(uid) || { firstName: uid, lastName: '', username: '', uniqueId: uid };
+    const online = ASRealtime.conns[uid] && ASRealtime.conns[uid].open;
+    return `<div class="list-row"><div class="avatar clickable fl-av" data-uid="${uid}" style="width:38px;height:38px;font-size:.75rem;position:relative;">${online ? '<span class="dot-online" style="right:-1px;bottom:-1px;"></span>' : ''}</div><div style="flex:1;"><strong style="font-size:.85rem;">${escapeHtml(p.firstName)} ${escapeHtml(p.lastName)}</strong><div class="tiny">${uid} ${online ? '· online' : '· offline'}</div></div><button class="btn btn-sm btn-ghost" data-chat="${uid}">Chat</button><button class="btn btn-sm btn-ghost" data-remove="${uid}">Entfernen</button><button class="btn btn-sm btn-danger" data-block="${uid}">Blockieren</button></div>`;
+  }).join('');
+  listBox.querySelectorAll('.fl-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
+  listBox.querySelectorAll('[data-chat]').forEach(el => el.addEventListener('click', () => { showView('chat'); openConversation(el.dataset.chat); }));
+  listBox.querySelectorAll('[data-remove]').forEach(el => el.addEventListener('click', () => { confirmModal('Freund entfernen?', 'Ihr seid danach nicht mehr befreundet.', () => { myData().friends = myData().friends.filter(u => u !== el.dataset.remove); persist(); RENDERERS.friends(); }); }));
+  listBox.querySelectorAll('[data-block]').forEach(el => el.addEventListener('click', () => {
+    const uid = el.dataset.block;
+    confirmModal('Person blockieren?', 'Ihr werdet automatisch keine Freunde mehr sein und diese Person kann dir nicht mehr schreiben.', () => {
+      myData().friends = myData().friends.filter(u => u !== uid);
+      if (!myData().blocked.includes(uid)) myData().blocked.push(uid);
+      persist(); ASRealtime.sendTo(uid, { type: 'block_notice' });
+      if (ASRealtime.conns[uid]) { ASRealtime.conns[uid].close(); delete ASRealtime.conns[uid]; }
+      AS.toast('Person blockiert.'); RENDERERS.friends();
+    });
+  }));
 };
-AS.modal = function (innerHtml, onMount) {
-  const root = document.getElementById('modalRoot');
-  root.innerHTML = `<div class="modal-backdrop" id="mbackdrop"><div class="modal">${innerHtml}</div></div>`;
-  document.getElementById('mbackdrop').addEventListener('click', (e) => { if (e.target.id === 'mbackdrop') AS.closeModal(); });
-  if (onMount) onMount(root);
-};
-AS.closeModal = function () { document.getElementById('modalRoot').innerHTML = ''; };
-function escapeHtml(s) { return (s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
-window.escapeHtml = escapeHtml;
-function confirmModal(title, msg, onYes) {
-  AS.modal(`<h3>${title}</h3><p class="muted">${msg}</p>
-    <div class="row" style="margin-top:16px;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-ghost btn-sm" id="cfNo">Abbrechen</button>
-      <button class="btn btn-danger btn-sm" id="cfYes">Löschen</button>
-    </div>`, (root) => { root.querySelector('#cfNo').onclick = AS.closeModal; root.querySelector('#cfYes').onclick = () => { AS.closeModal(); onYes(); }; });
-}
-window.confirmModal = confirmModal;
 
-/* ---------------------------------------------------------------------- */
-/* Bild-Kompression                                                       */
-/* ---------------------------------------------------------------------- */
-function compressImage(file, maxDim, quality) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        let w = img.width, h = img.height;
-        if (w > maxDim || h > maxDim) { const scale = maxDim / Math.max(w, h); w = Math.round(w * scale); h = Math.round(h * scale); }
-        const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, w, h);
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', quality));
-      };
-      img.onerror = reject; img.src = reader.result;
-    };
-    reader.onerror = reject; reader.readAsDataURL(file);
-  });
-}
-window.compressImage = compressImage;
-function fileToDataUrl(file) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); }); }
-window.fileToDataUrl = fileToDataUrl;
-function limitsFor(kind) {
-  const cloud = AS.cloudEnabled();
-  const L = {
-    material: { maxDim: cloud ? 1400 : 1000, quality: cloud ? 0.7 : 0.6 },
-    chatFile: { maxDim: cloud ? 1200 : 900, quality: cloud ? 0.68 : 0.58 },
-    noteImage: { maxDim: cloud ? 1100 : 850, quality: cloud ? 0.65 : 0.55 },
-    avatar: { maxDim: 260, quality: 0.75 },
-  };
-  return L[kind] || L.material;
-}
-window.limitsFor = limitsFor;
-
-/* ---------------------------------------------------------------------- */
-/* Avatare                                                                */
-/* ---------------------------------------------------------------------- */
-const AVATAR_GRADIENTS = [['#B7E4D4', '#C3DFF7'], ['#F6D3B8', '#F8E39B'], ['#D9CBF2', '#C3DFF7'], ['#F6CBD6', '#B7E4D4'], ['#F8E39B', '#F6D3B8']];
-function avatarGradientFor(uid) { let h = 0; for (const c of uid) h = (h * 31 + c.charCodeAt(0)) >>> 0; return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length]; }
-function initials(user) { return ((user.firstName || '?')[0] + (user.lastName || '?')[0]).toUpperCase(); }
-function renderAvatar(el, user) {
-  if (!user) { el.style.background = 'var(--border)'; el.innerHTML = ''; return; }
-  if (user.avatar) { el.style.background = 'transparent'; el.innerHTML = `<img src="${user.avatar}" alt="">`; return; }
-  const [a, b] = avatarGradientFor(user.uniqueId || user.username || 'x');
-  el.style.background = `linear-gradient(135deg, ${a}, ${b})`;
-  el.innerHTML = initials(user);
-  if (user.avatarBlobId) {
-    const cached = AS.getBlobCached(user.avatarBlobId);
-    if (cached) { el.style.background = 'transparent'; el.innerHTML = `<img src="${cached}" alt="">`; return; }
-    AS.getBlob(user.avatarBlobId).then(data => { if (data && el.isConnected) { el.style.background = 'transparent'; el.innerHTML = `<img src="${data}" alt="">`; } });
-  }
-}
-window.renderAvatar = renderAvatar;
-
-function openFriendProfileModal(uid) {
-  const p = friendProfile(uid) || { firstName: uid, lastName: '', username: '', uniqueId: uid };
-  const online = window.ASRealtime && ASRealtime.conns[uid] && ASRealtime.conns[uid].open;
-  const isFriend = AS.currentData && AS.currentData.friends.includes(uid);
-  AS.modal(`
-    <div class="profile-modal-head">
-      <div class="avatar profile-modal-avatar" id="pmAvatar"></div>
-      <h3 style="margin:0;">${escapeHtml(p.firstName)} ${escapeHtml(p.lastName || '')}</h3>
-      <p class="muted" style="margin:2px 0;">@${escapeHtml(p.username || '')}</p>
-      <p class="pill" style="margin:6px auto;">${uid}</p>
-      ${p.bio ? `<p class="tiny" style="margin-top:8px;">${escapeHtml(p.bio)}</p>` : ''}
-    </div>
-    <div class="profile-stat-row">
-      <div><strong>${online ? '🟢' : '⚪️'}</strong><span>${online ? 'Online' : 'Offline'}</span></div>
-      <div><strong>${isFriend ? '💌' : '➕'}</strong><span>${isFriend ? 'Befreundet' : 'Nicht befreundet'}</span></div>
-    </div>
-    <div class="row" style="justify-content:center;gap:8px;margin-top:16px;">
-      ${isFriend ? `<button class="btn btn-sm" id="pmChatBtn">Chat öffnen</button>` : ''}
-      <button class="btn btn-ghost btn-sm" id="pmCloseBtn">Schließen</button>
-    </div>`, (root) => {
-    renderAvatar(root.querySelector('#pmAvatar'), p);
-    root.querySelector('#pmCloseBtn').onclick = AS.closeModal;
-    const chatBtn = root.querySelector('#pmChatBtn');
-    if (chatBtn) chatBtn.onclick = () => { AS.closeModal(); showView('chat'); if (window.openConversation) openConversation(uid); };
-  });
-}
-window.openFriendProfileModal = openFriendProfileModal;
-document.addEventListener('click', (e) => {
-  const av = e.target.closest('.avatar.clickable[data-uid]');
-  if (!av) return;
-  if (av.closest('#chatMessages') || av.closest('.chat-header') || av.closest('#chatConvoList')) return;
-  openFriendProfileModal(av.dataset.uid);
-});
-
-function hideSplash() { const s = document.getElementById('splash'); if (!s) return; s.classList.add('fade-out'); setTimeout(() => s.remove(), 450); }
-
-function initConsentFlow(next) {
-  const existing = AS.getConsent();
-  if (existing) { next(); return; }
-  const banner = document.getElementById('cookieBanner');
-  banner.classList.remove('hidden');
-  document.getElementById('cookieAcceptBtn').addEventListener('click', async () => {
-    AS.setConsent('cloud'); banner.classList.add('hidden');
-    const session = AS.getSession();
-    if (session.accounts.length) { cloudPut(KEY_USERS, AS.getUsers()); session.accounts.forEach(uid => { const d = AS.storage.get(dataKey(uid), null); if (d) cloudPut(dataKey(uid), d); }); }
-    AS.toast('Online-Speicherung aktiviert ✓'); next();
-  });
-  document.getElementById('cookieDeclineBtn').addEventListener('click', () => { AS.setConsent('local'); banner.classList.add('hidden'); next(); });
-}
-
-/* ---------------------------------------------------------------------- */
-/* Auth                                                                   */
-/* ---------------------------------------------------------------------- */
-document.querySelectorAll('[data-authtab]').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('[data-authtab]').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    const which = tab.dataset.authtab;
-    document.getElementById('loginPane').classList.toggle('hidden', which !== 'login');
-    document.getElementById('registerPane').classList.toggle('hidden', which !== 'register');
-    document.getElementById('forgotPane').classList.add('hidden');
-    document.getElementById('authTabsBar').classList.remove('hidden');
-  });
-});
-function normName(s) { return (s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
-
-document.getElementById('loginBtn').addEventListener('click', async () => {
-  const name = document.getElementById('loginName').value.trim();
-  const email = document.getElementById('loginEmail').value.trim().toLowerCase();
-  if (!name || !email) { AS.toast('Bitte Name und E-Mail eingeben.'); return; }
-  const btn = document.getElementById('loginBtn'); btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Anmelden…';
-  let users = AS.getUsers();
-  let found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
-  if (!found && AS.cloudEnabled()) {
-    const remoteUsers = await cloudGet(KEY_USERS);
-    if (remoteUsers) { users = { ...remoteUsers, ...users }; AS.saveUsersLocalOnly(users); found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name)); }
-  }
-  if (!found) { AS.toast(AS.cloudEnabled() ? 'Kein Account mit diesen Daten gefunden.' : 'Kein Account gefunden. Aktiviere in den Einstellungen die Online-Speicherung, um dich auf einem neuen Gerät anzumelden.'); btn.disabled = false; btn.textContent = 'Anmelden'; return; }
-  if (AS.cloudEnabled()) { const remoteData = await cloudGet(dataKey(found.uniqueId)); if (remoteData) AS.storage.setLocalOnly(dataKey(found.uniqueId), remoteData); }
-  loginAs(found.uniqueId);
-});
-
-document.getElementById('forgotNameLink').addEventListener('click', () => {
-  document.getElementById('authTabsBar').classList.add('hidden');
-  document.getElementById('loginPane').classList.add('hidden');
-  document.getElementById('registerPane').classList.add('hidden');
-  document.getElementById('forgotPane').classList.remove('hidden');
-  document.getElementById('forgotStep1').classList.remove('hidden');
-  document.getElementById('forgotStep2').classList.add('hidden');
-});
-let forgotUid = null;
-document.getElementById('forgotFindBtn').addEventListener('click', async () => {
-  const email = document.getElementById('forgotEmail').value.trim().toLowerCase();
-  if (!email) { AS.toast('Bitte E-Mail eingeben.'); return; }
-  let users = AS.getUsers();
-  let found = Object.values(users).find(u => u.email.toLowerCase() === email);
-  if (!found && AS.cloudEnabled()) { const remoteUsers = await cloudGet(KEY_USERS); if (remoteUsers) { users = { ...remoteUsers, ...users }; AS.saveUsersLocalOnly(users); found = Object.values(users).find(u => u.email.toLowerCase() === email); } }
-  if (!found) { AS.toast('Keine E-Mail mit diesem Account gefunden.'); return; }
-  forgotUid = found.uniqueId;
-  document.getElementById('forgotStep1').classList.add('hidden');
-  document.getElementById('forgotStep2').classList.remove('hidden');
-});
-document.getElementById('forgotSaveBtn').addEventListener('click', async () => {
-  const n1 = document.getElementById('forgotNewName1').value.trim();
-  const n2 = document.getElementById('forgotNewName2').value.trim();
-  if (!n1 || !n2) { AS.toast('Bitte beide Felder ausfüllen.'); return; }
-  if (normName(n1) !== normName(n2)) { AS.toast('Die beiden Namen stimmen nicht überein.'); return; }
-  const parts = n1.split(' '); const first = parts[0]; const last = parts.slice(1).join(' ') || '';
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
-  const u = users[forgotUid];
-  if (!u) { AS.toast('Etwas ist schiefgelaufen — bitte erneut versuchen.'); return; }
-  u.firstName = first; u.lastName = last;
-  users[forgotUid] = u; AS.saveUsers(users);
-  AS.toast('Name aktualisiert — bitte melde dich jetzt erneut an.');
-  document.getElementById('forgotPane').classList.add('hidden');
-  document.getElementById('authTabsBar').classList.remove('hidden');
-  document.getElementById('loginPane').classList.remove('hidden');
-  document.getElementById('loginName').value = n1;
-  document.getElementById('loginEmail').value = u.email;
-  document.querySelector('[data-authtab="login"]').classList.add('active');
-  document.querySelector('[data-authtab="register"]').classList.remove('active');
-});
-document.getElementById('forgotBackToLogin1').addEventListener('click', () => { document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden'); });
-document.getElementById('forgotBackToLogin2').addEventListener('click', () => { document.getElementById('forgotPane').classList.add('hidden'); document.getElementById('authTabsBar').classList.remove('hidden'); document.getElementById('loginPane').classList.remove('hidden'); });
-
-function goToRegStep(n) {
-  [1, 2, 3].forEach(i => document.getElementById('regStep' + i).classList.toggle('hidden', i !== n));
-  document.querySelectorAll('#regStepDots span').forEach(d => { const step = +d.dataset.step; d.classList.toggle('active', step === n); d.classList.toggle('done', step < n); });
-}
-document.getElementById('regNext1').addEventListener('click', () => {
-  const first = document.getElementById('regFirst').value.trim(), last = document.getElementById('regLast').value.trim();
-  if (!first || !last) { AS.toast('Bitte Vor- und Nachname angeben.'); return; }
-  goToRegStep(2);
-});
-document.getElementById('regBack2').addEventListener('click', () => goToRegStep(1));
-document.getElementById('regNext2').addEventListener('click', async () => {
-  const email = document.getElementById('regEmail').value.trim().toLowerCase();
-  if (!email) { AS.toast('Bitte eine E-Mail angeben.'); return; }
-  if (!email.includes('@') || !email.includes('.')) { AS.toast('Das sieht nicht nach einer gültigen E-Mail aus.'); return; }
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) { users = { ...remote, ...users }; AS.saveUsersLocalOnly(users); } }
-  if (Object.values(users).some(u => u.email.toLowerCase() === email)) { AS.toast('Diese E-Mail-Adresse wird bereits verwendet.'); return; }
-  document.getElementById('regReviewName').textContent = `${document.getElementById('regFirst').value.trim()} ${document.getElementById('regLast').value.trim()}`;
-  document.getElementById('regReviewMail').textContent = email;
-  goToRegStep(3);
-});
-document.getElementById('regBack3').addEventListener('click', () => goToRegStep(2));
-document.getElementById('registerBtn').addEventListener('click', async () => {
-  const first = document.getElementById('regFirst').value.trim(), last = document.getElementById('regLast').value.trim();
-  const email = document.getElementById('regEmail').value.trim().toLowerCase();
-  const username = document.getElementById('regUsername').value.trim() || (first + last.charAt(0)).toLowerCase().replace(/\s+/g, '') + Math.floor(Math.random() * 900 + 100);
-  if (!first || !last || !email) { AS.toast('Bitte fülle alle Felder aus.'); return; }
-  const btn = document.getElementById('registerBtn'); btn.disabled = true; btn.innerHTML = '<span class="spinner-sm"></span> Wird erstellt…';
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
-  if (Object.values(users).some(u => u.email.toLowerCase() === email)) { AS.toast('Diese E-Mail-Adresse wird bereits verwendet.'); btn.disabled = false; btn.textContent = 'Account erstellen ✦'; return; }
-  let finalUsername = username, n = 1;
-  while (Object.values(users).some(u => u.username.toLowerCase() === finalUsername.toLowerCase())) { finalUsername = username + n; n++; }
-  const uniqueId = generateUniqueId();
-  const user = { uniqueId, firstName: first, lastName: last, username: finalUsername, email, bio: '', avatar: null, avatarBlobId: null, createdAt: Date.now() };
-  users[uniqueId] = user;
-  AS.saveUsers(users);
-  AS.saveData(uniqueId, defaultData(), { immediate: true });
-  loginAs(uniqueId);
-  AS.toast(`Willkommen, ${first}! Schoolify ist komplett kostenlos ✦`);
-});
-
-function loginAs(uniqueId) {
-  const session = AS.getSession();
-  session.currentUserId = uniqueId;
-  if (!session.accounts.includes(uniqueId)) session.accounts.push(uniqueId);
-  AS.saveSession(session); boot();
-}
-function renderLocalAccountsQuickList() {
-  const session = AS.getSession(); const users = AS.getUsers();
-  const box = document.getElementById('localAccountsList');
-  if (!session.accounts.length) { box.innerHTML = ''; return; }
-  box.innerHTML = `<p class="tiny">Bereits auf diesem Gerät:</p>` + session.accounts.filter(id => users[id]).map(id => {
-    const u = users[id];
-    return `<div class="list-row" style="cursor:pointer;border:1.5px solid var(--border);border-radius:12px;padding:8px 10px;margin-bottom:6px;" data-quicklogin="${id}">
-      <div class="avatar av-mini" data-uid="${id}" style="width:30px;height:30px;font-size:.7rem;"></div>
-      <div><strong style="font-size:.85rem;">${escapeHtml(u.firstName)} ${escapeHtml(u.lastName)}</strong><div class="tiny">${escapeHtml(u.email)}</div></div>
+/* ======================================================================
+   CHAT — Dateien als Blob-Referenz statt eingebettetem Base64
+   ====================================================================== */
+function renderChatConvoList() {
+  const box = document.getElementById('chatConvoList');
+  if (!myData().friends.length) { box.innerHTML = `<span class="muted tiny">Noch keine Freunde zum Chatten.</span>`; return; }
+  box.innerHTML = `<strong class="tiny" style="display:block;margin-bottom:8px;">Unterhaltungen</strong>` + myData().friends.map(uid => {
+    const p = friendProfile(uid) || { firstName: uid, lastName: '' };
+    const online = ASRealtime.conns[uid] && ASRealtime.conns[uid].open;
+    const convo = myData().conversations[uid] || []; const unread = convo.filter(m => m.unread).length; const last = convo[convo.length - 1];
+    return `<div class="list-row" style="cursor:pointer;flex-direction:column;align-items:flex-start;gap:2px;${ASRealtime.activeChatUid === uid ? 'background:var(--accent-2);border-radius:10px;padding:8px 8px;' : ''}" data-convo="${uid}">
+      <div class="row" style="width:100%;"><div class="avatar cv-av" data-uid="${uid}" style="width:32px;height:32px;font-size:.7rem;position:relative;">${online ? '<span class="dot-online" style="right:-1px;bottom:-1px;"></span>' : ''}</div><span style="flex:1;font-size:.85rem;font-weight:700;">${escapeHtml(p.firstName)}</span>${unread ? `<span class="pill" style="background:var(--danger);color:#fff;">${unread}</span>` : ''}</div>
+      ${last ? `<div class="tiny" style="padding-left:42px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px;">${last.file ? '📎 ' + escapeHtml(last.file.name) : escapeHtml(last.text || '')}</div>` : ''}
     </div>`;
   }).join('');
-  box.querySelectorAll('.av-mini').forEach(el => renderAvatar(el, users[el.dataset.uid]));
-  box.querySelectorAll('[data-quicklogin]').forEach(el => el.addEventListener('click', () => loginAs(el.dataset.quicklogin)));
+  box.querySelectorAll('.cv-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
+  box.querySelectorAll('[data-convo]').forEach(el => el.addEventListener('click', () => openConversation(el.dataset.convo)));
 }
-function logout() { flushPendingCloudWrites(); const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); if (window.ASRealtime) window.ASRealtime.disconnect(); location.reload(); }
-document.getElementById('logoutBtn').addEventListener('click', logout);
-document.getElementById('logoutAllBtn').addEventListener('click', () => { flushPendingCloudWrites(); AS.saveSession({ currentUserId: null, accounts: [] }); AS.toast('Von allen Geräten abgemeldet (lokal).'); setTimeout(() => location.reload(), 700); });
-document.getElementById('addAccountBtn').addEventListener('click', () => { flushPendingCloudWrites(); const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); location.reload(); });
-
-/* Vollständige Account-Löschung: alle Blobs (Avatar, Material, Notiz-
-   Bilder/Zeichnungen, Chat-Dateien) UND der Hauptdatensatz UND der
-   Eintrag im globalen Nutzerverzeichnis werden auch online entfernt. */
-document.getElementById('deleteAccountBtn').addEventListener('click', () => {
-  confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan, deine Freundesliste und alle hochgeladenen Dateien werden unwiderruflich gelöscht — auch online.', async () => {
-    const uid = AS.currentUser.uniqueId;
-    const data = AS.currentData;
-    if (AS.currentUser.avatarBlobId) AS.deleteBlob(AS.currentUser.avatarBlobId);
-    (data.materials || []).forEach(m => { if (m.blobId) AS.deleteBlob(m.blobId); });
-    (data.notePages || []).forEach(p => { if (p.drawingBlobId) AS.deleteBlob(p.drawingBlobId); (p.imageBlobIds || []).forEach(id => AS.deleteBlob(id)); });
-    Object.values(data.conversations || {}).forEach(msgs => { msgs.forEach(m => { if (m.file && m.file.blobId) AS.deleteBlob(m.file.blobId); }); });
-    await deleteUserCloudSafe(uid);
-    AS.storage.remove(dataKey(uid));
-    const session = AS.getSession(); session.accounts = session.accounts.filter(a => a !== uid); session.currentUserId = null; AS.saveSession(session);
-    AS.toast('Account und alle zugehörigen Daten wurden gelöscht.');
-    setTimeout(() => location.reload(), 700);
-  });
-});
-document.getElementById('exportDataBtn').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify({ profile: AS.currentUser, data: AS.currentData }, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `schoolify-export-${AS.currentUser.username}.json`; a.click();
-});
-
-/* ---------------------------------------------------------------------- */
-/* Boot / Router                                                          */
-/* ---------------------------------------------------------------------- */
-function boot() {
-  initConsentFlow(async () => {
-    const session = AS.getSession(); const users = AS.getUsers();
-    if (!session.currentUserId || !users[session.currentUserId]) {
-      hideSplash();
-      document.getElementById('authScreen').classList.remove('hidden');
-      document.getElementById('app').classList.add('hidden');
-      renderLocalAccountsQuickList();
-      return;
+RENDERERS.chat = function () { ASRealtime.activeChatUid = null; renderChatConvoList(); document.getElementById('chatEmptyState').classList.remove('hidden'); document.getElementById('chatActive').classList.add('hidden'); };
+window.openConversation = async function (uid) {
+  ASRealtime.activeChatUid = uid;
+  document.getElementById('chatEmptyState').classList.add('hidden');
+  document.getElementById('chatActive').classList.remove('hidden');
+  refreshChatHeader(uid);
+  document.getElementById('chatPartnerStatus').textContent = 'verbinde…';
+  const conn = await ASRealtime.connectToPeer(uid, true);
+  document.getElementById('chatPartnerStatus').textContent = conn ? '🟢 online' : '⚪️ nicht erreichbar gerade';
+  (myData().conversations[uid] || []).forEach(m => m.unread = false);
+  persist(); renderChatMessages(uid); renderChatConvoList();
+};
+function refreshChatHeader(uid) { const p = friendProfile(uid) || { firstName: uid, lastName: '' }; renderAvatar(document.getElementById('chatPartnerAvatar'), p); document.getElementById('chatPartnerName').textContent = `${p.firstName} ${p.lastName || ''}`.trim(); }
+function renderChatMessages(uid) {
+  const box = document.getElementById('chatMessages');
+  const msgs = myData().conversations[uid] || [];
+  if (!msgs.length) { box.innerHTML = `<div class="empty"><div class="em-ic">💬</div>Noch keine Unterhaltung. Schreib etwas!</div>`; return; }
+  let lastDay = null, html = '';
+  msgs.forEach(m => {
+    const day = new Date(m.ts).toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+    if (day !== lastDay) { html += `<div class="chat-date-sep">${day}</div>`; lastDay = day; }
+    const bubbleBg = m.from === 'me' ? 'var(--accent)' : 'var(--cream-2)';
+    let content = '';
+    if (m.file) {
+      const isImg = (m.file.type || '').includes('image');
+      if (isImg) content = `<div class="chat-img-slot" data-blobslot="${m.file.blobId}" style="width:180px;height:130px;border-radius:12px;background:var(--cream-2);display:flex;align-items:center;justify-content:center;margin-bottom:${m.text ? '6px' : '0'};">⏳</div>`;
+      else content = `<span class="chat-file-chip" data-filedownload="${m.file.blobId}" data-filename="${escapeHtml(m.file.name)}" style="cursor:pointer;">📎 <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.file.name)}</span></span>`;
     }
-    AS.currentUser = users[session.currentUserId];
-    AS.currentData = AS.getData(AS.currentUser.uniqueId);
-    document.getElementById('authScreen').classList.add('hidden');
-    document.getElementById('app').classList.remove('hidden');
-    applyTheme(); renderSidebarProfile(); initNavGroups(); showView('dashboard'); hideSplash();
-    if (window.ASRealtime) window.ASRealtime.init(AS.currentUser.uniqueId);
-    startTimetableClock();
-    handleQrAutoFriend();
-    handleImportShare();
-    if (AS.currentUser.avatarBlobId) AS.getBlob(AS.currentUser.avatarBlobId);
+    html += `<div style="align-self:${m.from === 'me' ? 'flex-end' : 'flex-start'};max-width:78%;">
+      <div style="background:${bubbleBg};padding:9px 13px;border-radius:16px;font-size:.87rem;">${content}${m.text ? escapeHtml(m.text) : ''}</div>
+      <div class="tiny" style="text-align:${m.from === 'me' ? 'right' : 'left'};margin-top:2px;">${new Date(m.ts).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}${m.from === 'me' ? ' <span data-delmsg="' + (m.id || '') + '" style="cursor:pointer;">🗑️</span>' : ''}</div>
+    </div>`;
   });
+  box.innerHTML = html; box.scrollTop = box.scrollHeight;
+  box.querySelectorAll('[data-blobslot]').forEach(el => asyncImg(el.dataset.blobslot, (data) => { el.outerHTML = `<img src="${data}" style="max-width:180px;border-radius:12px;display:block;">`; }));
+  box.querySelectorAll('[data-filedownload]').forEach(el => el.addEventListener('click', async () => {
+    const data = await AS.getBlob(el.dataset.filedownload);
+    if (!data) { AS.toast('Datei konnte nicht geladen werden.'); return; }
+    const a = document.createElement('a'); a.href = data; a.download = el.dataset.filename; a.click();
+  }));
+  box.querySelectorAll('[data-delmsg]').forEach(el => el.addEventListener('click', () => {
+    if (!el.dataset.delmsg) return;
+    const m = myData().conversations[uid].find(x => x.id === el.dataset.delmsg);
+    if (m && m.file && m.file.blobId) AS.deleteBlob(m.file.blobId);
+    myData().conversations[uid] = myData().conversations[uid].filter(m => m.id !== el.dataset.delmsg);
+    persist(); renderChatMessages(uid); renderChatConvoList();
+  }));
 }
-function handleQrAutoFriend() {
-  const params = new URLSearchParams(location.search);
-  const targetUid = params.get('addfriend');
-  if (!targetUid || targetUid === AS.currentUser.uniqueId) return;
-  history.replaceState({}, '', location.pathname);
-  if (AS.currentData.blocked.includes(targetUid)) return;
-  if (AS.currentData.friends.includes(targetUid)) { AS.toast('Ihr seid bereits befreundet ♡'); return; }
-  if (AS.currentData.friendRequestsOut.includes(targetUid)) { AS.toast('Freundschaftsanfrage bereits unterwegs…'); return; }
-  AS.currentData.friendRequestsOut.push(targetUid); persist();
-  AS.toast('QR-Code erkannt — Freundschaftsanfrage wird gesendet ✦');
-  setTimeout(() => { if (window.ASRealtime) ASRealtime.sendReliable(targetUid, { type: 'friend_request', profile: publicProfile() }); }, 600);
+function addIncomingChatMessage(fromUid, text, file) {
+  if (!myData().conversations[fromUid]) myData().conversations[fromUid] = [];
+  const isOpen = ASRealtime.activeChatUid === fromUid && getCurrentView() === 'chat';
+  myData().conversations[fromUid].push({ id: 'msg_' + Date.now() + Math.random().toString(36).slice(2, 5), from: fromUid, text, file: file || null, ts: Date.now(), unread: !isOpen });
+  persist();
+  if (isOpen) renderChatMessages(fromUid);
+  else if (myData().settings.notifMessages) AS.toast(`Neue Nachricht von ${(friendProfile(fromUid) || {}).firstName || fromUid}`);
+  renderChatConvoList();
+  if (getCurrentView() === 'dashboard') RENDERERS.dashboard();
 }
-
-const ACCENT_HEX = { mint: ['#B7E4D4', '#E2F5EE'], sky: ['#C3DFF7', '#E7F2FC'], butter: ['#F8E39B', '#FCF3D6'], peach: ['#F6D3B8', '#FCEEE2'], lavender: ['#D9CBF2', '#EFE7FA'], blush: ['#F6CBD6', '#FCE9EE'] };
-function applyTheme() {
-  const s = AS.currentData.settings;
-  document.documentElement.setAttribute('data-theme', s.darkMode ? 'dark' : 'light');
-  document.body.classList.toggle('reduce-motion', !!s.reduceMotion);
-  document.body.setAttribute('data-paper', s.paperStyle || 'kariert');
-  const [accent, accent2] = ACCENT_HEX[s.accent] || ACCENT_HEX.mint;
-  document.documentElement.style.setProperty('--accent', accent);
-  document.documentElement.style.setProperty('--accent-2', accent2);
+document.getElementById('chatSendBtn').addEventListener('click', sendChatMessage);
+document.getElementById('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChatMessage(); });
+async function sendChatMessage() {
+  const uid = ASRealtime.activeChatUid; if (!uid) return;
+  const input = document.getElementById('chatInput'); const text = input.value.trim(); if (!text) return;
+  const conn = await ASRealtime.connectToPeer(uid, true);
+  if (!conn) { AS.toast('Diese Person ist gerade nicht erreichbar — wird automatisch nachgesendet.'); ASRealtime.sendReliable(uid, { type: 'chat', text }); }
+  else ASRealtime.sendTo(uid, { type: 'chat', text });
+  if (!myData().conversations[uid]) myData().conversations[uid] = [];
+  myData().conversations[uid].push({ id: 'msg_' + Date.now(), from: 'me', text, file: null, ts: Date.now() });
+  persist(); input.value = ''; renderChatMessages(uid); renderChatConvoList();
 }
-function renderSidebarProfile() { document.getElementById('sidebarName').textContent = AS.currentUser.firstName; renderAvatar(document.getElementById('topbarAvatar'), AS.currentUser); }
-function initNavGroups() { setupNavGroup('groupOrganisieren', 'groupOrganisierenBody', true); setupNavGroup('groupSozial', 'groupSozialBody', true); }
-function setupNavGroup(headId, bodyId, defaultOpen) {
-  const head = document.getElementById(headId), body = document.getElementById(bodyId);
-  if (!head || !body) return;
-  const key = 'as_navgroup_' + headId;
-  const isOpen = localStorage.getItem(key) !== null ? localStorage.getItem(key) === '1' : defaultOpen;
-  head.classList.toggle('open', isOpen); body.classList.toggle('open', isOpen);
-  head.onclick = () => { const open = !body.classList.contains('open'); head.classList.toggle('open', open); body.classList.toggle('open', open); localStorage.setItem(key, open ? '1' : '0'); };
-}
-
-const VIEWS = ['dashboard', 'timetable', 'tasks', 'todo', 'learn', 'calendar', 'notes', 'materials', 'friends', 'chat', 'airsignal', 'security', 'settings', 'profile'];
-const RENDERERS = {};
-window.RENDERERS = RENDERERS; window.VIEWS = VIEWS;
-function showView(name) {
-  VIEWS.forEach(v => document.getElementById('view-' + v).classList.toggle('hidden', v !== name));
-  document.querySelectorAll('.nav-item[data-view]').forEach(el => el.classList.toggle('active', el.dataset.view === name));
-  document.querySelectorAll('.bn-item[data-view]').forEach(el => el.classList.toggle('active', el.dataset.view === name));
-  closeMoreMenu();
-  if (RENDERERS[name]) RENDERERS[name]();
-  window.scrollTo(0, 0);
-}
-window.showView = showView;
-document.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
-function openMoreMenu() { document.getElementById('moreMenuSheet').classList.add('open'); }
-function closeMoreMenu() { document.getElementById('moreMenuSheet').classList.remove('open'); }
-document.getElementById('moreNavBtn').addEventListener('click', openMoreMenu);
-document.getElementById('moreSheetBackdrop').addEventListener('click', closeMoreMenu);
-document.querySelectorAll('#moreMenuSheet .sheet-item').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
-
-function todayStr() { return new Date().toISOString().slice(0, 10); }
-function fmtDate(d) { if (!d) return ''; const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }); }
-function friendProfile(uid) { return (window.ASRealtime && window.ASRealtime.knownProfiles[uid]) || AS.getUsers()[uid] || null; }
-window.friendProfile = friendProfile;
-function todayDayIdx() { const dow = new Date().getDay(); return dow === 0 || dow === 6 ? -1 : dow - 1; }
-function getCurrentViewSafe() { return VIEWS.find(v => !document.getElementById('view-' + v).classList.contains('hidden')); }
-window.getCurrentViewSafe = getCurrentViewSafe;
+document.getElementById('chatAttachBtn').addEventListener('click', () => document.getElementById('chatFileInput').click());
+document.getElementById('chatImgBtn').addEventListener('click', () => { document.getElementById('chatFileInput').accept = 'image/*'; document.getElementById('chatFileInput').click(); });
+document.getElementById('chatFileInput').addEventListener('change', async (e) => {
+  const uid = ASRealtime.activeChatUid; const file = e.target.files[0]; e.target.value = ''; document.getElementById('chatFileInput').accept = 'image/*,.pdf,.doc,.docx,.txt';
+  if (!uid || !file) return;
+  const conn = await ASRealtime.connectToPeer(uid, true);
+  if (!conn) { AS.toast('Diese Person ist gerade nicht erreichbar.'); return; }
+  try {
+    const lim = limitsFor('chatFile');
+    const isImg = (file.type || '').includes('image');
+    const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
+        if (window.isOverLimit(dataUrl.length)) { AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) — bitte alte Dateien löschen.`); return; }
+    const blobId = 'cf_' + Date.now() + Math.random().toString(36).slice(2, 7);
+    await AS.saveBlob(blobId, dataUrl);
+    const fileObj = { name: file.name, type: file.type, blobId, bytes: dataUrl.length };
+    // Wird per WebRTC direkt an den Freund mitgesendet, damit dieser das Bild
+    // sofort sieht (nicht erst über die Cloud warten muss).
+    ASRealtime.sendTo(uid, { type: 'chat', text: '', file: { ...fileObj, dataUrl } });
+    if (!myData().conversations[uid]) myData().conversations[uid] = [];
+    myData().conversations[uid].push({ id: 'msg_' + Date.now(), from: 'me', text: '', file: fileObj, ts: Date.now() });
+    persist(); renderChatMessages(uid); renderChatConvoList();
+  } catch (err) { AS.toast('Datei konnte nicht gesendet werden.'); }
+});
 
 /* ======================================================================
-   DASHBOARD
+   AIRSIGNAL
    ====================================================================== */
-RENDERERS.dashboard = function () {
-  document.getElementById('dashGreeting').textContent = `Hey ${AS.currentUser.firstName} ♡`;
-  document.getElementById('dashDate').textContent = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
-  const dayIdx = todayDayIdx();
-  const todays = AS.currentData.timetable.filter(l => l.day === dayIdx).sort((a, b) => a.period - b.period);
-  document.getElementById('dashNextLesson').textContent = todays.length ? `${todays[0].subject} · ${todays[0].time || 'Stunde ' + todays[0].period}${todays[0].room ? ' · Raum ' + todays[0].room : ''}` : 'Heute nichts eingetragen.';
-  const ts = todayStr();
-  const todaysTasks = AS.currentData.tasks.filter(t => t.due === ts);
-  const doneToday = todaysTasks.filter(t => t.done).length;
-  document.getElementById('dashTasksToday').textContent = todaysTasks.length ? `${doneToday}/${todaysTasks.length} erledigt` : 'Heute nichts fällig ✨';
-  const log = AS.currentData.todoLog[ts];
-  let pct = 0, statusText = 'Noch nicht gestartet — geh zu To-Do, um loszulegen.';
-  if (log && log.started && log.items.length) {
-    const total = log.items.reduce((a, i) => a + i.target, 0);
-    const cur = log.items.reduce((a, i) => a + Math.min(i.current, i.target), 0);
-    pct = total ? Math.round((cur / total) * 100) : 0;
-    statusText = pct >= 100 ? 'Alles erledigt — hol dir dein Cookie! 🍪' : `${cur}/${total} Punkte erreicht`;
-  } else if (log && log.started && !log.items.length) { statusText = 'Heute keine Ziele geplant.'; pct = 100; }
-  const circumference = 188.5;
-  document.getElementById('dashRingFill').style.strokeDashoffset = String(circumference - (circumference * pct / 100));
-  document.getElementById('dashRingLabel').textContent = pct + '%';
-  document.getElementById('dashTodoStatus').textContent = statusText;
-  const box = document.getElementById('dashFriends');
-  const online = window.ASRealtime ? window.ASRealtime.onlineFriends() : [];
-  if (!AS.currentData.friends.length) box.innerHTML = `<span class="muted">Noch keine Freunde — füge welche über deine Unique ID hinzu.</span>`;
+RENDERERS.airsignal = function () {
+  const onBox = document.getElementById('airFriendsOnline');
+  const online = myData().friends.filter(f => ASRealtime.conns[f] && ASRealtime.conns[f].open);
+  ASRealtime.airSelected.forEach(uid => { if (!online.includes(uid)) ASRealtime.airSelected.delete(uid); });
+  if (!online.length) { onBox.innerHTML = `<span class="muted tiny">Gerade ist niemand deiner Freunde online.</span>`; document.getElementById('airSendBox').classList.add('hidden'); }
   else {
-    box.innerHTML = AS.currentData.friends.slice(0, 8).map(uid => { const u = friendProfile(uid); const isOn = online.includes(uid); return `<div style="text-align:center;position:relative;"><div class="avatar clickable friend-av" data-uid="${uid}" style="width:44px;height:44px;font-size:.8rem;margin:0 auto;position:relative;">${isOn ? '<span class="dot-online" style="right:0;bottom:0;"></span>' : ''}</div><div class="tiny" style="margin-top:3px;">${escapeHtml(u ? u.firstName : uid)}</div></div>`; }).join('');
-    box.querySelectorAll('.friend-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
+    onBox.innerHTML = online.map(uid => { const p = friendProfile(uid); const sel = ASRealtime.airSelected.has(uid); return `<div class="air-friend-chip ${sel ? 'selected' : ''}" data-airsel="${uid}"><div class="avatar as-av" data-uid="${uid}" style="width:46px;height:46px;font-size:.8rem;position:relative;"><span class="dot-online" style="right:0;bottom:0;"></span>${sel ? '<span class="sel-check">✓</span>' : ''}</div><div class="tiny">${escapeHtml(p ? p.firstName : uid)}</div></div>`; }).join('');
+    onBox.querySelectorAll('.as-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
+    onBox.querySelectorAll('[data-airsel]').forEach(el => el.addEventListener('click', () => { const uid = el.dataset.airsel; if (ASRealtime.airSelected.has(uid)) ASRealtime.airSelected.delete(uid); else ASRealtime.airSelected.add(uid); RENDERERS.airsignal(); }));
+    const sendBox = document.getElementById('airSendBox'); sendBox.classList.toggle('hidden', ASRealtime.airSelected.size === 0);
+    document.getElementById('airSelCount').textContent = ASRealtime.airSelected.size;
   }
-  document.getElementById('dashAirsignal').textContent = AS.currentData.security.airsignalActive ? `AirSignal ist aktiv · ${(window.ASRealtime ? window.ASRealtime.onlineFriends().length : 0)} Freunde online` : 'AirSignal ist gerade deaktiviert.';
-  const notes = [...AS.currentData.notePages].sort((a, b) => b.updatedAt - a.updatedAt);
-  document.getElementById('dashNote').textContent = notes.length ? (notes[0].title || '(ohne Titel)') : 'Noch keine Notizen.';
-};
-
-/* ======================================================================
-   TIMETABLE
-   ====================================================================== */
-const DAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr'];
-const DAYS_FULL = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag'];
-const LESSON_COLORS = ['sky', 'mint', 'lavender', 'butter', 'blush', 'peach'];
-let timetableClockInterval = null;
-function startTimetableClock() { if (timetableClockInterval) clearInterval(timetableClockInterval); timetableClockInterval = setInterval(() => { if (getCurrentViewSafe() === 'timetable') updateNowLine(); }, 30000); }
-RENDERERS.timetable = function () {
-  const grid = document.getElementById('timetableGrid');
-  const periods = 8; const byCell = {};
-  AS.currentData.timetable.forEach(l => { byCell[`${l.day}-${l.period}`] = l; });
-  let html = `<div></div>` + DAYS.map(d => `<div class="tt-headcell">${d}</div>`).join('');
-  for (let p = 1; p <= periods; p++) {
-    html += `<div class="tt-timecell">${p}.</div>`;
-    for (let d = 0; d < 5; d++) {
-      const l = byCell[`${d}-${p}`];
-      if (l) html += `<div class="tt-cell filled" data-id="${l.id}" style="--c-bg:var(--${l.color}-2, var(--sky-2));--c-border:var(--${l.color}, var(--sky));"><div class="tt-subject">${escapeHtml(l.subject)}</div><div class="tt-meta">${escapeHtml(l.room || '')}${l.teacher ? ' · ' + escapeHtml(l.teacher) : ''}</div>${l.cancelled ? '<div class="tt-meta" style="color:var(--danger);font-weight:800;">Fällt aus</div>' : ''}${l.substitution ? `<div class="tt-meta">Vertretung: ${escapeHtml(l.substitution)}</div>` : ''}</div>`;
-      else html += `<div class="tt-cell empty" data-day="${d}" data-period="${p}"></div>`;
-    }
-  }
-  grid.innerHTML = html;
-  grid.querySelectorAll('.tt-cell[data-id]').forEach(el => el.addEventListener('click', () => openLessonModal(AS.currentData.timetable.find(l => l.id === el.dataset.id))));
-  grid.querySelectorAll('.tt-cell.empty').forEach(el => el.addEventListener('click', () => openLessonModal(null, +el.dataset.day, +el.dataset.period)));
-  updateNowLine();
-};
-function updateNowLine() {
-  const grid = document.getElementById('timetableGrid');
-  if (!grid || grid.classList.contains('hidden')) return;
-  const existing = grid.querySelector('.tt-now-line'); if (existing) existing.remove();
-  const dayIdx = todayDayIdx(); if (dayIdx < 0) return;
-  const now = new Date(); const minutesNow = now.getHours() * 60 + now.getMinutes();
-  const dayStart = 8 * 60, dayEnd = 16 * 60;
-  if (minutesNow < dayStart || minutesNow > dayEnd) return;
-  const frac = (minutesNow - dayStart) / (dayEnd - dayStart);
-  const headerH = grid.children[0] ? grid.children[0].getBoundingClientRect().height + 5 : 30;
-  const totalH = grid.scrollHeight;
-  const line = document.createElement('div'); line.className = 'tt-now-line'; line.style.top = (headerH + frac * (totalH - headerH)) + 'px';
-  const badge = document.createElement('div'); badge.className = 'tt-now-badge'; badge.textContent = now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-  line.appendChild(badge); grid.style.position = 'relative'; grid.appendChild(line);
-}
-document.getElementById('addLessonBtn').addEventListener('click', () => openLessonModal(null));
-function openLessonModal(lesson, day, period) {
-  const isEdit = !!lesson;
-  AS.modal(`
-    <h3>${isEdit ? 'Stunde bearbeiten' : 'Stunde hinzufügen'}</h3>
-    <div class="field"><label>Fach</label><input type="text" id="lSubject" value="${lesson ? escapeHtml(lesson.subject) : ''}"></div>
-    <div class="row" style="gap:10px;">
-      <div class="field" style="flex:1;"><label>Tag</label><select id="lDay">${DAYS_FULL.map((d, i) => `<option value="${i}" ${lesson ? lesson.day === i : day === i ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
-      <div class="field" style="flex:1;"><label>Stunde</label><input type="number" id="lPeriod" min="1" max="10" value="${lesson ? lesson.period : (period || 1)}"></div>
-    </div>
-    <div class="field"><label>Uhrzeit (optional)</label><input type="text" id="lTime" placeholder="08:00–08:45" value="${lesson ? escapeHtml(lesson.time || '') : ''}"></div>
-    <div class="row" style="gap:10px;">
-      <div class="field" style="flex:1;"><label>Raum</label><input type="text" id="lRoom" value="${lesson ? escapeHtml(lesson.room || '') : ''}"></div>
-      <div class="field" style="flex:1;"><label>Lehrer</label><input type="text" id="lTeacher" value="${lesson ? escapeHtml(lesson.teacher || '') : ''}"></div>
-    </div>
-    <div class="field"><label>Farbe</label><div class="row wrap" id="lColorPick" style="gap:6px;">${LESSON_COLORS.map(c => `<div data-c="${c}" style="width:26px;height:26px;border-radius:50%;cursor:pointer;background:var(--${c});border:2px solid ${lesson && lesson.color === c ? 'var(--ink)' : 'transparent'};"></div>`).join('')}</div></div>
-    <div class="row between list-row"><span>Fällt aus</span><label class="switch"><input type="checkbox" id="lCancelled" ${lesson && lesson.cancelled ? 'checked' : ''}><span class="track"></span></label></div>
-    <div class="field"><label>Vertretung (optional)</label><input type="text" id="lSub" value="${lesson ? escapeHtml(lesson.substitution || '') : ''}"></div>
-    <div class="row" style="margin-top:14px;gap:8px;justify-content:flex-end;">${isEdit ? '<button class="btn btn-danger btn-sm" id="delLesson">Löschen</button>' : ''}<button class="btn btn-ghost btn-sm" id="cancelLesson">Abbrechen</button><button class="btn btn-sm" id="saveLesson">Speichern</button></div>`, (root) => {
-    let chosenColor = lesson ? lesson.color : 'sky';
-    root.querySelectorAll('#lColorPick [data-c]').forEach(el => el.addEventListener('click', () => { chosenColor = el.dataset.c; root.querySelectorAll('#lColorPick [data-c]').forEach(x => x.style.border = '2px solid transparent'); el.style.border = '2px solid var(--ink)'; }));
-    root.querySelector('#cancelLesson').onclick = AS.closeModal;
-    if (isEdit) root.querySelector('#delLesson').onclick = () => { AS.currentData.timetable = AS.currentData.timetable.filter(l => l.id !== lesson.id); persist(); AS.closeModal(); RENDERERS.timetable(); };
-    root.querySelector('#saveLesson').onclick = () => {
-      const subject = root.querySelector('#lSubject').value.trim();
-      if (!subject) { AS.toast('Bitte ein Fach angeben.'); return; }
-      const obj = { id: lesson ? lesson.id : 'l_' + Date.now(), day: +root.querySelector('#lDay').value, period: +root.querySelector('#lPeriod').value, subject, time: root.querySelector('#lTime').value.trim(), room: root.querySelector('#lRoom').value.trim(), teacher: root.querySelector('#lTeacher').value.trim(), color: chosenColor, cancelled: root.querySelector('#lCancelled').checked, substitution: root.querySelector('#lSub').value.trim() };
-      AS.currentData.timetable = AS.currentData.timetable.filter(l => !(l.day === obj.day && l.period === obj.period) && l.id !== obj.id);
-      AS.currentData.timetable.push(obj); persist(); AS.closeModal(); RENDERERS.timetable(); AS.toast('Stundenplan gespeichert.');
-    };
-  });
-}
-
-/* ======================================================================
-   TASKS
-   ====================================================================== */
-let taskFilter = 'today';
-const TASK_FILTERS = [['today', 'Heute'], ['week', 'Diese Woche'], ['soon', 'Bald'], ['overdue', 'Überfällig'], ['done', 'Erledigt'], ['all', 'Alle']];
-RENDERERS.tasks = function () {
-  const fbox = document.getElementById('taskFilters');
-  fbox.innerHTML = TASK_FILTERS.map(([k, l]) => `<span class="pill" data-f="${k}" style="cursor:pointer;${taskFilter === k ? '' : 'opacity:.55;'}">${l}</span>`).join('');
-  fbox.querySelectorAll('[data-f]').forEach(el => el.addEventListener('click', () => { taskFilter = el.dataset.f; RENDERERS.tasks(); }));
-  const ts = todayStr(); const weekEnd = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10); const soonEnd = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
-  let list = [...AS.currentData.tasks];
-  if (taskFilter === 'today') list = list.filter(t => !t.done && t.due === ts);
-  else if (taskFilter === 'week') list = list.filter(t => !t.done && t.due && t.due >= ts && t.due <= weekEnd);
-  else if (taskFilter === 'soon') list = list.filter(t => !t.done && t.due && t.due >= ts && t.due <= soonEnd);
-  else if (taskFilter === 'overdue') list = list.filter(t => !t.done && t.due && t.due < ts);
-  else if (taskFilter === 'done') list = list.filter(t => t.done);
-  list.sort((a, b) => (a.due || '9999') < (b.due || '9999') ? -1 : 1);
-  const box = document.getElementById('taskList');
-  if (!list.length) { box.innerHTML = `<div class="empty"><div class="em-ic">✔️</div>Nichts zu tun hier — schön ruhig.</div>`; return; }
-  box.innerHTML = list.map(t => `
-    <div class="list-row">
-      <div class="check ${t.done ? 'checked' : ''}" data-toggle="${t.id}">${t.done ? '✓' : ''}</div>
-      <div style="flex:1;min-width:0;"><div style="${t.done ? 'text-decoration:line-through;color:var(--ink-faint);' : ''}"><strong style="font-size:.9rem;">${escapeHtml(t.title)}</strong> ${t.subject ? `<span class="tiny">· ${escapeHtml(t.subject)}</span>` : ''}</div><div class="tiny">${t.due ? 'fällig ' + fmtDate(t.due) : 'kein Datum'} ${t.priority ? '· ' + prioLabel(t.priority) : ''}</div></div>
-      <span class="tiny" style="cursor:pointer;" data-edit="${t.id}">Bearbeiten</span>
-      <span class="tiny" style="cursor:pointer;color:var(--danger);" data-del="${t.id}">🗑️</span>
-    </div>`).join('');
-  box.querySelectorAll('[data-toggle]').forEach(el => el.addEventListener('click', () => { const t = AS.currentData.tasks.find(x => x.id === el.dataset.toggle); t.done = !t.done; persist(); RENDERERS.tasks(); if (getCurrentViewSafe() === 'dashboard') RENDERERS.dashboard(); }));
-  box.querySelectorAll('[data-edit]').forEach(el => el.addEventListener('click', () => openTaskModal(AS.currentData.tasks.find(x => x.id === el.dataset.edit))));
-  box.querySelectorAll('[data-del]').forEach(el => el.addEventListener('click', () => { AS.currentData.tasks = AS.currentData.tasks.filter(t => t.id !== el.dataset.del); persist(); RENDERERS.tasks(); }));
-};
-function prioLabel(p) { return { low: 'niedrig', mid: 'mittel', high: 'hoch' }[p] || ''; }
-document.getElementById('addTaskBtn').addEventListener('click', () => openTaskModal(null));
-function openTaskModal(task) {
-  const isEdit = !!task;
-  AS.modal(`
-    <h3>${isEdit ? 'Aufgabe bearbeiten' : 'Neue Aufgabe'}</h3>
-    <div class="field"><label>Titel</label><input type="text" id="tTitle" value="${task ? escapeHtml(task.title) : ''}"></div>
-    <div class="row" style="gap:10px;"><div class="field" style="flex:1;"><label>Fach</label><input type="text" id="tSubject" value="${task ? escapeHtml(task.subject || '') : ''}"></div><div class="field" style="flex:1;"><label>Fällig am</label><input type="date" id="tDue" value="${task ? task.due || '' : ''}"></div></div>
-    <div class="field"><label>Priorität</label><select id="tPrio"><option value="low" ${task && task.priority === 'low' ? 'selected' : ''}>Niedrig</option><option value="mid" ${!task || task.priority === 'mid' ? 'selected' : ''}>Mittel</option><option value="high" ${task && task.priority === 'high' ? 'selected' : ''}>Hoch</option></select></div>
-    <div class="field"><label>Notiz</label><textarea id="tNote">${task ? escapeHtml(task.note || '') : ''}</textarea></div>
-    <div class="row" style="margin-top:10px;gap:8px;justify-content:flex-end;">${isEdit ? '<button class="btn btn-danger btn-sm" id="delTask">Löschen</button>' : ''}<button class="btn btn-ghost btn-sm" id="cancelTask">Abbrechen</button><button class="btn btn-sm" id="saveTask">Speichern</button></div>`, (root) => {
-    root.querySelector('#cancelTask').onclick = AS.closeModal;
-    if (isEdit) root.querySelector('#delTask').onclick = () => { AS.currentData.tasks = AS.currentData.tasks.filter(t => t.id !== task.id); persist(); AS.closeModal(); RENDERERS.tasks(); };
-    root.querySelector('#saveTask').onclick = () => {
-      const title = root.querySelector('#tTitle').value.trim();
-      if (!title) { AS.toast('Bitte einen Titel angeben.'); return; }
-      const obj = { id: task ? task.id : 't_' + Date.now(), title, subject: root.querySelector('#tSubject').value.trim(), due: root.querySelector('#tDue').value, priority: root.querySelector('#tPrio').value, note: root.querySelector('#tNote').value.trim(), done: task ? task.done : false };
-      if (!task) AS.currentData.tasks.push(obj); else Object.assign(task, obj);
-      persist(); AS.closeModal(); RENDERERS.tasks(); AS.toast('Aufgabe gespeichert.');
-    };
-  });
-}
-
-/* ======================================================================
-   TO-DO
-   ====================================================================== */
-let todoEditDay = todayDayIdx() >= 0 ? todayDayIdx() : 0;
-const MOTIVATE_MSGS = ['Weiter so! ✨', 'Du rockst das! 💪', 'Fast geschafft! 🌟', 'Klasse gemacht! 🎉', 'Ein Schritt näher am Cookie 🍪'];
-RENDERERS.todo = function () { renderTodoToday(); renderTodoTemplate(); };
-function computeStreak() {
-  let streak = 0; let d = new Date();
-  for (let i = 0; i < 365; i++) {
-    const iso = d.toISOString().slice(0, 10);
-    const log = AS.currentData.todoLog[iso];
-    const isSchoolDay = d.getDay() !== 0 && d.getDay() !== 6;
-    if (isSchoolDay) { if (log && log.started && log.items.length && log.items.every(it => it.current >= it.target)) streak++; else if (iso === todayStr()) { } else break; }
-    d.setDate(d.getDate() - 1);
-  }
-  return streak;
-}
-function renderTodoToday() {
-  const ts = todayStr();
-  const box = document.getElementById('todoTodayBox');
-  const dayIdx = todayDayIdx();
-  if (dayIdx < 0) { box.innerHTML = `<div class="empty"><div class="em-ic">🌤️</div>Heute ist Wochenende — genieß die Pause!</div>`; return; }
-  let log = AS.currentData.todoLog[ts];
-  const template = AS.currentData.todoTemplate[dayIdx] || [];
-  const streak = computeStreak();
-  const streakHtml = streak > 0 ? `<div class="streak-badge">🔥 ${streak} Tage Streak</div>` : '';
-  if (!log) {
-    if (!template.length) { box.innerHTML = `${streakHtml}<div class="empty"><div class="em-ic">🍪</div>Für heute sind keine Ziele geplant. Leg unten welche fest!</div>`; return; }
-    box.innerHTML = `${streakHtml}<div class="empty"><div class="em-ic">✨</div>Bereit für heute? <div class="motivate-msg">Kleine Schritte, große Wirkung!</div><button class="btn" id="startTodoBtn" style="margin-top:12px;">Start To-Do</button></div>`;
-    document.getElementById('startTodoBtn').addEventListener('click', () => { AS.currentData.todoLog[ts] = { started: true, items: template.map(g => ({ id: g.id, label: g.label, target: g.target, current: 0 })), cookieBites: 0, rewardClaimed: false }; persist(); renderTodoToday(); if (getCurrentViewSafe() === 'dashboard') RENDERERS.dashboard(); });
+  const nearBox = document.getElementById('airNearbyList'); const statusEl = document.getElementById('airNearbyStatus');
+  if (!mySec().airsignalActive) { statusEl.textContent = 'AirSignal deaktiviert'; nearBox.innerHTML = `<div class="empty"><div class="em-ic">☁️</div>Aktiviere AirSignal in den Sicherheitseinstellungen.</div>`; return; }
+  if (!ASRealtime.lastGeo) {
+    statusEl.textContent = '';
+    nearBox.innerHTML = `<div class="empty"><div class="em-ic">📍</div><button class="btn btn-sm" id="enableGeoBtn">Standort freigeben, um Nähe zu Freunden zu sehen</button><p class="tiny" style="margin-top:8px;">Nur eine grobe, ungefähre Angabe.</p></div>`;
+    const btn = document.getElementById('enableGeoBtn'); if (btn) btn.addEventListener('click', requestGeoAndBroadcast);
     return;
   }
-  const total = log.items.reduce((a, i) => a + i.target, 0);
-  const cur = log.items.reduce((a, i) => a + Math.min(i.current, i.target), 0);
-  const allDone = log.items.length > 0 && log.items.every(i => i.current >= i.target);
-  const mode = AS.currentData.todoMode;
-  let firstUnfinishedFound = false;
-  let html = streakHtml;
-  html += `<div class="row between" style="margin-bottom:6px;"><span class="tiny">Modus:</span><span class="pill" style="cursor:pointer;" id="todoModeToggle">${mode === 'sequential' ? '🔢 Nacheinander' : '📋 Alle sichtbar'}</span></div>`;
-  html += log.items.map(i => {
-    const done = i.current >= i.target;
-    let locked = false;
-    if (mode === 'sequential' && !done) { if (firstUnfinishedFound) locked = true; else firstUnfinishedFound = true; }
-    return `<div class="todo-check-row ${done ? 'done' : ''} ${locked ? 'locked' : ''}"><div class="todo-checkbox ${done ? 'checked' : ''}" data-check="${i.id}">${done ? '✓' : ''}</div><div style="flex:1;"><div class="todo-check-label">${escapeHtml(i.label)}</div><div class="todo-check-target">${i.current}/${i.target}</div></div><span class="tiny" style="cursor:pointer;color:var(--danger);" data-delitem="${i.id}">🗑️</span></div>`;
-  }).join('');
-  if (!log.items.length) html += `<div class="empty"><div class="em-ic">🌿</div>Heute keine Ziele geplant — freier Tag!</div>`;
-  else { html += `<div class="tiny" style="margin-top:8px;">Gesamt: ${cur}/${total} Punkte</div>`; if (!allDone && cur > 0) html += `<div class="motivate-msg">${MOTIVATE_MSGS[Math.floor((cur / Math.max(total, 1)) * (MOTIVATE_MSGS.length - 1))]}</div>`; }
-  html += `<button class="btn btn-ghost btn-sm" id="addMoreGoalTodayBtn" style="margin-top:10px;">+ Weiteres Ziel für heute</button>`;
-  if (allDone) html += `<div class="cookie-card"><p style="font-family:var(--font-hand);font-size:1.3rem;font-weight:700;">Alles geschafft — gönn dir ein Cookie! 🎉</p><button class="cookie-btn" id="cookieBtn">${cookieEmoji(log.cookieBites)}</button><p class="tiny">${5 - log.cookieBites > 0 ? 'Klick, um am Cookie zu knabbern (' + (5 - log.cookieBites) + ' Bissen übrig)' : 'Aufgegessen — bis morgen! 🍪'}</p></div>`;
-  box.innerHTML = html;
-  document.getElementById('todoModeToggle').addEventListener('click', () => { AS.currentData.todoMode = mode === 'sequential' ? 'checklist' : 'sequential'; persist(); renderTodoToday(); });
-  box.querySelectorAll('[data-check]').forEach(el => el.addEventListener('click', () => { if (el.closest('.locked')) return; const item = log.items.find(i => i.id === el.dataset.check); if (item.current < item.target) { item.current++; persist(); renderTodoToday(); if (getCurrentViewSafe() === 'dashboard') RENDERERS.dashboard(); } }));
-  box.querySelectorAll('[data-delitem]').forEach(el => el.addEventListener('click', () => { log.items = log.items.filter(i => i.id !== el.dataset.delitem); persist(); renderTodoToday(); }));
-  const addMoreBtn = document.getElementById('addMoreGoalTodayBtn'); if (addMoreBtn) addMoreBtn.addEventListener('click', () => openQuickGoalModal(log));
-  const cookieBtn = document.getElementById('cookieBtn');
-  if (cookieBtn) cookieBtn.addEventListener('click', () => { if (log.cookieBites < 5) { log.cookieBites++; if (log.cookieBites >= 5 && !log.rewardClaimed) { log.rewardClaimed = true; AS.currentData.todoStreak = computeStreak(); if (AS.currentData.todoStreak > AS.currentData.todoBestStreak) AS.currentData.todoBestStreak = AS.currentData.todoStreak; } persist(); renderTodoToday(); AS.toast(log.cookieBites >= 5 ? 'Mjam — Cookie aufgegessen! 🍪 Bis morgen!' : 'Knusper 🍪'); } });
-}
-function cookieEmoji(bites) { const stages = ['🍪', '🍪', '🍪', '🍪', '🍪', '🫓']; return bites >= 5 ? '✨' : stages[bites]; }
-function openQuickGoalModal(log) {
-  AS.modal(`<h3>Weiteres Ziel für heute</h3><div class="field"><label>Was willst du noch erreichen?</label><input type="text" id="qgLabel" placeholder="z. B. 10 Minuten Vokabeln"></div><div class="field"><label>Zielwert</label><input type="number" id="qgTarget" min="1" value="1"></div><div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="qgCancel">Abbrechen</button><button class="btn btn-sm" id="qgSave">Hinzufügen</button></div>`, (root) => {
-    root.querySelector('#qgCancel').onclick = AS.closeModal;
-    root.querySelector('#qgSave').onclick = () => { const label = root.querySelector('#qgLabel').value.trim(); const target = +root.querySelector('#qgTarget').value || 1; if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; } log.items.push({ id: 'g_' + Date.now(), label, target, current: 0 }); persist(); AS.closeModal(); renderTodoToday(); };
-  });
-}
-function renderTodoTemplate() {
-  const tabs = document.getElementById('todoDayTabs');
-  tabs.innerHTML = DAYS_FULL.map((d, i) => `<span class="pill ${todoEditDay === i ? 'active' : ''}" data-day="${i}" style="cursor:pointer;">${d}</span>`).join('');
-  tabs.querySelectorAll('[data-day]').forEach(el => el.addEventListener('click', () => { todoEditDay = +el.dataset.day; renderTodoTemplate(); }));
-  const list = document.getElementById('todoTemplateList');
-  const goals = AS.currentData.todoTemplate[todoEditDay] || [];
-  if (!goals.length) { list.innerHTML = `<p class="muted tiny" style="margin-top:8px;">Noch keine Ziele für ${DAYS_FULL[todoEditDay]}.</p>`; return; }
-  list.innerHTML = goals.map(g => `<div class="list-row"><span style="flex:1;font-size:.86rem;">${escapeHtml(g.label)} <span class="tiny">(Ziel: ${g.target}×)</span></span><span class="tiny" style="cursor:pointer;color:var(--danger);" data-delgoal="${g.id}">🗑️</span></div>`).join('');
-  list.querySelectorAll('[data-delgoal]').forEach(el => el.addEventListener('click', () => { AS.currentData.todoTemplate[todoEditDay] = AS.currentData.todoTemplate[todoEditDay].filter(g => g.id !== el.dataset.delgoal); persist(); renderTodoTemplate(); }));
-}
-document.getElementById('addTodoGoalBtn').addEventListener('click', () => {
-  AS.modal(`<h3>Ziel für ${DAYS_FULL[todoEditDay]}</h3><div class="field"><label>Was willst du erreichen?</label><input type="text" id="goalLabel" placeholder="z. B. 4× melden"></div><div class="field"><label>Wie oft / Zielwert</label><input type="number" id="goalTarget" min="1" value="1"></div><div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="goalCancel">Abbrechen</button><button class="btn btn-sm" id="goalSave">Speichern</button></div>`, (root) => {
-    root.querySelector('#goalCancel').onclick = AS.closeModal;
-    root.querySelector('#goalSave').onclick = () => { const label = root.querySelector('#goalLabel').value.trim(); const target = +root.querySelector('#goalTarget').value || 1; if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; } if (!AS.currentData.todoTemplate[todoEditDay]) AS.currentData.todoTemplate[todoEditDay] = []; AS.currentData.todoTemplate[todoEditDay].push({ id: 'g_' + Date.now(), label, target }); persist(); AS.closeModal(); renderTodoTemplate(); };
-  });
-});
-
-/* ======================================================================
-   KALENDER
-   ====================================================================== */
-let calViewDate = new Date();
-RENDERERS.calendar = function () {
-  document.getElementById('calGridHead').innerHTML = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'].map(d => `<div class="cal-daylabel">${d}</div>`).join('');
-  document.getElementById('calMonthLabel').textContent = calViewDate.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
-  const year = calViewDate.getFullYear(), month = calViewDate.getMonth();
-  const firstOfMonth = new Date(year, month, 1); const startOffset = firstOfMonth.getDay(); const gridStart = new Date(year, month, 1 - startOffset);
-  const todayIso = todayStr();
-  const evByDate = {}; AS.currentData.calendarEvents.forEach(e => { (evByDate[e.date] = evByDate[e.date] || []).push(e); });
-  let cellsHtml = '';
-  for (let i = 0; i < 42; i++) { const d = new Date(gridStart); d.setDate(gridStart.getDate() + i); const iso = d.toISOString().slice(0, 10); const out = d.getMonth() !== month; const isToday = iso === todayIso; const evs = evByDate[iso] || []; cellsHtml += `<div class="cal-cell ${out ? 'out' : ''} ${isToday ? 'today' : ''}" data-date="${iso}"><div class="cal-num">${d.getDate()}</div><div>${evs.slice(0, 3).map(e => `<span class="cal-dot" style="background:var(--${e.color || 'mint'});"></span>`).join('')}</div></div>`; }
-  document.getElementById('calGrid').innerHTML = cellsHtml;
-  document.querySelectorAll('#calGrid .cal-cell').forEach(el => el.addEventListener('click', () => openCalDayModal(el.dataset.date)));
-  const listBox = document.getElementById('calEventList');
-  const upcoming = [...AS.currentData.calendarEvents].filter(e => e.date >= todayIso).sort((a, b) => a.date < b.date ? -1 : 1).slice(0, 10);
-  listBox.innerHTML = upcoming.length ? upcoming.map(e => `<div class="list-row"><span class="cal-dot" style="background:var(--${e.color || 'mint'});"></span><div style="flex:1;"><strong style="font-size:.85rem;">${escapeHtml(e.title)}</strong><div class="tiny">${fmtDate(e.date)}${e.time ? ' · ' + escapeHtml(e.time) : ''}</div></div><span class="tiny" style="cursor:pointer;" data-deleve="${e.id}">🗑️</span></div>`).join('') : `<span class="muted tiny">Keine kommenden Einträge.</span>`;
-  listBox.querySelectorAll('[data-deleve]').forEach(el => el.addEventListener('click', () => { AS.currentData.calendarEvents = AS.currentData.calendarEvents.filter(e => e.id !== el.dataset.deleve); persist(); RENDERERS.calendar(); }));
+  statusEl.textContent = 'ungefähre Position aktiv';
+  const nearbyFriends = online.filter(uid => ASRealtime.knownProfiles[uid] && ASRealtime.knownProfiles[uid].geo);
+  let html = '';
+  if (nearbyFriends.length) html += nearbyFriends.map(uid => { const p = ASRealtime.knownProfiles[uid]; const band = distanceBand(ASRealtime.lastGeo, p.geo); return `<div class="list-row"><div class="avatar clickable nf-av" data-uid="${uid}" style="width:32px;height:32px;font-size:.7rem;"></div><span style="flex:1;font-size:.85rem;">${escapeHtml(p.firstName)}</span><span class="tiny">${band}</span></div>`; }).join('');
+  html += `<div class="empty" style="padding:20px 10px;"><div class="em-ic">✦</div>Fremde in deiner Nähe zu entdecken braucht ein echtes Backend — das gibt es hier noch nicht, damit nichts vorgetäuscht wird.</div>`;
+  nearBox.innerHTML = html;
+  nearBox.querySelectorAll('.nf-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
 };
-document.getElementById('calPrevBtn').addEventListener('click', () => { calViewDate.setMonth(calViewDate.getMonth() - 1); RENDERERS.calendar(); });
-document.getElementById('calNextBtn').addEventListener('click', () => { calViewDate.setMonth(calViewDate.getMonth() + 1); RENDERERS.calendar(); });
-document.getElementById('calTodayBtn').addEventListener('click', () => { calViewDate = new Date(); RENDERERS.calendar(); });
-function openCalDayModal(iso) {
-  const evs = AS.currentData.calendarEvents.filter(e => e.date === iso);
-  AS.modal(`<h3>${fmtDate(iso)}</h3>
-    <div id="calDayEvents" style="margin-bottom:12px;">${evs.length ? evs.map(e => `<div class="list-row"><span class="cal-dot" style="background:var(--${e.color || 'mint'});"></span><span style="flex:1;font-size:.85rem;">${escapeHtml(e.title)}${e.time ? ' · ' + escapeHtml(e.time) : ''}</span><span class="tiny" style="cursor:pointer;color:var(--danger);" data-quickdel="${e.id}">🗑️</span></div>`).join('') : '<span class="muted tiny">Noch keine Einträge.</span>'}</div>
-    <div class="field"><label>Neuer Eintrag</label><input type="text" id="ceTitle" placeholder="z. B. Matheklausur"></div>
-    <div class="row" style="gap:10px;"><div class="field" style="flex:1;"><label>Uhrzeit (optional)</label><input type="text" id="ceTime" placeholder="10:00"></div><div class="field" style="flex:1;"><label>Farbe</label><select id="ceColor">${LESSON_COLORS.map(c => `<option value="${c}">${c}</option>`).join('')}</select></div></div>
-    <div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="ceCancel">Schließen</button><button class="btn btn-sm" id="ceSave">Hinzufügen</button></div>`, (root) => {
-    root.querySelector('#ceCancel').onclick = AS.closeModal;
-    root.querySelectorAll('[data-quickdel]').forEach(el => el.addEventListener('click', () => { AS.currentData.calendarEvents = AS.currentData.calendarEvents.filter(e => e.id !== el.dataset.quickdel); persist(); AS.closeModal(); RENDERERS.calendar(); }));
-    root.querySelector('#ceSave').onclick = () => { const title = root.querySelector('#ceTitle').value.trim(); if (!title) { AS.toast('Bitte einen Titel angeben.'); return; } AS.currentData.calendarEvents.push({ id: 'ce_' + Date.now(), date: iso, title, time: root.querySelector('#ceTime').value.trim(), color: root.querySelector('#ceColor').value }); persist(); AS.closeModal(); RENDERERS.calendar(); AS.toast('Eintrag hinzugefügt.'); };
+document.getElementById('airQuickSendBtn').addEventListener('click', () => {
+  const recipients = Array.from(ASRealtime.airSelected);
+  if (!recipients.length) { AS.toast('Bitte mindestens eine Person auswählen.'); return; }
+  const text = document.getElementById('airQuickText').value.trim();
+  const fileInput = document.getElementById('airQuickFile'); const file = fileInput.files[0];
+  const send = (fileObjs) => {
+    recipients.forEach(uid => ASRealtime.sendTo(uid, { type: 'airsignal', payload: { text, files: fileObjs, from: publicProfile() } }));
+    AS.toast(`AirSignal an ${recipients.length} Freund(e) gesendet ✦`);
+    document.getElementById('airQuickText').value = ''; fileInput.value = '';
+    ASRealtime.airSelected.clear(); RENDERERS.airsignal();
+  };
+  if (file) { (async () => { const lim = limitsFor('chatFile'); const isImg = (file.type || '').includes('image'); const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file); send([{ name: file.name, type: file.type, dataUrl }]); })(); }
+  else send([]);
+});
+function requestGeoAndBroadcast() {
+  if (!navigator.geolocation) { AS.toast('Geolocation wird von diesem Browser nicht unterstützt.'); return; }
+  navigator.geolocation.getCurrentPosition((pos) => {
+    const fuzzed = { lat: Math.round(pos.coords.latitude * 80) / 80, lng: Math.round(pos.coords.longitude * 80) / 80 };
+    ASRealtime.lastGeo = fuzzed;
+    if (mySec().airsignalVisibility === 'friends' || mySec().airsignalVisibility === 'everyone') myData().friends.forEach(uid => ASRealtime.sendTo(uid, { type: 'presence_geo', geo: fuzzed }));
+    RENDERERS.airsignal(); AS.toast('Ungefährer Standort geteilt.');
+  }, () => AS.toast('Standortfreigabe wurde nicht erteilt.'), { enableHighAccuracy: false, timeout: 8000 });
+}
+function distanceBand(a, b) {
+  const R = 6371; const dLat = (b.lat - a.lat) * Math.PI / 180, dLng = (b.lng - a.lng) * Math.PI / 180;
+  const s = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  const dist = 2 * R * Math.asin(Math.sqrt(s));
+  if (dist < 2) return 'ganz in der Nähe'; if (dist < 15) return 'in deiner Stadt'; if (dist < 80) return 'in der Region'; return 'weiter weg';
+}
+function autoAcceptAirsignal(fromUid, payload) { AS.toast(`${payload.from.firstName} hat dir automatisch etwas gesendet.`); showAirsignalPopup(fromUid, payload, true); }
+function showAirsignalPopup(fromUid, payload) {
+  if (myData().settings.notifAirsignal === false) return;
+  AS.modal(`<h3>${escapeHtml(payload.from.firstName)} möchte dir etwas senden ✦</h3>
+    <div class="row" style="gap:10px;margin:12px 0;"><div class="avatar clickable ap-av" data-uid="${fromUid}" style="width:40px;height:40px;"></div><div><strong>${escapeHtml(payload.from.firstName)} ${escapeHtml(payload.from.lastName)}</strong><div class="tiny">${payload.files.length} Datei(en)</div></div></div>
+    ${payload.text ? `<p class="card no-margin" style="padding:12px;">${escapeHtml(payload.text)}</p>` : ''}
+    <div class="row" style="justify-content:flex-end;gap:8px;"><button class="btn btn-ghost btn-sm" id="apDecline">Ablehnen</button><button class="btn btn-sm" id="apAccept">Annehmen</button></div>`, (root) => {
+    renderAvatar(root.querySelector('.ap-av'), payload.from);
+    root.querySelector('#apDecline').onclick = AS.closeModal;
+    root.querySelector('#apAccept').onclick = () => {
+      AS.closeModal();
+      AS.modal(`<h3>Von ${escapeHtml(payload.from.firstName)}</h3>${payload.text ? `<p>${escapeHtml(payload.text)}</p>` : ''}<div class="grid grid-3" style="margin-top:10px;">${payload.files.map(f => `<a class="btn btn-sm btn-outline" href="${f.dataUrl}" download="${escapeHtml(f.name)}">${escapeHtml(f.name)}</a>`).join('')}</div><div class="row" style="justify-content:flex-end;margin-top:14px;"><button class="btn btn-sm" id="apClose">Schließen</button></div>`, (r2) => r2.querySelector('#apClose').onclick = AS.closeModal);
+    };
   });
 }
+ASRealtime.refreshPresenceUI = function () { const v = getCurrentView(); if (v === 'friends') RENDERERS.friends(); if (v === 'chat') renderChatConvoList(); if (v === 'airsignal') RENDERERS.airsignal(); if (v === 'dashboard') RENDERERS.dashboard(); };
 
 /* ======================================================================
-   MATERIALS — inkl. "🔗 Teilen"-Button (ganze Sammlung per QR-Code)
+   SECURITY
    ====================================================================== */
-let materialQuery = '';
-RENDERERS.materials = function () {
-  const headParent = document.getElementById('uploadMaterialBtn').parentElement;
-  if (!document.getElementById('shareMaterialBtn')) {
-    const shareBtn = document.createElement('button');
-    shareBtn.id = 'shareMaterialBtn'; shareBtn.className = 'btn btn-sm btn-outline'; shareBtn.textContent = '🔗 Teilen'; shareBtn.style.marginRight = '8px';
-    headParent.insertBefore(shareBtn, document.getElementById('uploadMaterialBtn'));
-    shareBtn.addEventListener('click', shareMaterialCollection);
-  }
-  let list = [...AS.currentData.materials];
-  if (materialQuery) list = list.filter(m => (m.name + ' ' + m.subject + ' ' + m.topic).toLowerCase().includes(materialQuery.toLowerCase()));
-  list.sort((a, b) => b.addedAt - a.addedAt);
-  const box = document.getElementById('materialList');
-  if (!list.length) { box.innerHTML = `<div class="empty" style="grid-column:1/-1;"><div class="em-ic">🗂️</div>Noch keine Dateien hochgeladen.</div>`; return; }
-  box.innerHTML = list.map(m => {
-    const isImg = (m.type || '').includes('image');
-    return `<div class="card no-margin" style="padding:0;overflow:hidden;"><div class="mat-thumb" data-thumb="${m.id}">${isImg ? '⏳' : iconForType(m.type)}</div><div style="padding:12px;"><strong style="font-size:.85rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name)}</strong><div class="tiny">${escapeHtml(m.subject || 'Ohne Fach')}${m.topic ? ' · ' + escapeHtml(m.topic) : ''}</div><div class="tiny">${(m.size / 1024).toFixed(0)} KB</div><div class="row" style="margin-top:8px;gap:6px;"><span class="btn btn-sm btn-outline" data-download="${m.id}" style="cursor:pointer;">Download</span><span class="tiny" style="cursor:pointer;margin-left:auto;color:var(--danger);" data-delm="${m.id}">🗑️</span></div></div></div>`;
-  }).join('');
-  box.querySelectorAll('[data-thumb]').forEach(el => { const m = list.find(x => x.id === el.dataset.thumb); if ((m.type || '').includes('image') && m.blobId) asyncImg(m.blobId, (data) => { el.innerHTML = `<img src="${data}" alt="">`; }); });
-  box.querySelectorAll('[data-download]').forEach(el => el.addEventListener('click', async () => { const m = list.find(x => x.id === el.dataset.download); el.textContent = '…'; const data = await AS.getBlob(m.blobId); el.textContent = 'Download'; if (!data) { AS.toast('Datei konnte nicht geladen werden.'); return; } const a = document.createElement('a'); a.href = data; a.download = m.name; a.click(); }));
-  box.querySelectorAll('[data-delm]').forEach(el => el.addEventListener('click', () => { const m = AS.currentData.materials.find(x => x.id === el.dataset.delm); if (m && m.blobId) AS.deleteBlob(m.blobId); AS.currentData.materials = AS.currentData.materials.filter(x => x.id !== el.dataset.delm); persist(); RENDERERS.materials(); }));
-};
-function iconForType(t) { if (t.includes('pdf')) return '📕'; if (t.includes('image')) return '🖼️'; if (t.includes('presentation') || t.includes('powerpoint')) return '📊'; if (t.includes('word') || t.includes('document')) return '📄'; return '📁'; }
-document.getElementById('materialSearch').addEventListener('input', (e) => { materialQuery = e.target.value; RENDERERS.materials(); });
-document.getElementById('uploadMaterialBtn').addEventListener('click', () => document.getElementById('materialFileInput').click());
-document.getElementById('materialFileInput').addEventListener('change', async (e) => {
-  const files = Array.from(e.target.files);
-  const lim = limitsFor('material');
-  let added = 0;
-  for (const file of files) {
-    try {
-      const isImg = (file.type || '').includes('image');
-            const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
-      if (isOverLimit(dataUrl.length)) { AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) — bitte alte Dateien löschen.`); continue; }
-      const blobId = 'mat_' + Date.now() + Math.random().toString(36).slice(2, 7);
-      await AS.saveBlob(blobId, dataUrl);
-      const approxBytes = Math.round(dataUrl.length * 0.75);
-      AS.currentData.materials.push({ id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6), name: file.name, subject: '', topic: '', type: file.type || 'application/octet-stream', size: approxBytes, blobId, favorite: false, addedAt: Date.now() });
-      added++;
-    } catch (err) { AS.toast(`"${file.name}" konnte nicht verarbeitet werden.`); }
-  }
-  if (added) { persist(); RENDERERS.materials(); AS.toast(`${added} Datei(en) hinzugefügt — platzsparend gespeichert.`); }
-  e.target.value = '';
-});
-
-/* ======================================================================
-   SETTINGS
-   ====================================================================== */
-const ACCENTS = [['mint', 'Mint'], ['sky', 'Babyblau'], ['butter', 'Buttergelb'], ['peach', 'Pfirsich'], ['lavender', 'Lavendel'], ['blush', 'Rosa']];
-RENDERERS.settings = function () {
-  const box = document.getElementById('settingsCategories');
+RENDERERS.security = function () {
+  const box = document.getElementById('securityCategories');
+  const s = mySec();
   box.innerHTML = `
-    <div class="settings-cat-title">Darstellung</div>
-    <div class="card"><strong style="font-size:.85rem;">🎨 Akzentfarbe</strong><div class="row wrap" id="accentPicker" style="margin-top:10px;gap:8px;"></div></div>
-    <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">📝 Papier-Stil (Notizen &amp; Hintergrund)</strong><div class="row wrap" id="paperStylePicker" style="margin-top:10px;gap:8px;"></div></div>
-    <div class="card" style="margin-top:14px;"><div class="row between list-row"><span>🌙 Dark Mode</span><label class="switch"><input type="checkbox" id="darkModeToggle"><span class="track"></span></label></div><div class="row between list-row"><span>🍃 Animationen reduzieren</span><label class="switch"><input type="checkbox" id="reduceMotionToggle"><span class="track"></span></label></div></div>
-    <div class="settings-cat-title">Benachrichtigungen</div>
-    <div class="card"><div id="notifSettingsList"></div></div>`;
-  const accentBox = document.getElementById('accentPicker');
-  accentBox.innerHTML = ACCENTS.map(([k, l]) => `<div class="pill" data-accent="${k}" style="cursor:pointer;background:var(--${k}-2);border:2px solid ${AS.currentData.settings.accent === k ? 'var(--ink)' : 'transparent'};">${l}</div>`).join('');
-  accentBox.querySelectorAll('[data-accent]').forEach(el => el.addEventListener('click', () => { AS.currentData.settings.accent = el.dataset.accent; persist(); applyTheme(); RENDERERS.settings(); AS.toast('Theme aktualisiert.'); }));
-  const paperBox = document.getElementById('paperStylePicker');
-  paperBox.innerHTML = [['kariert', '▦ Kariert'], ['liniert', '≡ Liniert']].map(([k, l]) => `<div class="pill" data-paper="${k}" style="cursor:pointer;${AS.currentData.settings.paperStyle === k ? 'box-shadow:var(--shadow-1);border:2px solid var(--ink);' : 'border:2px solid transparent;'}">${l}</div>`).join('');
-  paperBox.querySelectorAll('[data-paper]').forEach(el => el.addEventListener('click', () => { AS.currentData.settings.paperStyle = el.dataset.paper; persist(); applyTheme(); RENDERERS.settings(); AS.toast('Papier-Stil gespeichert.'); }));
-  document.getElementById('darkModeToggle').checked = AS.currentData.settings.darkMode;
-  document.getElementById('reduceMotionToggle').checked = AS.currentData.settings.reduceMotion;
-  document.getElementById('darkModeToggle').onchange = (e) => { AS.currentData.settings.darkMode = e.target.checked; persist(); applyTheme(); };
-  document.getElementById('reduceMotionToggle').onchange = (e) => { AS.currentData.settings.reduceMotion = e.target.checked; persist(); applyTheme(); };
-  const notifBox = document.getElementById('notifSettingsList');
-  const notifFields = [['notifFriendRequests', 'Freundschaftsanfragen'], ['notifMessages', 'Neue Nachrichten'], ['notifAirsignal', 'AirSignal'], ['notifTasks', 'Aufgaben & Deadlines']];
-  notifBox.innerHTML = notifFields.map(([k, l]) => `<div class="row between list-row"><span>${l}</span><label class="switch"><input type="checkbox" data-notif="${k}" ${AS.currentData.settings[k] ? 'checked' : ''}><span class="track"></span></label></div>`).join('');
-  notifBox.querySelectorAll('[data-notif]').forEach(el => el.addEventListener('change', () => { AS.currentData.settings[el.dataset.notif] = el.checked; persist(); }));
+    <div class="settings-cat-title">Profil-Sichtbarkeit</div>
+    <div class="card">
+      <div class="row between list-row"><span>Wer mein Profil sehen darf</span><select data-sec="profileVisibility" style="width:auto;"><option value="everyone">Alle</option><option value="friends">Nur Freunde</option></select></div>
+      <div class="row between list-row"><span>Profilbild-Sichtbarkeit</span><select data-sec="avatarVisibility" style="width:auto;"><option value="everyone">Alle</option><option value="friends">Nur Freunde</option><option value="nobody">Niemand</option></select></div>
+      <div class="row between list-row"><span>Auffindbar über Unique ID / QR-Code</span><label class="switch"><input type="checkbox" data-sec="discoverableByUid"><span class="track"></span></label></div>
+    </div>
+    <div class="settings-cat-title">Freundschaften &amp; Nachrichten</div>
+    <div class="card">
+      <div class="row between list-row"><span>Wer mich als Freund anfragen darf</span><select data-sec="whoCanFriendRequest" style="width:auto;"><option value="everyone">Alle mit meiner ID</option><option value="nobody">Niemand</option></select></div>
+      <div class="row between list-row"><span>Wer mir schreiben darf</span><select data-sec="whoCanMessage" style="width:auto;"><option value="everyone">Alle</option><option value="friends">Nur Freunde</option></select></div>
+    </div>
+    <div class="settings-cat-title">Online-Status</div>
+    <div class="card">
+      <div class="row between list-row"><span>Online-Status sichtbar</span><label class="switch"><input type="checkbox" data-sec="onlineStatusVisible"><span class="track"></span></label></div>
+      <div class="row between list-row" id="rowOnlineFriendsOnly"><span>… nur für Freunde sichtbar</span><label class="switch"><input type="checkbox" data-sec="onlineStatusFriendsOnly"><span class="track"></span></label></div>
+    </div>
+    <div class="settings-cat-title">AirSignal</div>
+    <div class="card">
+      <div class="row between list-row"><span>AirSignal aktivieren</span><label class="switch"><input type="checkbox" data-sec="airsignalActive"><span class="track"></span></label></div>
+      <div id="airDependentRows">
+        <div class="row between list-row"><span>Wer mich in AirSignal sehen kann</span><select data-sec="airsignalVisibility" style="width:auto;"><option value="friends">Nur Freunde</option><option value="everyone">Alle</option><option value="invisible">Unsichtbar</option></select></div>
+        <div class="row between list-row"><span>AirSignal empfangen von</span><select data-sec="airsignalReceiveFrom" style="width:auto;"><option value="friends">Nur Freunde</option><option value="everyone">Alle</option></select></div>
+        <div class="row between list-row"><span>Automatisch annehmen</span><label class="switch"><input type="checkbox" data-sec="airsignalAutoAccept"><span class="track"></span></label></div>
+      </div>
+    </div>
+  `;
+  box.querySelectorAll('[data-sec]').forEach(el => { const key = el.dataset.sec; if (el.type === 'checkbox') el.checked = !!s[key]; else el.value = s[key]; });
+  function syncDependentRows() {
+    document.getElementById('rowOnlineFriendsOnly').style.opacity = s.onlineStatusVisible ? '1' : '.4';
+    document.getElementById('rowOnlineFriendsOnly').style.pointerEvents = s.onlineStatusVisible ? 'auto' : 'none';
+    document.getElementById('airDependentRows').style.opacity = s.airsignalActive ? '1' : '.4';
+    document.getElementById('airDependentRows').style.pointerEvents = s.airsignalActive ? 'auto' : 'none';
+  }
+  syncDependentRows();
+  box.querySelectorAll('[data-sec]').forEach(el => el.addEventListener('change', () => {
+    const key = el.dataset.sec; s[key] = el.type === 'checkbox' ? el.checked : el.value; persist();
+    AS.toast('Einstellung gespeichert — sofort aktiv.');
+    if (key === 'avatarVisibility' || key === 'profileVisibility') broadcastProfileUpdate();
+    if (getCurrentView() === 'airsignal') RENDERERS.airsignal();
+    if (getCurrentView() === 'dashboard') RENDERERS.dashboard();
+    syncDependentRows();
+  }));
+  const devBox = document.getElementById('deviceList');
+  devBox.innerHTML = myData().devices.map(d => `<div class="list-row"><span style="flex:1;" class="tiny">${escapeHtml(d.label)}</span><span class="tiny">${new Date(d.lastActive).toLocaleDateString('de-DE')}</span></div>`).join('');
+    renderStorageBar();
 };
-document.getElementById('cloudSyncToggle').addEventListener('change', (e) => {
-  AS.setConsent(e.target.checked ? 'cloud' : 'local');
-  if (e.target.checked) { cloudPut(KEY_USERS, AS.getUsers()); cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData); AS.toast('Online-Speicherung aktiviert — bereits vorhandene Daten werden jetzt hochgeladen.'); }
-  else AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
-});
-
-/* ======================================================================
-   PROFILE
-   ====================================================================== */
-RENDERERS.profile = function () {
-  const u = AS.currentUser;
-  document.getElementById('cloudSyncToggle').checked = AS.cloudEnabled();
-  renderAvatar(document.getElementById('profileAvatarBig'), u);
-  document.getElementById('profileName').textContent = `${u.firstName} ${u.lastName}`;
-  document.getElementById('profileUsername').textContent = '@' + u.username;
-  document.getElementById('profileUid').textContent = u.uniqueId;
-  document.getElementById('editFirst').value = u.firstName; document.getElementById('editLast').value = u.lastName;
-  document.getElementById('editUsername').value = u.username; document.getElementById('editBio').value = u.bio || '';
-  const qrWrap = document.getElementById('qrCanvasWrap'); qrWrap.innerHTML = '';
-  const qrUrl = `${location.origin}${location.pathname}?addfriend=${u.uniqueId}`;
-  new QRCode(qrWrap, { text: qrUrl, width: 160, height: 160, colorDark: '#3C4340', colorLight: '#ffffff' });
-  const session = AS.getSession(); const users = AS.getUsers();
-  const accBox = document.getElementById('accountSwitcherList');
-  accBox.innerHTML = session.accounts.filter(id => users[id]).map(id => { const acc = users[id]; return `<div class="list-row" style="cursor:pointer;${id === u.uniqueId ? 'font-weight:800;' : ''}" data-switch="${id}"><div class="avatar sw-av" data-uid="${id}" style="width:30px;height:30px;font-size:.7rem;"></div><span style="flex:1;">${escapeHtml(acc.firstName)} ${escapeHtml(acc.lastName)} ${id === u.uniqueId ? '(aktiv)' : ''}</span></div>`; }).join('');
-  accBox.querySelectorAll('.sw-av').forEach(el => renderAvatar(el, users[el.dataset.uid]));
-  accBox.querySelectorAll('[data-switch]').forEach(el => el.addEventListener('click', () => { if (el.dataset.switch === u.uniqueId) return; flushPendingCloudWrites(); const s = AS.getSession(); s.currentUserId = el.dataset.switch; AS.saveSession(s); if (window.ASRealtime) window.ASRealtime.disconnect(); location.reload(); }));
-};
-document.getElementById('saveProfileBtn').addEventListener('click', async () => {
-  const newUsername = document.getElementById('editUsername').value.trim();
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) { const remote = await cloudGet(KEY_USERS); if (remote) users = { ...remote, ...users }; }
-  const clash = Object.values(users).find(x => x.uniqueId !== AS.currentUser.uniqueId && x.username.toLowerCase() === newUsername.toLowerCase());
-  if (clash) { AS.toast('Dieser Username ist schon vergeben.'); return; }
-  AS.currentUser.firstName = document.getElementById('editFirst').value.trim(); AS.currentUser.lastName = document.getElementById('editLast').value.trim();
-  AS.currentUser.username = newUsername; AS.currentUser.bio = document.getElementById('editBio').value.trim();
-  await upsertUserCloudSafe(AS.currentUser);
-  renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate(); AS.toast('Profil gespeichert.');
-});
-function publicProfile() {
-  const u = AS.currentUser;
-  let avatarData = null;
-  if (mySecSafe().avatarVisibility !== 'nobody') avatarData = u.avatarBlobId ? AS.getBlobCached(u.avatarBlobId) : (u.avatar || null);
-  return { uniqueId: u.uniqueId, firstName: u.firstName, lastName: u.lastName, username: u.username, avatar: avatarData, bio: u.bio };
-}
-window.publicProfile = publicProfile;
-function mySecSafe() { return AS.currentData.security; }
-function broadcastProfileUpdate() { if (!window.ASRealtime) return; AS.currentData.friends.forEach(uid => ASRealtime.sendTo(uid, { type: 'hello', profile: publicProfile() })); }
-window.broadcastProfileUpdate = broadcastProfileUpdate;
-document.getElementById('changeAvatarBtn').addEventListener('click', () => document.getElementById('avatarFileInput').click());
-document.getElementById('avatarFileInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0]; if (!file) return;
-  const lim = limitsFor('avatar');
-  try {
-    const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
-    const blobId = 'av_' + AS.currentUser.uniqueId;
-    await AS.saveBlob(blobId, dataUrl);
-       AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = blobId; AS.currentUser.avatarBytes = dataUrl.length;
-    await upsertUserCloudSafe(AS.currentUser);
-    renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate();
-    AS.toast('Profilbild aktualisiert — deine Freunde sehen es sofort.');
-  } catch (err) { AS.toast('Bild konnte nicht verarbeitet werden.'); }
-});
-document.getElementById('removeAvatarBtn').addEventListener('click', async () => {
-  if (AS.currentUser.avatarBlobId) AS.deleteBlob(AS.currentUser.avatarBlobId);
-  AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = null;
-  await upsertUserCloudSafe(AS.currentUser);
-  renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate();
-});
-document.getElementById('openQrFullBtn').addEventListener('click', () => {
-  const qrUrl = `${location.origin}${location.pathname}?addfriend=${AS.currentUser.uniqueId}`;
-  AS.modal(`<div style="text-align:center;"><h3>${escapeHtml(AS.currentUser.firstName)}s QR-Code</h3><div id="qrFullWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="pill">${AS.currentUser.uniqueId}</p><p class="tiny" style="margin-top:6px;">Scannen sendet automatisch eine Freundschaftsanfrage.</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="qrClose">Schließen</button></div></div>`,
-    (root) => { new QRCode(root.querySelector('#qrFullWrap'), { text: qrUrl, width: 220, height: 220, colorDark: '#3C4340', colorLight: '#ffffff' }); root.querySelector('#qrClose').onclick = AS.closeModal; });
-});
-
-document.addEventListener('DOMContentLoaded', () => { setTimeout(boot, 500); });
