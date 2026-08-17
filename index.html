@@ -355,6 +355,16 @@
       <div id="securityCategories"></div>
       <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">📱 Aktive Geräte</strong><div id="deviceList" style="margin-top:8px;"></div><button class="btn btn-outline btn-sm" style="margin-top:10px;" id="logoutAllBtn">Von allen Geräten abmelden</button></div>
       <div class="card" style="margin-top:14px;">
+              <div class="card storage-card" style="margin-top:14px;">
+        <strong style="font-size:.85rem;">🖍️ Speicherplatz</strong>
+        <div class="storage-label-row" style="margin-top:10px;">
+          <span class="tiny" id="storageUsedLabel">– von –</span>
+          <span class="tiny" id="storagePercentLabel">0%</span>
+        </div>
+        <div class="storage-bar-track"><div class="storage-bar-fill" id="storageBarFill" style="width:0%;"></div></div>
+        <p class="tiny" id="storageFullMsg" style="margin-top:8px;display:none;"></p>
+        <p class="tiny" style="margin-top:10px;">Brauchst du Schoolify nicht mehr? Bitte lösch deinen Account (unten) — so bleibt der Speicherplatz frei und Schoolify für alle Schüler kostenlos 🎀</p>
+      </div>
         <strong style="font-size:.85rem;">⚙️ Konto</strong>
         <div class="row wrap" style="margin-top:10px;gap:8px;"><button class="btn btn-outline btn-sm" id="exportDataBtn">Daten exportieren</button><button class="btn btn-danger btn-sm" id="deleteAccountBtn">Account löschen</button></div>
         <div class="row between list-row" style="margin-top:10px;"><span>🍪 Online-Speicherung</span><label class="switch"><input type="checkbox" id="cloudSyncToggle"><span class="track"></span></label></div>
