@@ -1,10 +1,6 @@
 /* ==========================================================================
-   Schoolify — notes.js (v6, vollständig)
-   Fix: Zeichnen wurde schwarz, weil JPEG keine Transparenz kann. Jetzt wird
-   die Zeichnung als transparentes WebP/PNG gespeichert (Fallback), und
-   Text + Zeichnung liegen gemeinsam auf EINER Seite übereinander — kein
-   Umschalten zwischen zwei getrennten "Seiten" mehr, nur ein Stift-Modus,
-   der bestimmt, ob man gerade tippt oder zeichnet.
+   Schoolify — notes.js (v7, vollständig)
+   + Debounced Notification für Session-Sync
    ========================================================================== */
 
 const FOLDER_COLORS = [
@@ -29,9 +25,16 @@ let activeFolderId = null;
 let activePageId = null;
 let drawCtx = null, drawing = false, lastPt = null, currentPenColor = PEN_COLORS[0];
 let drawSaveTimer = null;
-let penActive = false; // UI-Zustand: gerade zeichnen oder tippen? (nicht gespeichert)
+let penActive = false;
+let noteChangeTimer = null;
 
-/* Erkennt, ob der Browser WebP mit Transparenz kann (fast überall ja) */
+function scheduleNoteChange() {
+  if (noteChangeTimer) clearTimeout(noteChangeTimer);
+  noteChangeTimer = setTimeout(() => {
+    window.dispatchEvent(new CustomEvent('schoolify:dataChanged', { detail: { collection: 'notes' } }));
+  }, 1500);
+}
+
 function supportsTransparentWebp() {
   try { const c = document.createElement('canvas'); c.width = 1; c.height = 1; return c.toDataURL('image/webp').indexOf('data:image/webp') === 0; }
   catch (e) { return false; }
@@ -71,9 +74,7 @@ function renderNotesView() {
   }
 }
 
-/* ---------------------------------------------------------------------- */
-/* Ebene 1: Ordner                                                        */
-/* ---------------------------------------------------------------------- */
+/* Ordner */
 function renderFolderGrid() {
   const grid = document.getElementById('folderGrid');
   const folders = AS.currentData.noteFolders;
@@ -92,7 +93,7 @@ function renderFolderGrid() {
       pagesToDelete.forEach(p => { if (p.drawingBlobId) AS.deleteBlob(p.drawingBlobId); (p.imageBlobIds || []).forEach(id => AS.deleteBlob(id)); });
       AS.currentData.noteFolders = AS.currentData.noteFolders.filter(x => x.id !== el.dataset.delfolder);
       AS.currentData.notePages = AS.currentData.notePages.filter(p => p.folderId !== el.dataset.delfolder);
-      persist(); renderFolderGrid();
+      persist(); renderFolderGrid(); scheduleNoteChange();
     });
   }));
   const addTile = document.getElementById('addFolderTile');
@@ -111,14 +112,12 @@ function openFolderCreateModal() {
       const name = root.querySelector('#fName').value.trim();
       if (!name) { AS.toast('Bitte einen Namen angeben.'); return; }
       AS.currentData.noteFolders.push({ id: 'f_' + Date.now(), name, color: chosenColor });
-      persist(); AS.closeModal(); renderNotesView(); AS.toast('Ordner erstellt ✦');
+      persist(); AS.closeModal(); renderNotesView(); AS.toast('Ordner erstellt ✦'); scheduleNoteChange();
     };
   });
 }
 
-/* ---------------------------------------------------------------------- */
-/* Ebene 2: Seiten                                                        */
-/* ---------------------------------------------------------------------- */
+/* Seiten */
 function renderPageGrid() {
   const grid = document.getElementById('pageGrid');
   const pages = AS.currentData.notePages.filter(p => p.folderId === activeFolderId).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -143,7 +142,7 @@ function renderPageGrid() {
       const p = AS.currentData.notePages.find(x => x.id === el.dataset.delpage);
       if (p) { if (p.drawingBlobId) AS.deleteBlob(p.drawingBlobId); (p.imageBlobIds || []).forEach(id => AS.deleteBlob(id)); }
       AS.currentData.notePages = AS.currentData.notePages.filter(x => x.id !== el.dataset.delpage);
-      persist(); renderPageGrid();
+      persist(); renderPageGrid(); scheduleNoteChange();
     });
   }));
   const addTile = document.getElementById('addPageTile');
@@ -154,12 +153,10 @@ function createNewPage() {
   if (pages.length >= MAX_PAGES) { AS.toast(`Maximal ${MAX_PAGES} Seiten pro Ordner möglich.`); return; }
   const page = { id: 'p_' + Date.now(), folderId: activeFolderId, title: '', paper: AS.currentData.settings.paperStyle || 'kariert', body: '', drawingBlobId: null, imageBlobIds: [], updatedAt: Date.now() };
   AS.currentData.notePages.push(page); persist();
-  activePageId = page.id; notesView = 'editor'; renderNotesView();
+  activePageId = page.id; notesView = 'editor'; renderNotesView(); scheduleNoteChange();
 }
 
-/* ---------------------------------------------------------------------- */
-/* Ebene 3: Editor — Text UND Zeichnung gemeinsam auf einer Seite         */
-/* ---------------------------------------------------------------------- */
+/* Editor */
 function renderPageEditor() {
   const page = AS.currentData.notePages.find(p => p.id === activePageId);
   if (!page) { notesView = 'pages'; renderNotesView(); return; }
@@ -167,7 +164,7 @@ function renderPageEditor() {
 
   const titleInput = document.getElementById('pageTitleInput');
   titleInput.value = page.title;
-  titleInput.oninput = () => { page.title = titleInput.value; page.updatedAt = Date.now(); persist(); };
+  titleInput.oninput = () => { page.title = titleInput.value; page.updatedAt = Date.now(); persist(); scheduleNoteChange(); };
 
   const surface = document.getElementById('notePageSurface');
   const textarea = document.getElementById('noteTextarea');
@@ -192,18 +189,18 @@ function renderPageEditor() {
   applyPenUI();
 
   textarea.value = page.body || '';
-  textarea.oninput = () => { page.body = textarea.value; page.updatedAt = Date.now(); persist(); };
+  textarea.oninput = () => { page.body = textarea.value; page.updatedAt = Date.now(); persist(); scheduleNoteChange(); };
 
   document.getElementById('modeWriteBtn').onclick = () => { penActive = false; applyPenUI(); };
   document.getElementById('modeDrawBtn').onclick = () => { penActive = true; applyPenUI(); };
-  document.getElementById('paperKariertBtn').onclick = () => { page.paper = 'kariert'; persist(); applyPaperClass(); applyPenUI(); };
-  document.getElementById('paperLiniertBtn').onclick = () => { page.paper = 'liniert'; persist(); applyPaperClass(); applyPenUI(); };
+  document.getElementById('paperKariertBtn').onclick = () => { page.paper = 'kariert'; persist(); applyPaperClass(); applyPenUI(); scheduleNoteChange(); };
+  document.getElementById('paperLiniertBtn').onclick = () => { page.paper = 'liniert'; persist(); applyPaperClass(); applyPenUI(); scheduleNoteChange(); };
   document.getElementById('clearDrawBtn').onclick = () => {
     if (!drawCtx) return;
     confirmModal('Zeichnung löschen?', 'Die aktuelle Zeichnung auf dieser Seite wird entfernt (dein Text bleibt erhalten).', () => {
       drawCtx.clearRect(0, 0, canvas.width, canvas.height);
       if (page.drawingBlobId) { AS.deleteBlob(page.drawingBlobId); page.drawingBlobId = null; }
-      page.updatedAt = Date.now(); persist(); AS.toast('Zeichnung gelöscht.');
+      page.updatedAt = Date.now(); persist(); scheduleNoteChange(); AS.toast('Zeichnung gelöscht.');
     });
   };
   document.getElementById('deletePageBtn').onclick = () => {
@@ -211,7 +208,7 @@ function renderPageEditor() {
       if (page.drawingBlobId) AS.deleteBlob(page.drawingBlobId);
       (page.imageBlobIds || []).forEach(id => AS.deleteBlob(id));
       AS.currentData.notePages = AS.currentData.notePages.filter(p => p.id !== page.id);
-      persist(); notesView = 'pages'; renderNotesView();
+      persist(); notesView = 'pages'; renderNotesView(); scheduleNoteChange();
     });
   };
 
@@ -225,13 +222,13 @@ function renderPageEditor() {
         const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
         const blobId = 'nimg_' + Date.now() + Math.random().toString(36).slice(2, 7);
         await AS.saveBlob(blobId, dataUrl);
-        page.imageBlobIds.push(blobId); page.updatedAt = Date.now(); persist(); renderImgStrip(page);
+        page.imageBlobIds.push(blobId); page.updatedAt = Date.now(); persist(); renderImgStrip(page); scheduleNoteChange();
       } catch (err) { AS.toast(`"${file.name}" konnte nicht verarbeitet werden.`); }
     }
     imgInput.value = '';
   };
   renderImgStrip(page);
-  setupCanvas(page, canvas); // Canvas ist ab jetzt IMMER aktiv, unabhängig vom Stift-Modus
+  setupCanvas(page, canvas);
 }
 
 function renderImgStrip(page) {
@@ -242,7 +239,7 @@ function renderImgStrip(page) {
     const idx = +el.dataset.delimg;
     const blobId = page.imageBlobIds[idx];
     if (blobId) AS.deleteBlob(blobId);
-    page.imageBlobIds.splice(idx, 1); page.updatedAt = Date.now(); persist(); renderImgStrip(page);
+    page.imageBlobIds.splice(idx, 1); page.updatedAt = Date.now(); persist(); renderImgStrip(page); scheduleNoteChange();
   }));
 }
 
@@ -253,7 +250,7 @@ function setupCanvas(page, canvas) {
   canvas.width = rectW * dpr; canvas.height = rectH * dpr;
   canvas.style.width = rectW + 'px'; canvas.style.height = rectH + 'px';
   drawCtx = canvas.getContext('2d');
-  drawCtx.clearRect(0, 0, canvas.width, canvas.height); // TRANSPARENT lassen — kein weißer/schwarzer Hintergrund!
+  drawCtx.clearRect(0, 0, canvas.width, canvas.height);
   drawCtx.scale(dpr, dpr);
   drawCtx.lineCap = 'round'; drawCtx.lineJoin = 'round';
   drawCtx.strokeStyle = currentPenColor; drawCtx.lineWidth = 2.6;
@@ -273,12 +270,10 @@ function setupCanvas(page, canvas) {
     if (!drawing) return; drawing = false;
     if (drawSaveTimer) clearTimeout(drawSaveTimer);
     drawSaveTimer = setTimeout(async () => {
-      // Transparentes WebP/PNG — behält den durchsichtigen Hintergrund,
-      // damit der Text darunter sichtbar bleibt.
       const dataUrl = DRAW_QUALITY !== undefined ? canvas.toDataURL(DRAW_MIME, DRAW_QUALITY) : canvas.toDataURL(DRAW_MIME);
       const blobId = page.drawingBlobId || ('draw_' + page.id);
       await AS.saveBlob(blobId, dataUrl);
-      page.drawingBlobId = blobId; page.updatedAt = Date.now(); persist();
+      page.drawingBlobId = blobId; page.updatedAt = Date.now(); persist(); scheduleNoteChange();
     }, 800);
   }
   canvas.onmousedown = start; canvas.onmousemove = move; window.addEventListener('mouseup', end);
