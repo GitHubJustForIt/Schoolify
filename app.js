@@ -12,7 +12,7 @@ const AS = (window.AS = {});
 /* ---------------------------------------------------------------------- */
 /* Cloud-Speicher (Personal Data Box)                                     */
 /* ---------------------------------------------------------------------- */
-const CLOUD_BASE = "const CLOUD_BASE = "scholifydatahandler.akkermann-elias.workers.dev";
+const CLOUD_BASE = "https://scholifydatahandler.akkermann-elias.workers.dev";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
