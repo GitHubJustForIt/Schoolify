@@ -1,7 +1,6 @@
 /* ==========================================================================
-   Schoolify — session.js (v8.1, final)
-   - Angepasst an realtime.js v10.1
-   - Zwei Session-Verlassen-Buttons (Wartebereich & aktiver Bereich)
+   Schoolify — session.js (v9.0, final)
+   - Storage-Bar wird nach jedem Sync aktualisiert
    ========================================================================== */
 
 async function handleSessionJoin() {
@@ -306,6 +305,7 @@ function handleSessionSyncNotes(msg) {
   AS.currentData.notePages = msg.pages;
   persist();
   AS.toast('Notizen vom Leiter synchronisiert.');
+  renderStorageBar();
   if (getCurrentView() === 'notes') RENDERERS.notes();
 }
 
@@ -327,6 +327,7 @@ function handleSessionSyncMaterials(msg) {
           persist();
           AS.closeModal();
           AS.toast('Material übernommen.');
+          renderStorageBar();
           if (getCurrentView() === 'materials') RENDERERS.materials();
         };
       });
@@ -334,6 +335,7 @@ function handleSessionSyncMaterials(msg) {
     AS.currentData.materials = incoming;
     persist();
     AS.toast('Material synchronisiert.');
+    renderStorageBar();
     if (getCurrentView() === 'materials') RENDERERS.materials();
   }
 }
@@ -343,6 +345,7 @@ function handleSessionSyncFlashcards(msg) {
   AS.currentData.flashcards = msg.flashcards;
   persist();
   AS.toast('Karteikarten synchronisiert.');
+  renderStorageBar();
   if (getCurrentView() === 'learn') RENDERERS.learn();
 }
 
