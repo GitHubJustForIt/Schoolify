@@ -1654,3 +1654,25 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   .grid-2,
   .grid-3{grid-template-columns:1fr;}
 }
+
+/* Zusätzliche Klasse für Aufgaben-Checkbox (in app.js verwendet) */
+.check{
+  width:24px;
+  height:24px;
+  border-radius:6px;
+  border:2.5px solid var(--ink-soft);
+  flex-shrink:0;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:var(--white);
+  transition:transform .1s ease;
+  font-size:.9rem;
+}
+.check:active{transform:scale(.88);}
+.check.checked{
+  background:var(--accent);
+  border-color:var(--accent);
+  animation:checkPop .35s ease;
+}
