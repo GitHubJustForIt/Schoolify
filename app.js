@@ -1,5 +1,8 @@
 /* ==========================================================================
-   Schoolify — app.js (v10.1, Blob-Upload-Fix)
+   Schoolify — app.js (v11.0, final)
+   - Blob-Upload-Fix: AS.saveBlob gibt {ok, cloudOk} zurück
+   - Material-Upload prüft Cloud-Erfolg
+   - Logout / Alle Geräte abmelden / Account hinzufügen mit try/finally
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -719,8 +722,11 @@ function logout() {
   const session = AS.getSession();
   session.currentUserId = null;
   AS.saveSession(session);
-  if (window.ASRealtime) window.ASRealtime.disconnect();
-  location.reload();
+  try {
+    if (window.ASRealtime) window.ASRealtime.disconnect();
+  } finally {
+    location.reload();
+  }
 }
 
 function boot() {
@@ -1538,7 +1544,6 @@ async function handleMaterialUpload(e) {
   if (!files.length) return;
 
   for (const file of files) {
-    // Vorab prüfen: grobe Größe
     if (isOverLimit(file.size)) {
       AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) – Datei "${file.name}" wurde übersprungen.`);
       continue;
@@ -1554,7 +1559,6 @@ async function handleMaterialUpload(e) {
         dataUrl = await fileToDataUrl(file);
       }
 
-      // Nach Komprimierung erneut prüfen
       const blobSize = new Blob([dataUrl]).size;
       if (isOverLimit(blobSize)) {
         AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) – Datei "${file.name}" wurde übersprungen.`);
@@ -1568,10 +1572,7 @@ async function handleMaterialUpload(e) {
         continue;
       }
       if (!saveResult.cloudOk && AS.cloudEnabled()) {
-        // Cloud-Upload fehlgeschlagen, aber lokal gespeichert.
-        // Materialeintrag nur hinzufügen, wenn der Nutzer es trotzdem will? Oder abbrechen.
-        // Hier brechen wir ab, um spätere 404 zu vermeiden.
-        AS.deleteBlob(blobId); // lokalen Blob wieder löschen
+        AS.deleteBlob(blobId);
         AS.toast(`Online-Speicherung fehlgeschlagen – Datei "${file.name}" wurde nicht gespeichert. Bitte versuche es erneut.`);
         continue;
       }
@@ -1934,14 +1935,22 @@ function initAppEvents() {
     flushPendingCloudWrites();
     AS.saveSession({ currentUserId: null, accounts: [] });
     AS.toast('Von allen Geräten abgemeldet (lokal).');
-    setTimeout(() => location.reload(), 700);
+    try {
+      if (window.ASRealtime) window.ASRealtime.disconnect();
+    } finally {
+      setTimeout(() => location.reload(), 300);
+    }
   });
   on('addAccountBtn', 'click', () => {
     flushPendingCloudWrites();
     const session = AS.getSession();
     session.currentUserId = null;
     AS.saveSession(session);
-    location.reload();
+    try {
+      if (window.ASRealtime) window.ASRealtime.disconnect();
+    } finally {
+      location.reload();
+    }
   });
 
   on('deleteAccountBtn', 'click', () => {
@@ -2048,7 +2057,6 @@ function initAppEvents() {
       });
   });
 
-  // NEUE EVENT-LISTENER FÜR FEHLENDE BUTTONS
   on('addLessonBtn', 'click', () => openLessonModal(null));
   on('addTaskBtn', 'click', () => openTaskModal(null));
   on('addTodoGoalBtn', 'click', () => openAddGoalModal());
@@ -2072,7 +2080,6 @@ function initAppEvents() {
     RENDERERS.materials();
   });
 
-  // Navigation
   document.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
   on('moreNavBtn', 'click', openMoreMenu);
   on('moreSheetBackdrop', 'click', closeMoreMenu);
