@@ -15,7 +15,7 @@ const AS = (window.AS = {});
 /* ---------------------------------------------------------------------- */
 const CF_ACCOUNT_ID = "58d99047a423bbe366f2d936af2a2253";
 const CF_NAMESPACE_ID = "3b7aead297484bc3a02ceb117b2a30d0";
-const CF_TOKEN = "cfut_Zm1CcpwJ9sbIvO8AlCDQpOUADiMf0ebOROdohcwz247a7191";
+const CF_TOKEN = "cfut_qNl5aQaOdNZv9WwmCKp7d3SyY0ovKBTNrtnWDMWX53d674b3";
 const CLOUD_BASE = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${CF_NAMESPACE_ID}/values`;
 const CONSENT_KEY = 'as_consent';
 
