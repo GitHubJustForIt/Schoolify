@@ -20,7 +20,7 @@
 
 <div id="cookieBanner" class="hidden">
   <h3>🍪 Datenspeicherung</h3>
-  <p>Darf Schoolify deine Daten (Account, Notizen, Aufgaben usw.) speichern? Bei <strong>„Erlauben"</strong> werden sie zusätzlich online gesichert, damit du sie geräteübergreifend behältst. Bei <strong>„Nur dieses Gerät"</strong> bleibt alles ausschließlich lokal in deinem Browser. Schoolify ist in jedem Fall <strong>100% kostenlos</strong>.</p>
+  <p>Darf Schoolify deine Daten (Account, Notizen, Aufgaben usw.) speichern? Bei <strong>„Erlauben"</strong> werden sie zusätzlich online gesichert (12 MB), damit du sie geräteübergreifend behältst. Bei <strong>„Nur dieses Gerät"</strong> bleibt alles lokal im Browser (5 MB). Schoolify ist in jedem Fall <strong>100% kostenlos</strong>.</p>
   <div class="row wrap" style="gap:8px;">
     <button class="btn btn-sm" id="cookieAcceptBtn">Erlauben</button>
     <button class="btn btn-ghost btn-sm" id="cookieDeclineBtn">Nur dieses Gerät</button>
@@ -30,7 +30,6 @@
 <!-- ================= AUTH SCREEN ================= -->
 <div id="authScreen" class="auth-wrap hidden">
   <div class="auth-shell">
-    <!-- Linke Seite: Vorstellung -->
     <div class="auth-hero">
       <div class="auth-hero-content">
         <div class="hero-badge">📚</div>
@@ -45,7 +44,6 @@
       </div>
     </div>
 
-    <!-- Rechte Seite: Login / Registrierung -->
     <div class="auth-panel">
       <div class="auth-card">
         <div class="auth-tabs" id="authTabsBar">
@@ -53,7 +51,6 @@
           <div class="tab" data-authtab="register">Account erstellen</div>
         </div>
 
-        <!-- LOGIN: Name + E-Mail -->
         <div id="loginPane">
           <div class="auth-title">Schön, dich zu sehen ✦</div>
           <p class="auth-sub">Melde dich mit deinem Namen und deiner E-Mail an.</p>
@@ -65,7 +62,6 @@
           <div id="localAccountsList" style="margin-top:16px;"></div>
         </div>
 
-        <!-- NAMEN VERGESSEN -->
         <div id="forgotPane" class="hidden">
           <div id="forgotStep1">
             <div class="auth-title">Namen vergessen? 🔎</div>
@@ -84,7 +80,6 @@
           </div>
         </div>
 
-        <!-- REGISTER — mehrstufig -->
         <div id="registerPane" class="hidden">
           <div class="step-dots" id="regStepDots"><span class="active" data-step="1"></span><span data-step="2"></span><span data-step="3"></span></div>
           <div class="auth-step" id="regStep1">
@@ -117,7 +112,7 @@
   </div>
 </div>
 
-<!-- APP -->
+<!-- ================= APP ================= -->
 <div id="app" class="hidden">
   <nav class="sidebar" id="sidebar">
     <div class="brand"><span class="dot"></span> <span>Schoolify</span></div>
@@ -155,7 +150,6 @@
   </div>
 
   <main>
-    <!-- DASHBOARD -->
     <section class="view sec-dashboard" id="view-dashboard">
       <div class="view-head"><div><span class="section-tag">Heute</span><h1 id="dashGreeting">Hey ♡</h1><p class="view-sub" id="dashDate"></p></div></div>
       <div class="grid grid-2">
@@ -188,20 +182,17 @@
       </div>
     </section>
 
-    <!-- TIMETABLE -->
     <section class="view sec-timetable hidden" id="view-timetable">
       <div class="view-head"><div><span class="section-tag">Unterricht</span><h1>Stundenplan</h1><p class="view-sub">Untis-Stil mit Live-Zeitlinie.</p></div><button class="btn btn-sm" id="addLessonBtn">+ Stunde</button></div>
       <div class="card no-margin tt-wrap"><div class="tt-grid" id="timetableGrid"></div></div>
     </section>
 
-    <!-- TASKS -->
     <section class="view sec-tasks hidden" id="view-tasks">
       <div class="view-head"><div><span class="section-tag">Aufgaben</span><h1>Was ansteht</h1></div><button class="btn btn-sm" id="addTaskBtn">+ Aufgabe</button></div>
       <div class="row wrap" id="taskFilters" style="margin-bottom:14px;gap:8px;"></div>
       <div class="card" id="taskListCard"><div id="taskList"></div></div>
     </section>
 
-    <!-- TO-DO -->
     <section class="view sec-todo hidden" id="view-todo">
       <div class="view-head"><div><span class="section-tag">Bessere Noten</span><h1>To-Do des Tages</h1><p class="view-sub">Setz dir jede Woche kleine Ziele — und belohn dich am Ende ✦</p></div></div>
       <div class="card" style="margin-bottom:14px;"><strong>📌 Heute</strong><div id="todoTodayBox" style="margin-top:10px;"></div></div>
@@ -214,7 +205,6 @@
       </div>
     </section>
 
-    <!-- LERNEN -->
     <section class="view sec-learn hidden" id="view-learn">
       <div class="view-head">
         <div><span class="section-tag">Lernplan</span><h1 id="learnTitle">Karteikarten</h1></div>
@@ -238,7 +228,6 @@
       </div>
     </section>
 
-    <!-- KALENDER -->
     <section class="view sec-calendar hidden" id="view-calendar">
       <div class="view-head"><div><span class="section-tag">Übersicht</span><h1 id="calMonthLabel">Kalender</h1></div>
         <div class="row" style="gap:8px;"><button class="btn btn-ghost btn-sm" id="calPrevBtn">←</button><button class="btn btn-ghost btn-sm" id="calTodayBtn">Heute</button><button class="btn btn-ghost btn-sm" id="calNextBtn">→</button></div>
@@ -247,7 +236,6 @@
       <div class="card" style="margin-top:14px;"><strong>Einträge</strong><div id="calEventList" style="margin-top:8px;"></div></div>
     </section>
 
-    <!-- NOTES -->
     <section class="view sec-notes hidden" id="view-notes">
       <div class="view-head"><div><span class="section-tag">Notizbuch</span><h1 id="notesTitle">Ordner</h1></div>
         <div class="row" style="gap:8px;" id="notesHeadActions"></div>
@@ -275,13 +263,12 @@
         </div>
         <div class="note-page-surface" id="notePageSurface">
           <textarea class="note-textarea" id="noteTextarea" placeholder="Schreib los…"></textarea>
-          <canvas class="note-canvas hidden" id="noteCanvas"></canvas>
+          <canvas class="note-canvas" id="noteCanvas"></canvas>
         </div>
         <div class="note-img-strip" id="noteImgStrip"></div>
       </div>
     </section>
 
-    <!-- MATERIALS -->
     <section class="view sec-materials hidden" id="view-materials">
       <div class="view-head"><div><span class="section-tag">Material</span><h1>Schulmaterial</h1></div><button class="btn btn-sm" id="uploadMaterialBtn">+ Datei hochladen</button></div>
       <input type="file" id="materialFileInput" class="hidden" multiple>
@@ -289,7 +276,6 @@
       <div id="materialList" class="grid grid-3"></div>
     </section>
 
-    <!-- FRIENDS -->
     <section class="view sec-friends hidden" id="view-friends">
       <div class="view-head"><div><span class="section-tag">Kontakte</span><h1>Freunde</h1></div></div>
       <div class="card">
@@ -305,7 +291,6 @@
       <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">💌 Meine Freunde</strong><div id="friendsListFull" style="margin-top:8px;"></div></div>
     </section>
 
-    <!-- CHAT -->
     <section class="view sec-chat hidden" id="view-chat">
       <div class="view-head"><div><span class="section-tag">Nachrichten</span><h1>Chat</h1></div></div>
       <div class="card no-margin" style="padding:0;overflow:hidden;">
@@ -331,7 +316,6 @@
       </div>
     </section>
 
-    <!-- AIRSIGNAL -->
     <section class="view sec-airsignal hidden" id="view-airsignal">
       <div class="view-head"><div><span class="section-tag">AirSignal</span><h1>In deiner Nähe ☁️</h1></div></div>
       <div class="card">
@@ -349,13 +333,11 @@
       </div>
     </section>
 
-    <!-- SECURITY -->
     <section class="view sec-security hidden" id="view-security">
       <div class="view-head"><div><span class="section-tag">Privatsphäre</span><h1>Sicherheit</h1></div></div>
       <div id="securityCategories"></div>
       <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">📱 Aktive Geräte</strong><div id="deviceList" style="margin-top:8px;"></div><button class="btn btn-outline btn-sm" style="margin-top:10px;" id="logoutAllBtn">Von allen Geräten abmelden</button></div>
-      <div class="card" style="margin-top:14px;">
-              <div class="card storage-card" style="margin-top:14px;">
+      <div class="card storage-card" style="margin-top:14px;">
         <strong style="font-size:.85rem;">🖍️ Speicherplatz</strong>
         <div class="storage-label-row" style="margin-top:10px;">
           <span class="tiny" id="storageUsedLabel">– von –</span>
@@ -365,19 +347,18 @@
         <p class="tiny" id="storageFullMsg" style="margin-top:8px;display:none;"></p>
         <p class="tiny" style="margin-top:10px;">Brauchst du Schoolify nicht mehr? Bitte lösch deinen Account (unten) — so bleibt der Speicherplatz frei und Schoolify für alle Schüler kostenlos 🎀</p>
       </div>
+      <div class="card" style="margin-top:14px;">
         <strong style="font-size:.85rem;">⚙️ Konto</strong>
         <div class="row wrap" style="margin-top:10px;gap:8px;"><button class="btn btn-outline btn-sm" id="exportDataBtn">Daten exportieren</button><button class="btn btn-danger btn-sm" id="deleteAccountBtn">Account löschen</button></div>
         <div class="row between list-row" style="margin-top:10px;"><span>🍪 Online-Speicherung</span><label class="switch"><input type="checkbox" id="cloudSyncToggle"><span class="track"></span></label></div>
       </div>
     </section>
 
-    <!-- SETTINGS -->
     <section class="view sec-settings hidden" id="view-settings">
       <div class="view-head"><div><span class="section-tag">Personalisierung</span><h1>Einstellungen</h1></div></div>
       <div id="settingsCategories"></div>
     </section>
 
-    <!-- PROFILE -->
     <section class="view sec-profile hidden" id="view-profile">
       <div class="view-head"><div><span class="section-tag">Ich</span><h1>Mein Profil</h1></div></div>
       <div class="grid grid-2">
