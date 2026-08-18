@@ -1,7 +1,7 @@
 /* ==========================================================================
-   Schoolify — app.js (v8, vollständig, syntaxkorrigiert)
-   Cloudflare-Speicher mit keepalive, sparsamen Writes und robustem
-   Debounce-Mechanismus. 12 MB Online- / 5 MB Lokal-Limit.
+   Schoolify — app.js (v8.1, vollständig, robust gegen fehlende Elemente)
+   Cloudflare-Speicher mit keepalive, sparsamen Writes und Debounce.
+   Alle Event-Listener werden zentral und mit Null-Checks registriert.
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -47,15 +47,13 @@ async function cloudDelete(key) {
 }
 
 /* ---------------------------------------------------------------------- */
-/* Debounce-Verwaltung – speichert anstehende Daten und sendet sie gebündelt */
+/* Debounce-Verwaltung                                                     */
 /* ---------------------------------------------------------------------- */
 const _cloudDebounceTimers = {};
 const _cloudDebounceData = {};
 
 function cloudPutDebounced(key, value, delay = 3000) {
-  if (_cloudDebounceTimers[key]) {
-    clearTimeout(_cloudDebounceTimers[key]);
-  }
+  if (_cloudDebounceTimers[key]) clearTimeout(_cloudDebounceTimers[key]);
   _cloudDebounceData[key] = value;
   _cloudDebounceTimers[key] = setTimeout(() => {
     cloudPut(key, value);
@@ -65,7 +63,6 @@ function cloudPutDebounced(key, value, delay = 3000) {
 }
 
 function flushPendingCloudWrites() {
-  // Nur leeren, wenn Cloud aktiv – sonst nichts senden
   if (!AS.cloudEnabled()) {
     Object.keys(_cloudDebounceTimers).forEach(k => clearTimeout(_cloudDebounceTimers[k]));
     _cloudDebounceTimers = {};
@@ -76,17 +73,14 @@ function flushPendingCloudWrites() {
   const mainKey = AS.currentUser ? dataKey(AS.currentUser.uniqueId) : null;
   const hasMainPending = mainKey && _cloudDebounceData[mainKey] !== undefined;
 
-  // Alle geplanten Writes sofort senden
   Object.keys(_cloudDebounceData).forEach(k => {
     cloudPut(k, _cloudDebounceData[k]);
   });
 
-  // Falls der Hauptdatensatz nicht bereits geplant war, aktuellen Stand senden
   if (mainKey && !hasMainPending && AS.currentData) {
     cloudPut(mainKey, AS.currentData);
   }
 
-  // Timer aufräumen
   Object.keys(_cloudDebounceTimers).forEach(k => clearTimeout(_cloudDebounceTimers[k]));
   _cloudDebounceTimers = {};
   _cloudDebounceData = {};
@@ -108,7 +102,7 @@ async function loadBlobSizes(uid) {
   } catch (e) {}
   if (AS.cloudEnabled()) {
     const remote = await cloudGet(localKey);
-    if (remote && typeof remote === 'object') { AS._blobSizes = remote; }
+    if (remote && typeof remote === 'object') AS._blobSizes = remote;
   }
 }
 
@@ -172,7 +166,7 @@ const BLOB_CACHE_PREFIX = 'as_blob_';
 function blobKey(id) { return 'blob_' + id; }
 
 AS.saveBlob = async function (id, dataUrl) {
-  const size = dataUrl.length * 2; // UTF-16 Bytes approx
+  const size = dataUrl.length * 2;
   if (AS.cloudEnabled()) await cloudPut(blobKey(id), dataUrl);
   try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
   if (AS.currentUser) saveBlobSize(AS.currentUser.uniqueId, id, size);
@@ -390,6 +384,7 @@ AS.toast = function (msg) {
 
 AS.modal = function (innerHtml, onMount) {
   const root = document.getElementById('modalRoot');
+  if (!root) return;
   root.innerHTML = `<div class="modal-backdrop" id="mbackdrop"><div class="modal">${innerHtml}</div></div>`;
   document.getElementById('mbackdrop').addEventListener('click', (e) => {
     if (e.target.id === 'mbackdrop') AS.closeModal();
@@ -560,6 +555,7 @@ function initials(user) {
   return ((user.firstName || '?')[0] + (user.lastName || '?')[0]).toUpperCase();
 }
 function renderAvatar(el, user) {
+  if (!el) return;
   if (!user) {
     el.style.background = 'var(--border)';
     el.innerHTML = '';
@@ -644,6 +640,7 @@ function initConsentFlow(next) {
   const existing = AS.getConsent();
   if (existing) { next(); return; }
   const banner = document.getElementById('cookieBanner');
+  if (!banner) { next(); return; }
   banner.classList.remove('hidden');
   document.getElementById('cookieAcceptBtn').addEventListener('click', async () => {
     AS.setConsent('cloud');
@@ -675,283 +672,338 @@ function updateAuthStorageToggle() {
   if (label) label.textContent = cloud ? 'Online-Speicherung (12 MB)' : 'Lokale Speicherung (5 MB)';
   toggle.checked = cloud;
 }
-document.addEventListener('DOMContentLoaded', () => {
-  const toggle = document.getElementById('authStorageToggle');
-  if (toggle) {
-    toggle.addEventListener('change', (e) => {
-      AS.setConsent(e.target.checked ? 'cloud' : 'local');
-      updateAuthStorageToggle();
-      AS.toast(e.target.checked ? 'Online-Speicherung aktiviert.' : 'Lokale Speicherung aktiviert.');
-    });
-  }
-  updateAuthStorageToggle();
-});
+
+/* ---------------------------------------------------------------------- */
+/* Helper für sichere Event-Listener                                       */
+/* ---------------------------------------------------------------------- */
+function on(id, event, fn) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener(event, fn);
+}
 
 /* ---------------------------------------------------------------------- */
 /* Auth-Funktionen                                                        */
 /* ---------------------------------------------------------------------- */
-document.querySelectorAll('[data-authtab]').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('[data-authtab]').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    const which = tab.dataset.authtab;
-    document.getElementById('loginPane').classList.toggle('hidden', which !== 'login');
-    document.getElementById('registerPane').classList.toggle('hidden', which !== 'register');
-    document.getElementById('forgotPane').classList.add('hidden');
-    document.getElementById('authTabsBar').classList.remove('hidden');
-  });
-});
 function normName(s) {
   return (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-document.getElementById('loginBtn').addEventListener('click', async () => {
-  const name = document.getElementById('loginName').value.trim();
-  const email = document.getElementById('loginEmail').value.trim().toLowerCase();
-  if (!name || !email) { AS.toast('Bitte Name und E-Mail eingeben.'); return; }
-  const btn = document.getElementById('loginBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-sm"></span> Anmelden…';
-  let users = AS.getUsers();
-  let found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
-  if (!found && AS.cloudEnabled()) {
-    const remoteUsers = await cloudGet(KEY_USERS);
-    if (remoteUsers) {
-      users = { ...remoteUsers, ...users };
-      AS.saveUsersLocalOnly(users);
-      found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
-    }
-  }
-  if (!found) {
-    AS.toast(AS.cloudEnabled() ? 'Kein Account mit diesen Daten gefunden.' : 'Kein Account gefunden. Aktiviere in den Einstellungen die Online-Speicherung, um dich auf einem neuen Gerät anzumelden.');
-    btn.disabled = false;
-    btn.textContent = 'Anmelden';
-    return;
-  }
-  if (AS.cloudEnabled()) {
-    const remoteData = await cloudGet(dataKey(found.uniqueId));
-    if (remoteData) AS.storage.setLocalOnly(dataKey(found.uniqueId), remoteData);
-    await loadBlobSizes(found.uniqueId);
-  }
-  loginAs(found.uniqueId);
-});
-
-document.getElementById('forgotNameLink').addEventListener('click', () => {
-  document.getElementById('authTabsBar').classList.add('hidden');
-  document.getElementById('loginPane').classList.add('hidden');
-  document.getElementById('registerPane').classList.add('hidden');
-  document.getElementById('forgotPane').classList.remove('hidden');
-  document.getElementById('forgotStep1').classList.remove('hidden');
-  document.getElementById('forgotStep2').classList.add('hidden');
-});
-let forgotUid = null;
-document.getElementById('forgotFindBtn').addEventListener('click', async () => {
-  const email = document.getElementById('forgotEmail').value.trim().toLowerCase();
-  if (!email) { AS.toast('Bitte E-Mail eingeben.'); return; }
-  let users = AS.getUsers();
-  let found = Object.values(users).find(u => u.email.toLowerCase() === email);
-  if (!found && AS.cloudEnabled()) {
-    const remoteUsers = await cloudGet(KEY_USERS);
-    if (remoteUsers) {
-      users = { ...remoteUsers, ...users };
-      AS.saveUsersLocalOnly(users);
-      found = Object.values(users).find(u => u.email.toLowerCase() === email);
-    }
-  }
-  if (!found) { AS.toast('Keine E-Mail mit diesem Account gefunden.'); return; }
-  forgotUid = found.uniqueId;
-  document.getElementById('forgotStep1').classList.add('hidden');
-  document.getElementById('forgotStep2').classList.remove('hidden');
-});
-document.getElementById('forgotSaveBtn').addEventListener('click', async () => {
-  const n1 = document.getElementById('forgotNewName1').value.trim();
-  const n2 = document.getElementById('forgotNewName2').value.trim();
-  if (!n1 || !n2) { AS.toast('Bitte beide Felder ausfüllen.'); return; }
-  if (normName(n1) !== normName(n2)) { AS.toast('Die beiden Namen stimmen nicht überein.'); return; }
-  const parts = n1.split(' ');
-  const first = parts[0];
-  const last = parts.slice(1).join(' ') || '';
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) {
-    const remote = await cloudGet(KEY_USERS);
-    if (remote) users = { ...remote, ...users };
-  }
-  const u = users[forgotUid];
-  if (!u) { AS.toast('Etwas ist schiefgelaufen — bitte erneut versuchen.'); return; }
-  u.firstName = first;
-  u.lastName = last;
-  users[forgotUid] = u;
-  AS.saveUsers(users);
-  AS.toast('Name aktualisiert — bitte melde dich jetzt erneut an.');
-  document.getElementById('forgotPane').classList.add('hidden');
-  document.getElementById('authTabsBar').classList.remove('hidden');
-  document.getElementById('loginPane').classList.remove('hidden');
-  document.getElementById('loginName').value = n1;
-  document.getElementById('loginEmail').value = u.email;
-  document.querySelector('[data-authtab="login"]').classList.add('active');
-  document.querySelector('[data-authtab="register"]').classList.remove('active');
-});
-document.getElementById('forgotBackToLogin1').addEventListener('click', () => {
-  document.getElementById('forgotPane').classList.add('hidden');
-  document.getElementById('authTabsBar').classList.remove('hidden');
-  document.getElementById('loginPane').classList.remove('hidden');
-});
-document.getElementById('forgotBackToLogin2').addEventListener('click', () => {
-  document.getElementById('forgotPane').classList.add('hidden');
-  document.getElementById('authTabsBar').classList.remove('hidden');
-  document.getElementById('loginPane').classList.remove('hidden');
-});
-
-function goToRegStep(n) {
-  [1, 2, 3].forEach(i => document.getElementById('regStep' + i).classList.toggle('hidden', i !== n));
-  document.querySelectorAll('#regStepDots span').forEach(d => {
-    const step = +d.dataset.step;
-    d.classList.toggle('active', step === n);
-    d.classList.toggle('done', step < n);
+function initAuthEvents() {
+  document.querySelectorAll('[data-authtab]').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('[data-authtab]').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const which = tab.dataset.authtab;
+      document.getElementById('loginPane').classList.toggle('hidden', which !== 'login');
+      document.getElementById('registerPane').classList.toggle('hidden', which !== 'register');
+      document.getElementById('forgotPane').classList.add('hidden');
+      document.getElementById('authTabsBar').classList.remove('hidden');
+    });
   });
-}
-document.getElementById('regNext1').addEventListener('click', () => {
-  const first = document.getElementById('regFirst').value.trim();
-  const last = document.getElementById('regLast').value.trim();
-  if (!first || !last) { AS.toast('Bitte Vor- und Nachname angeben.'); return; }
-  goToRegStep(2);
-});
-document.getElementById('regBack2').addEventListener('click', () => goToRegStep(1));
-document.getElementById('regNext2').addEventListener('click', async () => {
-  const email = document.getElementById('regEmail').value.trim().toLowerCase();
-  if (!email) { AS.toast('Bitte eine E-Mail angeben.'); return; }
-  if (!email.includes('@') || !email.includes('.')) { AS.toast('Das sieht nicht nach einer gültigen E-Mail aus.'); return; }
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) {
-    const remote = await cloudGet(KEY_USERS);
-    if (remote) {
-      users = { ...remote, ...users };
-      AS.saveUsersLocalOnly(users);
+
+  on('loginBtn', 'click', async () => {
+    const name = document.getElementById('loginName').value.trim();
+    const email = document.getElementById('loginEmail').value.trim().toLowerCase();
+    if (!name || !email) { AS.toast('Bitte Name und E-Mail eingeben.'); return; }
+    const btn = document.getElementById('loginBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-sm"></span> Anmelden…';
+    let users = AS.getUsers();
+    let found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
+    if (!found && AS.cloudEnabled()) {
+      const remoteUsers = await cloudGet(KEY_USERS);
+      if (remoteUsers) {
+        users = { ...remoteUsers, ...users };
+        AS.saveUsersLocalOnly(users);
+        found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name));
+      }
     }
-  }
-  if (Object.values(users).some(u => u.email.toLowerCase() === email)) {
-    AS.toast('Diese E-Mail-Adresse wird bereits verwendet.');
-    return;
-  }
-  document.getElementById('regReviewName').textContent = `${document.getElementById('regFirst').value.trim()} ${document.getElementById('regLast').value.trim()}`;
-  document.getElementById('regReviewMail').textContent = email;
-  goToRegStep(3);
-});
-document.getElementById('regBack3').addEventListener('click', () => goToRegStep(2));
-document.getElementById('registerBtn').addEventListener('click', async () => {
-  const first = document.getElementById('regFirst').value.trim();
-  const last = document.getElementById('regLast').value.trim();
-  const email = document.getElementById('regEmail').value.trim().toLowerCase();
-  const username = document.getElementById('regUsername').value.trim() || (first + last.charAt(0)).toLowerCase().replace(/\s+/g, '') + Math.floor(Math.random() * 900 + 100);
-  if (!first || !last || !email) { AS.toast('Bitte fülle alle Felder aus.'); return; }
-  const btn = document.getElementById('registerBtn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner-sm"></span> Wird erstellt…';
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) {
-    const remote = await cloudGet(KEY_USERS);
-    if (remote) users = { ...remote, ...users };
-  }
-  if (Object.values(users).some(u => u.email.toLowerCase() === email)) {
-    AS.toast('Diese E-Mail-Adresse wird bereits verwendet.');
-    btn.disabled = false;
-    btn.textContent = 'Account erstellen ✦';
-    return;
-  }
-  let finalUsername = username;
-  let n = 1;
-  while (Object.values(users).some(u => u.username.toLowerCase() === finalUsername.toLowerCase())) {
-    finalUsername = username + n;
-    n++;
-  }
-  const uniqueId = generateUniqueId();
-  const user = {
-    uniqueId, firstName: first, lastName: last, username: finalUsername,
-    email, bio: '', avatar: null, avatarBlobId: null, createdAt: Date.now()
-  };
-  users[uniqueId] = user;
-  AS.saveUsers(users);
-  AS.saveData(uniqueId, defaultData(), { immediate: true });
-  loginAs(uniqueId);
-  AS.toast(`Willkommen, ${first}! Schoolify ist komplett kostenlos ✦`);
-});
+    if (!found) {
+      AS.toast(AS.cloudEnabled() ? 'Kein Account mit diesen Daten gefunden.' : 'Kein Account gefunden. Aktiviere in den Einstellungen die Online-Speicherung, um dich auf einem neuen Gerät anzumelden.');
+      btn.disabled = false;
+      btn.textContent = 'Anmelden';
+      return;
+    }
+    if (AS.cloudEnabled()) {
+      const remoteData = await cloudGet(dataKey(found.uniqueId));
+      if (remoteData) AS.storage.setLocalOnly(dataKey(found.uniqueId), remoteData);
+      await loadBlobSizes(found.uniqueId);
+    }
+    loginAs(found.uniqueId);
+  });
 
-function loginAs(uniqueId) {
-  const session = AS.getSession();
-  session.currentUserId = uniqueId;
-  if (!session.accounts.includes(uniqueId)) session.accounts.push(uniqueId);
-  AS.saveSession(session);
-  boot();
-}
-function renderLocalAccountsQuickList() {
-  const session = AS.getSession();
-  const users = AS.getUsers();
-  const box = document.getElementById('localAccountsList');
-  if (!session.accounts.length) { box.innerHTML = ''; return; }
-  box.innerHTML = `<p class="tiny">Bereits auf diesem Gerät:</p>` + session.accounts.filter(id => users[id]).map(id => {
-    const u = users[id];
-    return `<div class="list-row" style="cursor:pointer;border:1.5px solid var(--border);border-radius:12px;padding:8px 10px;margin-bottom:6px;" data-quicklogin="${id}">
-      <div class="avatar av-mini" data-uid="${id}" style="width:30px;height:30px;font-size:.7rem;"></div>
-      <div><strong style="font-size:.85rem;">${escapeHtml(u.firstName)} ${escapeHtml(u.lastName)}</strong><div class="tiny">${escapeHtml(u.email)}</div></div>
-    </div>`;
-  }).join('');
-  box.querySelectorAll('.av-mini').forEach(el => renderAvatar(el, users[el.dataset.uid]));
-  box.querySelectorAll('[data-quicklogin]').forEach(el => el.addEventListener('click', () => loginAs(el.dataset.quicklogin)));
-}
-function logout() {
-  flushPendingCloudWrites();
-  const session = AS.getSession();
-  session.currentUserId = null;
-  AS.saveSession(session);
-  if (window.ASRealtime) window.ASRealtime.disconnect();
-  location.reload();
-}
-document.getElementById('logoutBtn').addEventListener('click', logout);
-document.getElementById('logoutAllBtn').addEventListener('click', () => {
-  flushPendingCloudWrites();
-  AS.saveSession({ currentUserId: null, accounts: [] });
-  AS.toast('Von allen Geräten abgemeldet (lokal).');
-  setTimeout(() => location.reload(), 700);
-});
-document.getElementById('addAccountBtn').addEventListener('click', () => {
-  flushPendingCloudWrites();
-  const session = AS.getSession();
-  session.currentUserId = null;
-  AS.saveSession(session);
-  location.reload();
-});
+  on('forgotNameLink', 'click', () => {
+    document.getElementById('authTabsBar').classList.add('hidden');
+    document.getElementById('loginPane').classList.add('hidden');
+    document.getElementById('registerPane').classList.add('hidden');
+    document.getElementById('forgotPane').classList.remove('hidden');
+    document.getElementById('forgotStep1').classList.remove('hidden');
+    document.getElementById('forgotStep2').classList.add('hidden');
+  });
 
-/* Account-Löschung */
-document.getElementById('deleteAccountBtn').addEventListener('click', () => {
-  confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan, deine Freundesliste und alle hochgeladenen Dateien werden unwiderruflich gelöscht — auch online.', async () => {
-    const uid = AS.currentUser.uniqueId;
-    const data = AS.currentData;
-    if (AS.currentUser.avatarBlobId) AS.deleteBlob(AS.currentUser.avatarBlobId);
-    (data.materials || []).forEach(m => { if (m.blobId) AS.deleteBlob(m.blobId); });
-    (data.notePages || []).forEach(p => {
-      if (p.drawingBlobId) AS.deleteBlob(p.drawingBlobId);
-      (p.imageBlobIds || []).forEach(id => AS.deleteBlob(id));
-    });
-    Object.values(data.conversations || {}).forEach(msgs => {
-      msgs.forEach(m => { if (m.file && m.file.blobId) AS.deleteBlob(m.file.blobId); });
-    });
-    await deleteUserCloudSafe(uid);
-    AS.storage.remove(dataKey(uid));
-    const session = AS.getSession();
-    session.accounts = session.accounts.filter(a => a !== uid);
-    session.currentUserId = null;
-    AS.saveSession(session);
-    AS.toast('Account und alle zugehörigen Daten wurden gelöscht.');
+  on('forgotFindBtn', 'click', async () => {
+    const email = document.getElementById('forgotEmail').value.trim().toLowerCase();
+    if (!email) { AS.toast('Bitte E-Mail eingeben.'); return; }
+    let users = AS.getUsers();
+    let found = Object.values(users).find(u => u.email.toLowerCase() === email);
+    if (!found && AS.cloudEnabled()) {
+      const remoteUsers = await cloudGet(KEY_USERS);
+      if (remoteUsers) {
+        users = { ...remoteUsers, ...users };
+        AS.saveUsersLocalOnly(users);
+        found = Object.values(users).find(u => u.email.toLowerCase() === email);
+      }
+    }
+    if (!found) { AS.toast('Keine E-Mail mit diesem Account gefunden.'); return; }
+    forgotUid = found.uniqueId;
+    document.getElementById('forgotStep1').classList.add('hidden');
+    document.getElementById('forgotStep2').classList.remove('hidden');
+  });
+
+  on('forgotSaveBtn', 'click', async () => {
+    const n1 = document.getElementById('forgotNewName1').value.trim();
+    const n2 = document.getElementById('forgotNewName2').value.trim();
+    if (!n1 || !n2) { AS.toast('Bitte beide Felder ausfüllen.'); return; }
+    if (normName(n1) !== normName(n2)) { AS.toast('Die beiden Namen stimmen nicht überein.'); return; }
+    const parts = n1.split(' ');
+    const first = parts[0];
+    const last = parts.slice(1).join(' ') || '';
+    let users = AS.getUsers();
+    if (AS.cloudEnabled()) {
+      const remote = await cloudGet(KEY_USERS);
+      if (remote) users = { ...remote, ...users };
+    }
+    const u = users[forgotUid];
+    if (!u) { AS.toast('Etwas ist schiefgelaufen — bitte erneut versuchen.'); return; }
+    u.firstName = first;
+    u.lastName = last;
+    users[forgotUid] = u;
+    AS.saveUsers(users);
+    AS.toast('Name aktualisiert — bitte melde dich jetzt erneut an.');
+    document.getElementById('forgotPane').classList.add('hidden');
+    document.getElementById('authTabsBar').classList.remove('hidden');
+    document.getElementById('loginPane').classList.remove('hidden');
+    document.getElementById('loginName').value = n1;
+    document.getElementById('loginEmail').value = u.email;
+    document.querySelector('[data-authtab="login"]').classList.add('active');
+    document.querySelector('[data-authtab="register"]').classList.remove('active');
+  });
+
+  on('forgotBackToLogin1', 'click', () => {
+    document.getElementById('forgotPane').classList.add('hidden');
+    document.getElementById('authTabsBar').classList.remove('hidden');
+    document.getElementById('loginPane').classList.remove('hidden');
+  });
+
+  on('forgotBackToLogin2', 'click', () => {
+    document.getElementById('forgotPane').classList.add('hidden');
+    document.getElementById('authTabsBar').classList.remove('hidden');
+    document.getElementById('loginPane').classList.remove('hidden');
+  });
+
+  on('regNext1', 'click', () => {
+    const first = document.getElementById('regFirst').value.trim();
+    const last = document.getElementById('regLast').value.trim();
+    if (!first || !last) { AS.toast('Bitte Vor- und Nachname angeben.'); return; }
+    goToRegStep(2);
+  });
+
+  on('regBack2', 'click', () => goToRegStep(1));
+
+  on('regNext2', 'click', async () => {
+    const email = document.getElementById('regEmail').value.trim().toLowerCase();
+    if (!email) { AS.toast('Bitte eine E-Mail angeben.'); return; }
+    if (!email.includes('@') || !email.includes('.')) { AS.toast('Das sieht nicht nach einer gültigen E-Mail aus.'); return; }
+    let users = AS.getUsers();
+    if (AS.cloudEnabled()) {
+      const remote = await cloudGet(KEY_USERS);
+      if (remote) {
+        users = { ...remote, ...users };
+        AS.saveUsersLocalOnly(users);
+      }
+    }
+    if (Object.values(users).some(u => u.email.toLowerCase() === email)) {
+      AS.toast('Diese E-Mail-Adresse wird bereits verwendet.');
+      return;
+    }
+    document.getElementById('regReviewName').textContent = `${document.getElementById('regFirst').value.trim()} ${document.getElementById('regLast').value.trim()}`;
+    document.getElementById('regReviewMail').textContent = email;
+    goToRegStep(3);
+  });
+
+  on('regBack3', 'click', () => goToRegStep(2));
+
+  on('registerBtn', 'click', async () => {
+    const first = document.getElementById('regFirst').value.trim();
+    const last = document.getElementById('regLast').value.trim();
+    const email = document.getElementById('regEmail').value.trim().toLowerCase();
+    const username = document.getElementById('regUsername').value.trim() || (first + last.charAt(0)).toLowerCase().replace(/\s+/g, '') + Math.floor(Math.random() * 900 + 100);
+    if (!first || !last || !email) { AS.toast('Bitte fülle alle Felder aus.'); return; }
+    const btn = document.getElementById('registerBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-sm"></span> Wird erstellt…';
+    let users = AS.getUsers();
+    if (AS.cloudEnabled()) {
+      const remote = await cloudGet(KEY_USERS);
+      if (remote) users = { ...remote, ...users };
+    }
+    if (Object.values(users).some(u => u.email.toLowerCase() === email)) {
+      AS.toast('Diese E-Mail-Adresse wird bereits verwendet.');
+      btn.disabled = false;
+      btn.textContent = 'Account erstellen ✦';
+      return;
+    }
+    let finalUsername = username;
+    let n = 1;
+    while (Object.values(users).some(u => u.username.toLowerCase() === finalUsername.toLowerCase())) {
+      finalUsername = username + n;
+      n++;
+    }
+    const uniqueId = generateUniqueId();
+    const user = {
+      uniqueId, firstName: first, lastName: last, username: finalUsername,
+      email, bio: '', avatar: null, avatarBlobId: null, createdAt: Date.now()
+    };
+    users[uniqueId] = user;
+    AS.saveUsers(users);
+    AS.saveData(uniqueId, defaultData(), { immediate: true });
+    loginAs(uniqueId);
+    AS.toast(`Willkommen, ${first}! Schoolify ist komplett kostenlos ✦`);
+  });
+
+  on('authStorageToggle', 'change', (e) => {
+    AS.setConsent(e.target.checked ? 'cloud' : 'local');
+    updateAuthStorageToggle();
+    AS.toast(e.target.checked ? 'Online-Speicherung aktiviert.' : 'Lokale Speicherung aktiviert.');
+  });
+
+  updateAuthStorageToggle();
+
+  on('logoutBtn', 'click', logout);
+  on('logoutAllBtn', 'click', () => {
+    flushPendingCloudWrites();
+    AS.saveSession({ currentUserId: null, accounts: [] });
+    AS.toast('Von allen Geräten abgemeldet (lokal).');
     setTimeout(() => location.reload(), 700);
   });
-});
-document.getElementById('exportDataBtn').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify({ profile: AS.currentUser, data: AS.currentData }, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `schoolify-export-${AS.currentUser.username}.json`;
-  a.click();
-});
+  on('addAccountBtn', 'click', () => {
+    flushPendingCloudWrites();
+    const session = AS.getSession();
+    session.currentUserId = null;
+    AS.saveSession(session);
+    location.reload();
+  });
+
+  on('deleteAccountBtn', 'click', () => {
+    confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan, deine Freundesliste und alle hochgeladenen Dateien werden unwiderruflich gelöscht — auch online.', async () => {
+      const uid = AS.currentUser.uniqueId;
+      const data = AS.currentData;
+      if (AS.currentUser.avatarBlobId) AS.deleteBlob(AS.currentUser.avatarBlobId);
+      (data.materials || []).forEach(m => { if (m.blobId) AS.deleteBlob(m.blobId); });
+      (data.notePages || []).forEach(p => {
+        if (p.drawingBlobId) AS.deleteBlob(p.drawingBlobId);
+        (p.imageBlobIds || []).forEach(id => AS.deleteBlob(id));
+      });
+      Object.values(data.conversations || {}).forEach(msgs => {
+        msgs.forEach(m => { if (m.file && m.file.blobId) AS.deleteBlob(m.file.blobId); });
+      });
+      await deleteUserCloudSafe(uid);
+      AS.storage.remove(dataKey(uid));
+      const session = AS.getSession();
+      session.accounts = session.accounts.filter(a => a !== uid);
+      session.currentUserId = null;
+      AS.saveSession(session);
+      AS.toast('Account und alle zugehörigen Daten wurden gelöscht.');
+      setTimeout(() => location.reload(), 700);
+    });
+  });
+
+  on('exportDataBtn', 'click', () => {
+    const blob = new Blob([JSON.stringify({ profile: AS.currentUser, data: AS.currentData }, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `schoolify-export-${AS.currentUser.username}.json`;
+    a.click();
+  });
+
+  on('cloudSyncToggle', 'change', (e) => {
+    AS.setConsent(e.target.checked ? 'cloud' : 'local');
+    if (e.target.checked) {
+      cloudPut(KEY_USERS, AS.getUsers());
+      cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData);
+      AS.toast('Online-Speicherung aktiviert — bereits vorhandene Daten werden jetzt hochgeladen.');
+    } else {
+      AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
+    }
+  });
+
+  on('saveProfileBtn', 'click', async () => {
+    const newUsername = document.getElementById('editUsername').value.trim();
+    let users = AS.getUsers();
+    if (AS.cloudEnabled()) {
+      const remote = await cloudGet(KEY_USERS);
+      if (remote) users = { ...remote, ...users };
+    }
+    const clash = Object.values(users).find(x => x.uniqueId !== AS.currentUser.uniqueId && x.username.toLowerCase() === newUsername.toLowerCase());
+    if (clash) { AS.toast('Dieser Username ist schon vergeben.'); return; }
+    AS.currentUser.firstName = document.getElementById('editFirst').value.trim();
+    AS.currentUser.lastName = document.getElementById('editLast').value.trim();
+    AS.currentUser.username = newUsername;
+    AS.currentUser.bio = document.getElementById('editBio').value.trim();
+    await upsertUserCloudSafe(AS.currentUser);
+    renderSidebarProfile();
+    RENDERERS.profile();
+    broadcastProfileUpdate();
+    AS.toast('Profil gespeichert.');
+  });
+
+  on('changeAvatarBtn', 'click', () => document.getElementById('avatarFileInput').click());
+
+  on('avatarFileInput', 'change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const lim = limitsFor('avatar');
+    try {
+      const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
+      const blobId = 'av_' + AS.currentUser.uniqueId;
+      await AS.saveBlob(blobId, dataUrl);
+      AS.currentUser.avatar = null;
+      AS.currentUser.avatarBlobId = blobId;
+      await upsertUserCloudSafe(AS.currentUser);
+      renderSidebarProfile();
+      RENDERERS.profile();
+      broadcastProfileUpdate();
+      AS.toast('Profilbild aktualisiert — deine Freunde sehen es sofort.');
+    } catch (err) {
+      AS.toast('Bild konnte nicht verarbeitet werden.');
+    }
+  });
+
+  on('removeAvatarBtn', 'click', async () => {
+    if (AS.currentUser.avatarBlobId) AS.deleteBlob(AS.currentUser.avatarBlobId);
+    AS.currentUser.avatar = null;
+    AS.currentUser.avatarBlobId = null;
+    await upsertUserCloudSafe(AS.currentUser);
+    renderSidebarProfile();
+    RENDERERS.profile();
+    broadcastProfileUpdate();
+  });
+
+  on('openQrFullBtn', 'click', () => {
+    const qrUrl = `${location.origin}${location.pathname}?addfriend=${AS.currentUser.uniqueId}`;
+    AS.modal(`<div style="text-align:center;"><h3>${escapeHtml(AS.currentUser.firstName)}s QR-Code</h3><div id="qrFullWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="pill">${AS.currentUser.uniqueId}</p><p class="tiny" style="margin-top:6px;">Scannen sendet automatisch eine Freundschaftsanfrage.</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="qrClose">Schließen</button></div></div>`,
+      (root) => {
+        new QRCode(root.querySelector('#qrFullWrap'), { text: qrUrl, width: 220, height: 220, colorDark: '#3C4340', colorLight: '#ffffff' });
+        root.querySelector('#qrClose').onclick = AS.closeModal;
+      });
+  });
+
+  /* Navigation */
+  document.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
+  on('moreNavBtn', 'click', openMoreMenu);
+  on('moreSheetBackdrop', 'click', closeMoreMenu);
+  document.querySelectorAll('#moreMenuSheet .sheet-item').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
+}
 
 /* ---------------------------------------------------------------------- */
 /* Boot / Router                                                          */
@@ -986,6 +1038,7 @@ function boot() {
     if (AS.currentUser.avatarBlobId) AS.getBlob(AS.currentUser.avatarBlobId);
   });
 }
+
 function handleQrAutoFriend() {
   const params = new URLSearchParams(location.search);
   const targetUid = params.get('addfriend');
@@ -1058,12 +1111,8 @@ function showView(name) {
 }
 window.showView = showView;
 
-document.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
 function openMoreMenu() { document.getElementById('moreMenuSheet').classList.add('open'); }
 function closeMoreMenu() { document.getElementById('moreMenuSheet').classList.remove('open'); }
-document.getElementById('moreNavBtn').addEventListener('click', openMoreMenu);
-document.getElementById('moreSheetBackdrop').addEventListener('click', closeMoreMenu);
-document.querySelectorAll('#moreMenuSheet .sheet-item').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function fmtDate(d) {
@@ -1210,7 +1259,6 @@ function updateNowLine() {
   grid.style.position = 'relative';
   grid.appendChild(line);
 }
-document.getElementById('addLessonBtn').addEventListener('click', () => openLessonModal(null));
 function openLessonModal(lesson, day, period) {
   const isEdit = !!lesson;
   AS.modal(`
@@ -1332,7 +1380,6 @@ RENDERERS.tasks = function () {
 function prioLabel(p) {
   return { low: 'niedrig', mid: 'mittel', high: 'hoch' }[p] || '';
 }
-document.getElementById('addTaskBtn').addEventListener('click', () => openTaskModal(null));
 function openTaskModal(task) {
   const isEdit = !!task;
   AS.modal(`
@@ -1928,25 +1975,6 @@ RENDERERS.profile = function () {
     });
   });
 };
-document.getElementById('saveProfileBtn').addEventListener('click', async () => {
-  const newUsername = document.getElementById('editUsername').value.trim();
-  let users = AS.getUsers();
-  if (AS.cloudEnabled()) {
-    const remote = await cloudGet(KEY_USERS);
-    if (remote) users = { ...remote, ...users };
-  }
-  const clash = Object.values(users).find(x => x.uniqueId !== AS.currentUser.uniqueId && x.username.toLowerCase() === newUsername.toLowerCase());
-  if (clash) { AS.toast('Dieser Username ist schon vergeben.'); return; }
-  AS.currentUser.firstName = document.getElementById('editFirst').value.trim();
-  AS.currentUser.lastName = document.getElementById('editLast').value.trim();
-  AS.currentUser.username = newUsername;
-  AS.currentUser.bio = document.getElementById('editBio').value.trim();
-  await upsertUserCloudSafe(AS.currentUser);
-  renderSidebarProfile();
-  RENDERERS.profile();
-  broadcastProfileUpdate();
-  AS.toast('Profil gespeichert.');
-});
 function publicProfile() {
   const u = AS.currentUser;
   let avatarData = null;
@@ -1962,44 +1990,8 @@ function broadcastProfileUpdate() {
   AS.currentData.friends.forEach(uid => ASRealtime.sendTo(uid, { type: 'hello', profile: publicProfile() }));
 }
 window.broadcastProfileUpdate = broadcastProfileUpdate;
-document.getElementById('changeAvatarBtn').addEventListener('click', () => document.getElementById('avatarFileInput').click());
-document.getElementById('avatarFileInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const lim = limitsFor('avatar');
-  try {
-    const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
-    const blobId = 'av_' + AS.currentUser.uniqueId;
-    await AS.saveBlob(blobId, dataUrl);
-    AS.currentUser.avatar = null;
-    AS.currentUser.avatarBlobId = blobId;
-    await upsertUserCloudSafe(AS.currentUser);
-    renderSidebarProfile();
-    RENDERERS.profile();
-    broadcastProfileUpdate();
-    AS.toast('Profilbild aktualisiert — deine Freunde sehen es sofort.');
-  } catch (err) {
-    AS.toast('Bild konnte nicht verarbeitet werden.');
-  }
-});
-document.getElementById('removeAvatarBtn').addEventListener('click', async () => {
-  if (AS.currentUser.avatarBlobId) AS.deleteBlob(AS.currentUser.avatarBlobId);
-  AS.currentUser.avatar = null;
-  AS.currentUser.avatarBlobId = null;
-  await upsertUserCloudSafe(AS.currentUser);
-  renderSidebarProfile();
-  RENDERERS.profile();
-  broadcastProfileUpdate();
-});
-document.getElementById('openQrFullBtn').addEventListener('click', () => {
-  const qrUrl = `${location.origin}${location.pathname}?addfriend=${AS.currentUser.uniqueId}`;
-  AS.modal(`<div style="text-align:center;"><h3>${escapeHtml(AS.currentUser.firstName)}s QR-Code</h3><div id="qrFullWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="pill">${AS.currentUser.uniqueId}</p><p class="tiny" style="margin-top:6px;">Scannen sendet automatisch eine Freundschaftsanfrage.</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="qrClose">Schließen</button></div></div>`,
-    (root) => {
-      new QRCode(root.querySelector('#qrFullWrap'), { text: qrUrl, width: 220, height: 220, colorDark: '#3C4340', colorLight: '#ffffff' });
-      root.querySelector('#qrClose').onclick = AS.closeModal;
-    });
-});
 
 document.addEventListener('DOMContentLoaded', () => {
+  initAuthEvents();
   setTimeout(boot, 500);
 });
