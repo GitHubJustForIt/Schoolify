@@ -1,6 +1,8 @@
 /* ==========================================================================
-   Schoolify — session.js (v1 FINAL, vollständig)
+   Schoolify — session.js (v2, vollständig überarbeitet)
    ========================================================================== */
+
+const ASRealtime = window.ASRealtime;
 
 async function handleSessionJoin() {
   const params = new URLSearchParams(location.search);
@@ -37,10 +39,14 @@ RENDERERS.session = function () {
   if (isHost) {
     document.getElementById('sessionQrWrap').innerHTML = '';
     const url = `${location.origin}${location.pathname}?joinsession=${session.id}&host=${AS.currentUser.uniqueId}`;
-    new QRCode(document.getElementById('sessionQrWrap'), { text: url, width: 200, height: 200, colorDark: '#3C4340', colorLight: '#ffffff' });
+    new QRCode(document.getElementById('sessionQrWrap'), {
+      text: url, width: 200, height: 200,
+      colorDark: '#3C4340', colorLight: '#ffffff'
+    });
     document.getElementById('sessionIdDisplay').textContent = session.id;
     document.getElementById('leaveSessionBtn').onclick = leaveSession;
     renderSessionMembers(true);
+    renderInviteList();
   } else {
     document.getElementById('sessionWaitingText').textContent = 'Warte auf Freigabe durch den Leiter…';
     document.getElementById('leaveSessionBtn').onclick = leaveSession;
@@ -63,6 +69,90 @@ function startSession() {
   ASRealtime.sessionHostUid = AS.currentUser.uniqueId;
   ASRealtime.sessionMembers = [AS.currentUser.uniqueId];
   RENDERERS.session();
+}
+
+function renderInviteList() {
+  const inviteBox = document.getElementById('sessionInviteList');
+  if (!inviteBox) return;
+  const friends = AS.currentData.friends || [];
+  const online = ASRealtime.onlineFriends();
+  const now = Date.now();
+  inviteBox.innerHTML = '<strong class="tiny">Freunde einladen</strong>';
+  if (!friends.length) {
+    inviteBox.innerHTML += '<p class="tiny muted">Keine Freunde vorhanden.</p>';
+    return;
+  }
+  friends.forEach(uid => {
+    if (ASRealtime.sessionMembers.includes(uid)) return;
+    const cooldownEnd = ASRealtime.sessionInviteCooldowns[uid] || 0;
+    const remaining = Math.ceil((cooldownEnd - now) / 1000);
+    const profile = friendProfile(uid) || { firstName: uid };
+    const isOnline = online.includes(uid);
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-sm btn-ghost';
+    btn.style.marginLeft = '8px';
+    if (remaining > 0) {
+      btn.textContent = `${remaining}s`;
+      btn.disabled = true;
+    } else {
+      btn.textContent = 'Einladen';
+      btn.onclick = () => inviteFriendToSession(uid);
+    }
+    const row = document.createElement('div');
+    row.className = 'list-row';
+    row.innerHTML = `<span>${escapeHtml(profile.firstName)} ${isOnline ? '🟢' : '⚪️'}</span>`;
+    row.appendChild(btn);
+    inviteBox.appendChild(row);
+  });
+}
+
+function inviteFriendToSession(uid) {
+  if (!AS.currentData.session || AS.currentData.session.hostUid !== AS.currentUser.uniqueId) return;
+  ASRealtime.sessionInviteCooldowns[uid] = Date.now() + 60000;
+  ASRealtime.sendTo(uid, {
+    type: 'session_invite',
+    sessionId: AS.currentData.session.id,
+    hostUid: AS.currentUser.uniqueId,
+    sessionName: AS.currentData.session.name || 'Session',
+    profile: publicProfile()
+  });
+  AS.toast('Einladung gesendet.');
+  renderInviteList();
+}
+
+function handleSessionInvite(fromUid, msg) {
+  AS.modal(`<h3>Session-Einladung</h3>
+    <p>${escapeHtml(msg.profile.firstName)} lädt dich in eine Session ein:</p>
+    <p class="pill">${escapeHtml(msg.sessionName || 'Session')}</p>
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px;">
+      <button class="btn btn-ghost btn-sm" id="invDecline">Ablehnen</button>
+      <button class="btn btn-sm" id="invAccept">Beitreten</button>
+    </div>`,
+    (root) => {
+      root.querySelector('#invDecline').onclick = () => {
+        AS.closeModal();
+        ASRealtime.sendTo(fromUid, { type: 'session_invite_response', accepted: false });
+      };
+      root.querySelector('#invAccept').onclick = async () => {
+        AS.closeModal();
+        ASRealtime.sendTo(fromUid, { type: 'session_invite_response', accepted: true });
+        const conn = await ASRealtime.connectToPeer(msg.hostUid, true);
+        if (conn) {
+          ASRealtime.sendTo(msg.hostUid, {
+            type: 'session_join',
+            sessionId: msg.sessionId,
+            profile: publicProfile()
+          });
+        } else {
+          AS.toast('Verbindung fehlgeschlagen.');
+        }
+      };
+    });
+}
+
+function handleSessionInviteResponse(fromUid, msg) {
+  if (msg.accepted) AS.toast('Freund tritt bei…');
+  else AS.toast('Einladung abgelehnt.');
 }
 
 function renderSessionMembers(isHost) {
