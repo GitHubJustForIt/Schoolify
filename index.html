@@ -157,6 +157,7 @@
   </div>
 
   <main>
+    <!-- Dashboard -->
     <section class="view sec-dashboard" id="view-dashboard">
       <div class="view-head"><div><span class="section-tag">Heute</span><h1 id="dashGreeting">Hey ♡</h1><p class="view-sub" id="dashDate"></p></div></div>
       <div class="grid grid-2">
@@ -189,17 +190,20 @@
       </div>
     </section>
 
+    <!-- Timetable -->
     <section class="view sec-timetable hidden" id="view-timetable">
       <div class="view-head"><div><span class="section-tag">Unterricht</span><h1>Stundenplan</h1><p class="view-sub">Untis-Stil mit Live-Zeitlinie.</p></div><button class="btn btn-sm" id="addLessonBtn">+ Stunde</button></div>
       <div class="card no-margin tt-wrap"><div class="tt-grid" id="timetableGrid"></div></div>
     </section>
 
+    <!-- Tasks -->
     <section class="view sec-tasks hidden" id="view-tasks">
       <div class="view-head"><div><span class="section-tag">Aufgaben</span><h1>Was ansteht</h1></div><button class="btn btn-sm" id="addTaskBtn">+ Aufgabe</button></div>
       <div class="row wrap" id="taskFilters" style="margin-bottom:14px;gap:8px;"></div>
       <div class="card" id="taskListCard"><div id="taskList"></div></div>
     </section>
 
+    <!-- To-Do -->
     <section class="view sec-todo hidden" id="view-todo">
       <div class="view-head"><div><span class="section-tag">Bessere Noten</span><h1>To-Do des Tages</h1><p class="view-sub">Setz dir jede Woche kleine Ziele — und belohn dich am Ende ✦</p></div></div>
       <div class="card" style="margin-bottom:14px;"><strong>📌 Heute</strong><div id="todoTodayBox" style="margin-top:10px;"></div></div>
@@ -212,6 +216,7 @@
       </div>
     </section>
 
+    <!-- Learn -->
     <section class="view sec-learn hidden" id="view-learn">
       <div class="view-head">
         <div><span class="section-tag">Lernplan</span><h1 id="learnTitle">Karteikarten</h1></div>
@@ -235,6 +240,7 @@
       </div>
     </section>
 
+    <!-- Calendar -->
     <section class="view sec-calendar hidden" id="view-calendar">
       <div class="view-head"><div><span class="section-tag">Übersicht</span><h1 id="calMonthLabel">Kalender</h1></div>
         <div class="row" style="gap:8px;"><button class="btn btn-ghost btn-sm" id="calPrevBtn">←</button><button class="btn btn-ghost btn-sm" id="calTodayBtn">Heute</button><button class="btn btn-ghost btn-sm" id="calNextBtn">→</button></div>
@@ -243,6 +249,7 @@
       <div class="card" style="margin-top:14px;"><strong>Einträge</strong><div id="calEventList" style="margin-top:8px;"></div></div>
     </section>
 
+    <!-- Notes -->
     <section class="view sec-notes hidden" id="view-notes">
       <div class="view-head"><div><span class="section-tag">Notizbuch</span><h1 id="notesTitle">Ordner</h1></div>
         <div class="row" style="gap:8px;" id="notesHeadActions"></div>
@@ -276,6 +283,7 @@
       </div>
     </section>
 
+    <!-- Materials -->
     <section class="view sec-materials hidden" id="view-materials">
       <div class="view-head"><div><span class="section-tag">Material</span><h1>Schulmaterial</h1></div><button class="btn btn-sm" id="uploadMaterialBtn">+ Datei hochladen</button></div>
       <input type="file" id="materialFileInput" class="hidden" multiple>
@@ -283,6 +291,7 @@
       <div id="materialList" class="grid grid-3"></div>
     </section>
 
+    <!-- Friends -->
     <section class="view sec-friends hidden" id="view-friends">
       <div class="view-head"><div><span class="section-tag">Kontakte</span><h1>Freunde</h1></div></div>
       <div class="card">
@@ -298,6 +307,7 @@
       <div class="card" style="margin-top:14px;"><strong style="font-size:.85rem;">💌 Meine Freunde</strong><div id="friendsListFull" style="margin-top:8px;"></div></div>
     </section>
 
+    <!-- Chat -->
     <section class="view sec-chat hidden" id="view-chat">
       <div class="view-head"><div><span class="section-tag">Nachrichten</span><h1>Chat</h1></div></div>
       <div class="card no-margin" style="padding:0;overflow:hidden;">
@@ -323,6 +333,7 @@
       </div>
     </section>
 
+    <!-- AirSignal -->
     <section class="view sec-airsignal hidden" id="view-airsignal">
       <div class="view-head"><div><span class="section-tag">AirSignal</span><h1>In deiner Nähe ☁️</h1></div></div>
       <div class="card">
@@ -340,6 +351,7 @@
       </div>
     </section>
 
+    <!-- Session -->
     <section class="view sec-session hidden" id="view-session">
       <div class="view-head"><div><span class="section-tag">Gemeinsam</span><h1>Session</h1></div></div>
       <div id="sessionStartArea">
@@ -369,9 +381,14 @@
             <div id="sessionMembersList"></div>
           </div>
         </div>
+        <div class="card" style="margin-top:14px;">
+          <h3>Freunde einladen</h3>
+          <div id="sessionInviteList"></div>
+        </div>
       </div>
     </section>
 
+    <!-- Security -->
     <section class="view sec-security hidden" id="view-security">
       <div class="view-head"><div><span class="section-tag">Privatsphäre</span><h1>Sicherheit</h1></div></div>
       <div id="securityCategories"></div>
@@ -396,11 +413,13 @@
       </div>
     </section>
 
+    <!-- Settings -->
     <section class="view sec-settings hidden" id="view-settings">
       <div class="view-head"><div><span class="section-tag">Personalisierung</span><h1>Einstellungen</h1></div></div>
       <div id="settingsCategories"></div>
     </section>
 
+    <!-- Profile -->
     <section class="view sec-profile hidden" id="view-profile">
       <div class="view-head"><div><span class="section-tag">Ich</span><h1>Mein Profil</h1></div></div>
       <div class="grid grid-2">
