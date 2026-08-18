@@ -1,8 +1,10 @@
 /* ==========================================================================
-   Schoolify — app.js (v5, vollständig)
-   Vollständige Account-Löschung (inkl. aller Cloud-Blobs), QR-Teilen für
-   Schulmaterial & Karteikarten-Stapel. Ansonsten wie v4: kompakte
-   Cloud-Speicherung mit Blob-System, geräteübergreifendes Login.
+   Schoolify — app.js (v6, vollständig)
+   Cloud-Speicher jetzt über Cloudflare Worker (speicher-api.xyz.workers.dev)
+   Online-Limit: 12 MB pro User, Lokal-Limit: 5 MB.
+   Speicheranzeige in der Sicherheitsansicht zeigt den Füllstand an und
+   bittet bei vollem Speicher um Löschen des Accounts, um den Service
+   kostenlos zu halten.
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -10,7 +12,7 @@ const AS = (window.AS = {});
 /* ---------------------------------------------------------------------- */
 /* Cloud-Speicher (Personal Data Box)                                     */
 /* ---------------------------------------------------------------------- */
-const CLOUD_BASE = "https://personal-data-box.lovable.app/api/public/v1/b179d2ca-a983-4ef7-869a-32466eaa6db1";
+const CLOUD_BASE = "https://speicher-api.xyz.workers.dev/c786ab5ff69c43738470d3a4a9a9c34d";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
@@ -18,14 +20,28 @@ AS.setConsent = (v) => localStorage.setItem(CONSENT_KEY, v);
 AS.cloudEnabled = () => AS.getConsent() === 'cloud';
 
 async function cloudPut(key, value) {
-  try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }); }
-  catch (e) {}
+  try {
+    const url = `${CLOUD_BASE}/${encodeURIComponent(key)}`;
+    await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(value)
+    });
+  } catch (e) {}
 }
+
 async function cloudGet(key) {
-  try { const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`); if (!res.ok) return undefined; const data = await res.json(); return data && data.value !== undefined ? data.value : data; }
-  catch (e) { return undefined; }
+  try {
+    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`);
+    if (!res.ok) return undefined;
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return text; }
+  } catch (e) { return undefined; }
 }
-async function cloudDelete(key) { try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {} }
+
+async function cloudDelete(key) {
+  try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {}
+}
 
 const _cloudDebounceTimers = {};
 function cloudPutDebounced(key, value, delay = 900) {
@@ -41,16 +57,37 @@ window.flushPendingCloudWrites = flushPendingCloudWrites;
 window.addEventListener('beforeunload', flushPendingCloudWrites);
 
 AS.storage = {
-  get(key, fallback) { try { const raw = localStorage.getItem(key); return raw === null ? fallback : JSON.parse(raw); } catch (e) { return fallback; } },
-  set(key, value, opts) {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-      if (AS.cloudEnabled()) { if (opts && opts.immediate) cloudPut(key, value); else cloudPutDebounced(key, value); }
-      return true;
-    } catch (e) { AS.toast('Speicher ist voll — bitte alte Dateien/Notizen löschen.'); return false; }
+  get(key, fallback) {
+    try { const raw = localStorage.getItem(key); return raw === null ? fallback : JSON.parse(raw); }
+    catch (e) { return fallback; }
   },
-  setLocalOnly(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; } },
-  remove(key) { localStorage.removeItem(key); if (AS.cloudEnabled()) cloudDelete(key); }
+  set(key, value, opts) {
+    const serialized = JSON.stringify(value);
+    const additionalBytes = serialized.length * 2;
+    // Bei Cloud-Aktivierung speichern wir zuerst online und versuchen dann lokal zu cachen.
+    if (AS.cloudEnabled()) {
+      if (opts && opts.immediate) cloudPut(key, value);
+      else cloudPutDebounced(key, value);
+      // Lokal nur als Cache speichern, aber nicht scheitern, wenn localStorage voll ist.
+      try { localStorage.setItem(key, serialized); } catch (e) { /* Cache voll – online ist gespeichert */ }
+      return true;
+    } else {
+      // Lokale Speicherung: hartes Limit von 5 MB prüfen.
+      if (isOverLimit(additionalBytes)) {
+        AS.toast('Lokaler Speicher (5 MB) voll – bitte alte Dateien/Notizen löschen oder Online-Speicherung aktivieren.');
+        return false;
+      }
+      try { localStorage.setItem(key, serialized); return true; }
+      catch (e) { AS.toast('Speicher ist voll – bitte alte Dateien/Notizen löschen.'); return false; }
+    }
+  },
+  setLocalOnly(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
+  },
+  remove(key) {
+    localStorage.removeItem(key);
+    if (AS.cloudEnabled()) cloudDelete(key);
+  }
 };
 
 /* ---------------------------------------------------------------------- */
@@ -59,17 +96,28 @@ AS.storage = {
 const BLOB_CACHE_PREFIX = 'as_blob_';
 function blobKey(id) { return 'blob_' + id; }
 AS.saveBlob = async function (id, dataUrl) {
-  try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
+  // Online speichern (falls Cloud aktiv)
   if (AS.cloudEnabled()) await cloudPut(blobKey(id), dataUrl);
+  // Lokal nur cachen, wenn Platz (bei Cloud nicht kritisch)
+  try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
 };
 AS.getBlobCached = function (id) { try { return localStorage.getItem(BLOB_CACHE_PREFIX + id); } catch (e) { return null; } };
 AS.getBlob = async function (id) {
   const cached = AS.getBlobCached(id);
   if (cached !== null) return cached;
-  if (AS.cloudEnabled()) { const remote = await cloudGet(blobKey(id)); if (remote !== undefined && remote !== null) { try { localStorage.setItem(BLOB_CACHE_PREFIX + id, remote); } catch (e) {} return remote; } }
+  if (AS.cloudEnabled()) {
+    const remote = await cloudGet(blobKey(id));
+    if (remote !== undefined && remote !== null) {
+      try { localStorage.setItem(BLOB_CACHE_PREFIX + id, remote); } catch (e) {}
+      return remote;
+    }
+  }
   return null;
 };
-AS.deleteBlob = function (id) { try { localStorage.removeItem(BLOB_CACHE_PREFIX + id); } catch (e) {} if (AS.cloudEnabled()) cloudDelete(blobKey(id)); };
+AS.deleteBlob = function (id) {
+  try { localStorage.removeItem(BLOB_CACHE_PREFIX + id); } catch (e) {}
+  if (AS.cloudEnabled()) cloudDelete(blobKey(id));
+};
 function asyncImg(blobId, onReady) {
   if (!blobId) return;
   const cached = AS.getBlobCached(blobId);
@@ -263,6 +311,70 @@ function limitsFor(kind) {
   return L[kind] || L.material;
 }
 window.limitsFor = limitsFor;
+
+/* ---------------------------------------------------------------------- */
+/* Speicher-Limits & Anzeige                                              */
+/* ---------------------------------------------------------------------- */
+function usageLimitBytes() {
+  return AS.cloudEnabled() ? 12 * 1024 * 1024 : 5 * 1024 * 1024;
+}
+window.usageLimitBytes = usageLimitBytes;
+
+function usageBytes() {
+  let total = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith('as_')) continue;
+    const val = localStorage.getItem(key);
+    total += (val ? val.length : 0) * 2; // UTF-16 → Bytes ungefähr
+  }
+  return total;
+}
+window.usageBytes = usageBytes;
+
+function isOverLimit(additionalBytes = 0) {
+  const current = usageBytes();
+  const limit = usageLimitBytes();
+  return (current + additionalBytes) > limit;
+}
+window.isOverLimit = isOverLimit;
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+}
+window.formatBytes = formatBytes;
+
+function renderStorageBar() {
+  const used = usageBytes();
+  const limit = usageLimitBytes();
+  const percent = Math.min(100, (used / limit) * 100);
+  const bar = document.getElementById('storageBarFill');
+  const label = document.getElementById('storageUsedLabel');
+  const percentLabel = document.getElementById('storagePercentLabel');
+  const fullMsg = document.getElementById('storageFullMsg');
+  if (!bar || !label || !percentLabel || !fullMsg) return;
+
+  bar.style.width = percent + '%';
+  bar.classList.toggle('warn', percent >= 70 && percent < 95);
+  bar.classList.toggle('full', percent >= 95);
+  label.textContent = `${formatBytes(used)} von ${formatBytes(limit)}`;
+  percentLabel.textContent = Math.round(percent) + '%';
+
+  if (percent >= 100) {
+    fullMsg.style.display = 'block';
+    fullMsg.textContent = AS.cloudEnabled()
+      ? '⚠️ Dein Online-Speicher (12 MB) ist voll! Bitte lösche alte Dateien, Notizen oder deinen Account, um Schoolify weiter kostenlos nutzen zu können.'
+      : '⚠️ Dein lokaler Speicher (5 MB) ist voll! Aktiviere die Online-Speicherung für 12 MB oder lösche alte Daten.';
+  } else if (percent >= 85) {
+    fullMsg.style.display = 'block';
+    fullMsg.textContent = '⚠️ Dein Speicher ist fast voll – bitte bald alte Daten löschen oder Online-Speicherung aktivieren.';
+  } else {
+    fullMsg.style.display = 'none';
+  }
+}
+window.renderStorageBar = renderStorageBar;
 
 /* ---------------------------------------------------------------------- */
 /* Avatare                                                                */
@@ -477,9 +589,7 @@ document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('logoutAllBtn').addEventListener('click', () => { flushPendingCloudWrites(); AS.saveSession({ currentUserId: null, accounts: [] }); AS.toast('Von allen Geräten abgemeldet (lokal).'); setTimeout(() => location.reload(), 700); });
 document.getElementById('addAccountBtn').addEventListener('click', () => { flushPendingCloudWrites(); const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); location.reload(); });
 
-/* Vollständige Account-Löschung: alle Blobs (Avatar, Material, Notiz-
-   Bilder/Zeichnungen, Chat-Dateien) UND der Hauptdatensatz UND der
-   Eintrag im globalen Nutzerverzeichnis werden auch online entfernt. */
+/* Vollständige Account-Löschung */
 document.getElementById('deleteAccountBtn').addEventListener('click', () => {
   confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan, deine Freundesliste und alle hochgeladenen Dateien werden unwiderruflich gelöscht — auch online.', async () => {
     const uid = AS.currentUser.uniqueId;
@@ -868,7 +978,7 @@ function openCalDayModal(iso) {
 }
 
 /* ======================================================================
-   MATERIALS — inkl. "🔗 Teilen"-Button (ganze Sammlung per QR-Code)
+   MATERIALS
    ====================================================================== */
 let materialQuery = '';
 RENDERERS.materials = function () {
