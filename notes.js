@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Schoolify — notes.js (v7 FINAL, vollständig)
+   Schoolify — notes.js (v7 FINAL, korrigiert)
    ========================================================================== */
 
 const FOLDER_COLORS = [
@@ -362,7 +362,14 @@ function setupCanvas(page, canvas) {
   }
   canvas.onmousedown = start;
   canvas.onmousemove = move;
-  window.addEventListener('mouseup', end);
+  // FIX: Globalen mouseup-Listener nur einmal registrieren, aber auf aktuelle end-Funktion zeigen
+  window._noteEndHandler = end;
+  if (!window._noteMouseUpRegistered) {
+    window._noteMouseUpRegistered = true;
+    window.addEventListener('mouseup', () => {
+      if (window._noteEndHandler) window._noteEndHandler();
+    });
+  }
   canvas.ontouchstart = start;
   canvas.ontouchmove = move;
   canvas.ontouchend = end;
