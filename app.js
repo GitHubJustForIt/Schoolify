@@ -1,7 +1,7 @@
 /* ==========================================================================
-   Schoolify — app.js (v9 FINAL, vollständig)
-   Cloudflare-Speicher mit keepalive, Fehlerprüfung, exakte Größenberechnung,
-   Sprachumschaltung, robuste Event-Listener, Session-Integration.
+   Schoolify — app.js (v9.1 FINAL)
+   Alle Event-Listener korrekt registriert, Material-Upload repariert,
+   Sicherheitsansicht vollständig, Speicheranzeige funktioniert.
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -169,12 +169,11 @@ const BLOB_CACHE_PREFIX = 'as_blob_';
 function blobKey(id) { return 'blob_' + id; }
 
 AS.saveBlob = async function (id, dataUrl) {
-  const size = new Blob([dataUrl]).size; // exakte Bytegröße
+  const size = new Blob([dataUrl]).size;
   if (AS.cloudEnabled()) {
     const ok = await cloudPut(blobKey(id), dataUrl);
     if (!ok) {
       AS.toast('⚠️ Datei konnte nicht online gespeichert werden – nur lokal verfügbar.');
-      // Trotzdem lokal speichern, aber nicht als online markieren
     }
   }
   try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
@@ -486,10 +485,9 @@ function usageBytes() {
     try {
       dataSize = new Blob([JSON.stringify(AS.currentData)]).size;
     } catch (e) {
-      dataSize = JSON.stringify(AS.currentData).length * 2; // Fallback
+      dataSize = JSON.stringify(AS.currentData).length * 2;
     }
   }
-  // Blob-Größen separat addieren
   const blobTotal = Object.values(AS._blobSizes || {}).reduce((a, b) => a + (b || 0), 0);
   return dataSize + blobTotal;
 }
@@ -806,7 +804,7 @@ function handleQrAutoFriend() {
   persist();
   AS.toast('QR-Code erkannt — Freundschaftsanfrage wird gesendet ✦');
   setTimeout(() => {
-    if (window.ASRealtime) ASRealtime.sendReliable(targetUid, { type: 'friend_request', profile: publicProfile() });
+    if (window.ASRealtime) window.ASRealtime.sendReliable(targetUid, { type: 'friend_request', profile: publicProfile() });
   }, 600);
 }
 
@@ -1876,6 +1874,74 @@ function initAppEvents() {
   });
 
   updateAuthStorageToggle();
+
+  // Alle weiteren statischen Buttons
+  on('addLessonBtn', 'click', () => openLessonModal(null));
+  on('addTaskBtn', 'click', () => openTaskModal(null));
+  on('addTodoGoalBtn', 'click', () => {
+    AS.modal(`<h3>Ziel für ${DAYS_FULL[todoEditDay]}</h3>
+      <div class="field"><label>Was willst du erreichen?</label><input type="text" id="goalLabel" placeholder="z. B. 4× melden"></div>
+      <div class="field"><label>Wie oft / Zielwert</label><input type="number" id="goalTarget" min="1" value="1"></div>
+      <div class="row" style="justify-content:flex-end;gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="goalCancel">Abbrechen</button>
+        <button class="btn btn-sm" id="goalSave">Speichern</button>
+      </div>`,
+      (root) => {
+        root.querySelector('#goalCancel').onclick = AS.closeModal;
+        root.querySelector('#goalSave').onclick = () => {
+          const label = root.querySelector('#goalLabel').value.trim();
+          const target = +root.querySelector('#goalTarget').value || 1;
+          if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; }
+          if (!AS.currentData.todoTemplate[todoEditDay]) AS.currentData.todoTemplate[todoEditDay] = [];
+          AS.currentData.todoTemplate[todoEditDay].push({ id: 'g_' + Date.now(), label, target });
+          persist();
+          AS.closeModal();
+          renderTodoTemplate();
+        };
+      });
+  });
+
+  on('calPrevBtn', 'click', () => { calViewDate.setMonth(calViewDate.getMonth() - 1); RENDERERS.calendar(); });
+  on('calNextBtn', 'click', () => { calViewDate.setMonth(calViewDate.getMonth() + 1); RENDERERS.calendar(); });
+  on('calTodayBtn', 'click', () => { calViewDate = new Date(); RENDERERS.calendar(); });
+
+  on('materialSearch', 'input', (e) => { materialQuery = e.target.value; RENDERERS.materials(); });
+  on('uploadMaterialBtn', 'click', () => document.getElementById('materialFileInput').click());
+  on('materialFileInput', 'change', async (e) => {
+    const files = Array.from(e.target.files);
+    const lim = limitsFor('material');
+    let added = 0;
+    for (const file of files) {
+      try {
+        const isImg = (file.type || '').includes('image');
+        const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
+        const blobId = 'mat_' + Date.now() + Math.random().toString(36).slice(2, 7);
+        await AS.saveBlob(blobId, dataUrl);
+        const approxBytes = new Blob([dataUrl]).size;
+        AS.currentData.materials.push({
+          id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6),
+          name: file.name,
+          subject: '',
+          topic: '',
+          type: file.type || 'application/octet-stream',
+          size: approxBytes,
+          blobId,
+          favorite: false,
+          addedAt: Date.now()
+        });
+        added++;
+      } catch (err) {
+        AS.toast(`"${file.name}" konnte nicht verarbeitet werden.`);
+      }
+    }
+    if (added) {
+      persist();
+      RENDERERS.materials();
+      AS.toast(`${added} Datei(en) hinzugefügt — platzsparend gespeichert.`);
+      notifyDataChange('materials');
+    }
+    e.target.value = '';
+  });
 
   on('logoutBtn', 'click', logout);
   on('logoutAllBtn', 'click', () => {
