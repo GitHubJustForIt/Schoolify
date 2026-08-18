@@ -1,78 +1,31 @@
-### 📄 `app.js` (komplett — einfach einfügen)
-
-```javascript
 /* ==========================================================================
-   Schoolify — app.js (final)
-   Cloudflare Workers KV direkt angebunden, Gzip-Kompression vor jedem
-   Upload, 12MB (online) / 5MB (lokal) Speicher-Kontingent mit Leiste,
-   vollständige Account-Löschung, QR-Teilen, geräteübergreifendes Login.
+   Schoolify — app.js (v5, vollständig)
+   Vollständige Account-Löschung (inkl. aller Cloud-Blobs), QR-Teilen für
+   Schulmaterial & Karteikarten-Stapel. Ansonsten wie v4: kompakte
+   Cloud-Speicherung mit Blob-System, geräteübergreifendes Login.
    ========================================================================== */
 
 const AS = (window.AS = {});
 
 /* ---------------------------------------------------------------------- */
-/* Cloudflare Workers KV — direkte API-Anbindung                         */
+/* Cloud-Speicher (Personal Data Box)                                     */
 /* ---------------------------------------------------------------------- */
-const CF_ACCOUNT_ID = "58d99047a423bbe366f2d936af2a2253";
-const CF_NAMESPACE_ID = "3b7aead297484bc3a02ceb117b2a30d0";
-const CF_TOKEN = "cfut_qNl5aQaOdNZv9WwmCKp7d3SyY0ovKBTNrtnWDMWX53d674b3";
-const CLOUD_BASE = `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/storage/kv/namespaces/${CF_NAMESPACE_ID}/values`;
+const CLOUD_BASE = "https://personal-data-box.lovable.app/api/public/v1/b179d2ca-a983-4ef7-869a-32466eaa6db1";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
 AS.setConsent = (v) => localStorage.setItem(CONSENT_KEY, v);
 AS.cloudEnabled = () => AS.getConsent() === 'cloud';
 
-/* Gzip-Kompression (nativ im Browser) — schrumpft JSON-Texte spürbar,
-   bevor sie zu Cloudflare KV gehen, damit das 12-MB-Kontingent langsamer
-   voll wird. */
-async function gzipString(str) {
-  if (!window.CompressionStream) return str;
-  const cs = new CompressionStream('gzip');
-  const writer = cs.writable.getWriter();
-  writer.write(new TextEncoder().encode(str)); writer.close();
-  const buf = await new Response(cs.readable).arrayBuffer();
-  let binary = ''; const bytes = new Uint8Array(buf);
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-  return 'gz:' + btoa(binary);
-}
-async function gunzipString(str) {
-  if (!str.startsWith('gz:')) return str;
-  const binary = atob(str.slice(3));
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const ds = new DecompressionStream('gzip');
-  const writer = ds.writable.getWriter();
-  writer.write(bytes); writer.close();
-  const buf = await new Response(ds.readable).arrayBuffer();
-  return new TextDecoder().decode(buf);
-}
-
 async function cloudPut(key, value) {
-  try {
-    const jsonStr = JSON.stringify(value);
-    const compact = await gzipString(jsonStr);
-    await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
-      method: 'PUT',
-      headers: { 'Authorization': `Bearer ${CF_TOKEN}` },
-      body: compact,
-    });
-  } catch (e) {}
-}
-async function cloudGet(key) {
-  try {
-    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { headers: { 'Authorization': `Bearer ${CF_TOKEN}` } });
-    if (!res.ok) return undefined;
-    const raw = await res.text();
-    if (!raw) return undefined;
-    if (raw.startsWith('gz:')) { const jsonStr = await gunzipString(raw); try { return JSON.parse(jsonStr); } catch (e) { return undefined; } }
-    try { return JSON.parse(raw); } catch (e) { return raw; }
-  } catch (e) { return undefined; }
-}
-async function cloudDelete(key) {
-  try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE', headers: { 'Authorization': `Bearer ${CF_TOKEN}` } }); }
+  try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }); }
   catch (e) {}
 }
+async function cloudGet(key) {
+  try { const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`); if (!res.ok) return undefined; const data = await res.json(); return data && data.value !== undefined ? data.value : data; }
+  catch (e) { return undefined; }
+}
+async function cloudDelete(key) { try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {} }
 
 const _cloudDebounceTimers = {};
 function cloudPutDebounced(key, value, delay = 900) {
@@ -101,42 +54,6 @@ AS.storage = {
 };
 
 /* ---------------------------------------------------------------------- */
-/* Speicher-Kontingent: 12 MB online (Cloudflare KV), 5 MB rein lokal     */
-/* ---------------------------------------------------------------------- */
-const CLOUD_LIMIT_BYTES = 12 * 1024 * 1024;
-const LOCAL_LIMIT_BYTES = 5 * 1024 * 1024;
-function usageLimitBytes() { return AS.cloudEnabled() ? CLOUD_LIMIT_BYTES : LOCAL_LIMIT_BYTES; }
-function computeUsageBytes() {
-  if (!AS.currentUser || !AS.currentData) return 0;
-  let total = 0;
-  try { total += JSON.stringify(AS.currentData).length; } catch (e) {}
-  total += AS.currentUser.avatarBytes || 0;
-  (AS.currentData.materials || []).forEach(m => { total += m.size || 0; });
-  (AS.currentData.notePages || []).forEach(p => { total += p.drawingBytes || 0; total += (p.imageBytesList || []).reduce((a, b) => a + (b || 0), 0); });
-  Object.values(AS.currentData.conversations || {}).forEach(msgs => { msgs.forEach(m => { if (m.file) total += m.file.bytes || 0; }); });
-  return total;
-}
-function isOverLimit(extraBytes) { return (computeUsageBytes() + (extraBytes || 0)) > usageLimitBytes(); }
-function formatBytes(b) { if (b < 1024) return b + ' B'; if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB'; return (b / 1024 / 1024).toFixed(1) + ' MB'; }
-window.isOverLimit = isOverLimit; window.computeUsageBytes = computeUsageBytes; window.usageLimitBytes = usageLimitBytes; window.formatBytes = formatBytes;
-function renderStorageBar() {
-  const fill = document.getElementById('storageBarFill');
-  if (!fill || !AS.currentUser) return;
-  const used = computeUsageBytes(); const limit = usageLimitBytes();
-  const pct = Math.min(100, Math.round((used / limit) * 100));
-  fill.style.width = pct + '%';
-  fill.classList.toggle('warn', pct >= 70 && pct < 92);
-  fill.classList.toggle('full', pct >= 92);
-  document.getElementById('storageUsedLabel').textContent = `${formatBytes(used)} von ${formatBytes(limit)} (${AS.cloudEnabled() ? 'online' : 'lokal'})`;
-  document.getElementById('storagePercentLabel').textContent = pct + '%';
-  const msgEl = document.getElementById('storageFullMsg');
-  if (pct >= 100) { msgEl.style.display = 'block'; msgEl.textContent = 'Speicher voll! Bitte lösche alte Dateien/Notizen — oder deinen Account, falls du Schoolify nicht mehr brauchst, damit der Platz für andere Schüler frei wird.'; }
-  else if (pct >= 92) { msgEl.style.display = 'block'; msgEl.textContent = 'Fast voll — bald solltest du aufräumen.'; }
-  else msgEl.style.display = 'none';
-}
-window.renderStorageBar = renderStorageBar;
-
-/* ---------------------------------------------------------------------- */
 /* Blob-Speicher                                                          */
 /* ---------------------------------------------------------------------- */
 const BLOB_CACHE_PREFIX = 'as_blob_';
@@ -153,7 +70,12 @@ AS.getBlob = async function (id) {
   return null;
 };
 AS.deleteBlob = function (id) { try { localStorage.removeItem(BLOB_CACHE_PREFIX + id); } catch (e) {} if (AS.cloudEnabled()) cloudDelete(blobKey(id)); };
-function asyncImg(blobId, onReady) { if (!blobId) return; const cached = AS.getBlobCached(blobId); if (cached) { onReady(cached); return; } AS.getBlob(blobId).then(data => { if (data) onReady(data); }); }
+function asyncImg(blobId, onReady) {
+  if (!blobId) return;
+  const cached = AS.getBlobCached(blobId);
+  if (cached) { onReady(cached); return; }
+  AS.getBlob(blobId).then(data => { if (data) onReady(data); });
+}
 window.asyncImg = asyncImg;
 
 /* ---------------------------------------------------------------------- */
@@ -185,7 +107,8 @@ async function shareDeck(deck) {
 window.shareDeck = shareDeck;
 async function handleImportShare() {
   const params = new URLSearchParams(location.search);
-  const importDeck = params.get('importDeck'); const importMaterial = params.get('importMaterial');
+  const importDeck = params.get('importDeck');
+  const importMaterial = params.get('importMaterial');
   if (!importDeck && !importMaterial) return;
   history.replaceState({}, '', location.pathname);
   if (!AS.cloudEnabled()) { AS.toast('Aktiviere die Online-Speicherung in den Einstellungen, um geteilte Inhalte zu empfangen.'); return; }
@@ -280,7 +203,12 @@ function generateUniqueId() {
   return id;
 }
 
-AS.toast = function (msg) { const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg; document.getElementById('toasts').appendChild(el); setTimeout(() => el.remove(), 3800); };
+AS.toast = function (msg) {
+  const el = document.createElement('div');
+  el.className = 'toast'; el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 3800);
+};
 AS.modal = function (innerHtml, onMount) {
   const root = document.getElementById('modalRoot');
   root.innerHTML = `<div class="modal-backdrop" id="mbackdrop"><div class="modal">${innerHtml}</div></div>`;
@@ -549,6 +477,9 @@ document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('logoutAllBtn').addEventListener('click', () => { flushPendingCloudWrites(); AS.saveSession({ currentUserId: null, accounts: [] }); AS.toast('Von allen Geräten abgemeldet (lokal).'); setTimeout(() => location.reload(), 700); });
 document.getElementById('addAccountBtn').addEventListener('click', () => { flushPendingCloudWrites(); const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); location.reload(); });
 
+/* Vollständige Account-Löschung: alle Blobs (Avatar, Material, Notiz-
+   Bilder/Zeichnungen, Chat-Dateien) UND der Hauptdatensatz UND der
+   Eintrag im globalen Nutzerverzeichnis werden auch online entfernt. */
 document.getElementById('deleteAccountBtn').addEventListener('click', () => {
   confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan, deine Freundesliste und alle hochgeladenen Dateien werden unwiderruflich gelöscht — auch online.', async () => {
     const uid = AS.currentUser.uniqueId;
@@ -937,7 +868,7 @@ function openCalDayModal(iso) {
 }
 
 /* ======================================================================
-   MATERIALS
+   MATERIALS — inkl. "🔗 Teilen"-Button (ganze Sammlung per QR-Code)
    ====================================================================== */
 let materialQuery = '';
 RENDERERS.materials = function () {
@@ -972,7 +903,6 @@ document.getElementById('materialFileInput').addEventListener('change', async (e
     try {
       const isImg = (file.type || '').includes('image');
       const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
-      if (isOverLimit(dataUrl.length)) { AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) — bitte alte Dateien löschen.`); continue; }
       const blobId = 'mat_' + Date.now() + Math.random().toString(36).slice(2, 7);
       await AS.saveBlob(blobId, dataUrl);
       const approxBytes = Math.round(dataUrl.length * 0.75);
@@ -1016,7 +946,6 @@ document.getElementById('cloudSyncToggle').addEventListener('change', (e) => {
   AS.setConsent(e.target.checked ? 'cloud' : 'local');
   if (e.target.checked) { cloudPut(KEY_USERS, AS.getUsers()); cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData); AS.toast('Online-Speicherung aktiviert — bereits vorhandene Daten werden jetzt hochgeladen.'); }
   else AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
-  if (getCurrentViewSafe() === 'security') RENDERERS.security();
 });
 
 /* ======================================================================
@@ -1069,7 +998,7 @@ document.getElementById('avatarFileInput').addEventListener('change', async (e) 
     const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
     const blobId = 'av_' + AS.currentUser.uniqueId;
     await AS.saveBlob(blobId, dataUrl);
-    AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = blobId; AS.currentUser.avatarBytes = dataUrl.length;
+    AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = blobId;
     await upsertUserCloudSafe(AS.currentUser);
     renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate();
     AS.toast('Profilbild aktualisiert — deine Freunde sehen es sofort.');
@@ -1077,7 +1006,7 @@ document.getElementById('avatarFileInput').addEventListener('change', async (e) 
 });
 document.getElementById('removeAvatarBtn').addEventListener('click', async () => {
   if (AS.currentUser.avatarBlobId) AS.deleteBlob(AS.currentUser.avatarBlobId);
-  AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = null; AS.currentUser.avatarBytes = 0;
+  AS.currentUser.avatar = null; AS.currentUser.avatarBlobId = null;
   await upsertUserCloudSafe(AS.currentUser);
   renderSidebarProfile(); RENDERERS.profile(); broadcastProfileUpdate();
 });
@@ -1088,6 +1017,3 @@ document.getElementById('openQrFullBtn').addEventListener('click', () => {
 });
 
 document.addEventListener('DOMContentLoaded', () => { setTimeout(boot, 500); });
-```
-
-Sag **"weiter"** für Teil 3: das komplette `notes.js`.
