@@ -1,14 +1,7 @@
 /* ==========================================================================
-   Schoolify — session.js (v8, abgestimmt auf realtime.js v10)
-   ==========================================================================
-   Funktional inhaltlich unverändert zur v7 — angepasst wurden nur Stellen,
-   die mit der neuen Reconnect-Logik in realtime.js zusammenspielen:
-   - connectToPeer() kann jetzt etwas länger brauchen, wenn der eigene Peer
-     gerade im Backoff hängt (kein Dauerspam mehr) — das ist hier bereits
-     korrekt per await abgefangen, keine Änderung nötig.
-   - Kleine Robustheit: renderSessionMembers/renderInviteList greifen defensiv
-     auf ASRealtime.sessionMembers zu (Array-Fallback), falls ASRealtime noch
-     nicht vollständig initialisiert ist.
+   Schoolify — session.js (v8.1, final)
+   - Angepasst an realtime.js v10.1
+   - Zwei Session-Verlassen-Buttons (Wartebereich & aktiver Bereich)
    ========================================================================== */
 
 async function handleSessionJoin() {
@@ -51,12 +44,12 @@ RENDERERS.session = function () {
       colorDark: '#3C4340', colorLight: '#ffffff'
     });
     document.getElementById('sessionIdDisplay').textContent = session.id;
-    document.getElementById('leaveSessionBtn').onclick = leaveSession;
+    document.getElementById('leaveSessionBtnActive').onclick = leaveSession;
     renderSessionMembers(true);
     renderInviteList();
   } else {
     document.getElementById('sessionWaitingText').textContent = 'Warte auf Freigabe durch den Leiter…';
-    document.getElementById('leaveSessionBtn').onclick = leaveSession;
+    document.getElementById('leaveSessionBtnWait').onclick = leaveSession;
     renderSessionMembers(false);
   }
 };
@@ -355,5 +348,6 @@ function handleSessionSyncFlashcards(msg) {
 
 document.addEventListener('DOMContentLoaded', () => {
   on('startSessionBtn', 'click', startSession);
-  on('leaveSessionBtn', 'click', leaveSession);
+  on('leaveSessionBtnWait', 'click', leaveSession);
+  on('leaveSessionBtnActive', 'click', leaveSession);
 });
