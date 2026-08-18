@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Schoolify — realtime.js (v7 FINAL, vollständig, robust)
+   Schoolify — realtime.js (v7 FINAL, korrigiert)
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
@@ -61,6 +61,13 @@ ASRealtime.connectToPeer = function (uid, silent) {
   return new Promise((resolve) => {
     if (myData().blocked.includes(uid)) { resolve(null); return; }
     if (this.conns[uid] && this.conns[uid].open) { resolve(this.conns[uid]); return; }
+
+    // Alte, nicht offene Verbindung schließen und entfernen
+    if (this.conns[uid] && !this.conns[uid].open) {
+      try { this.conns[uid].close(); } catch (e) {}
+      delete this.conns[uid];
+    }
+
     if (!this.peer || this.peer.destroyed) { resolve(null); return; }
     let settled = false;
     let conn;
@@ -445,7 +452,7 @@ async function sendChatMessage() {
   const conn = await ASRealtime.connectToPeer(uid, true);
   if (!conn) {
     AS.toast('Diese Person ist gerade nicht erreichbar — wird automatisch nachgesendet.');
-    ASRealtime.sendReliable(uid, { type: 'chat', text });
+    ASRealtime.sendReliable(uid, { type: 'chat', text }, 'chat_' + Date.now());
   } else {
     ASRealtime.sendTo(uid, { type: 'chat', text });
   }
