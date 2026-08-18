@@ -187,9 +187,7 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .view{animation:fadein .22s ease;}
 @keyframes fadein{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:translateY(0);}}
 
-/* ==========================================================================
-   LOGIN / REGISTRIEREN — Split-Screen mit Vorstellung
-   ========================================================================== */
+/* Auth-Split */
 .auth-wrap{ min-height:100vh; width:100%; display:flex; align-items:center; justify-content:center; padding:24px; position:relative; z-index:1; }
 .auth-shell{ display:flex; width:100%; max-width:980px; min-height:600px; border-radius:26px; overflow:hidden; box-shadow:var(--shadow-2); border:1.5px solid var(--border); }
 .auth-hero{ flex:1.05; background:linear-gradient(160deg, var(--mint-2), var(--sky-2) 55%, var(--peach-2)); padding:44px 40px; display:flex; flex-direction:column; justify-content:center; position:relative; overflow:hidden; }
@@ -365,7 +363,7 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .settings-cat-title{font-size:.68rem; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint); margin:22px 0 8px 4px;}
 .settings-cat-title:first-child{margin-top:0;}
 
-/* ================= Speicherleiste (Collegeblock-Style) ================= */
+/* Speicherleiste */
 .storage-card{position:relative;}
 .storage-label-row{display:flex;justify-content:space-between;align-items:baseline;}
 .storage-bar-track{width:100%;height:22px;border-radius:12px;background:var(--cream-2);border:1.5px dashed var(--border);overflow:hidden;position:relative;}
@@ -373,6 +371,25 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .storage-bar-fill.warn{background:linear-gradient(90deg,var(--butter),var(--peach));}
 .storage-bar-fill.full{background:linear-gradient(90deg,var(--danger),#c96f80);}
 #storageFullMsg{color:var(--danger);font-weight:700;}
+
+/* Materialliste unabhängig scrollbar */
+#materialList {
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* Session */
+#sessionActiveArea .card { min-height: 200px; }
+#sessionQrWrap img, #sessionQrWrap canvas { border-radius: 12px; }
+
+/* Fußzeile */
+.footer-note a {
+  color: var(--ink-soft);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.footer-note a:hover { color: var(--ink); }
 
 @media (max-width: 1080px) and (min-width: 701px){
   .sidebar{ width:var(--sidebar-w-tablet); padding:16px 8px; align-items:center; }
