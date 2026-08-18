@@ -1,10 +1,5 @@
 /* ==========================================================================
-   Schoolify — app.js (v9.3, alle Fixes)
-   - Fehlende Event-Listener ergänzt
-   - Material-Upload implementiert
-   - Wochenvorlagen-Ziel hinzufügen implementiert
-   - Speicheranzeige aktualisiert
-   - cloudPut ohne keepalive, aber flushPendingCloudWrites mit keepalive.
+   Schoolify — app.js (v10.1, Blob-Upload-Fix)
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -39,9 +34,7 @@ async function cloudPut(key, value, useKeepalive = false) {
 
 async function cloudGet(key) {
   try {
-    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
-      method: 'GET'
-    });
+    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'GET' });
     if (!res.ok) return undefined;
     const text = await res.text();
     try { return JSON.parse(text); } catch { return text; }
@@ -50,22 +43,21 @@ async function cloudGet(key) {
 
 async function cloudDelete(key) {
   try {
-    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
-      method: 'DELETE'
-    });
+    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' });
     return res.ok;
   } catch (e) { return false; }
 }
 
-/* Debounce-Verwaltung */
+/* Debounce-Verwaltung (für Cloud-Writes) */
 const _cloudDebounceTimers = {};
 const _cloudDebounceData = {};
+const CLOUD_DEBOUNCE_MS = 10000;
 
-function cloudPutDebounced(key, value, delay = 3000) {
+function cloudPutDebounced(key, value, delay = CLOUD_DEBOUNCE_MS) {
   if (_cloudDebounceTimers[key]) clearTimeout(_cloudDebounceTimers[key]);
   _cloudDebounceData[key] = value;
   _cloudDebounceTimers[key] = setTimeout(() => {
-    cloudPut(key, value); // normaler Writes ohne keepalive
+    cloudPut(key, value);
     delete _cloudDebounceData[key];
     delete _cloudDebounceTimers[key];
   }, delay);
@@ -82,12 +74,10 @@ function flushPendingCloudWrites() {
   const mainKey = AS.currentUser ? dataKey(AS.currentUser.uniqueId) : null;
   const hasMainPending = mainKey && _cloudDebounceData[mainKey] !== undefined;
 
-  // Alle geplanten Writes mit keepalive senden
   Object.keys(_cloudDebounceData).forEach(k => {
     cloudPut(k, _cloudDebounceData[k], true);
   });
 
-  // Hauptdatensatz immer zusätzlich senden, falls noch nicht geplant
   if (mainKey && !hasMainPending && AS.currentData) {
     cloudPut(mainKey, AS.currentData, true);
   }
@@ -98,6 +88,10 @@ function flushPendingCloudWrites() {
 }
 
 window.flushPendingCloudWrites = flushPendingCloudWrites;
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushPendingCloudWrites();
+});
 window.addEventListener('beforeunload', flushPendingCloudWrites);
 
 /* Storage mit Blob-Größenverwaltung */
@@ -119,14 +113,14 @@ function saveBlobSize(uid, blobId, size) {
   AS._blobSizes[blobId] = size;
   const localKey = `as_blob_sizes_${uid}`;
   try { localStorage.setItem(localKey, JSON.stringify(AS._blobSizes)); } catch (e) {}
-  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 5000);
+  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 10000);
 }
 
 function removeBlobSize(uid, blobId) {
   delete AS._blobSizes[blobId];
   const localKey = `as_blob_sizes_${uid}`;
   try { localStorage.setItem(localKey, JSON.stringify(AS._blobSizes)); } catch (e) {}
-  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 5000);
+  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 10000);
 }
 
 AS.storage = {
@@ -138,26 +132,22 @@ AS.storage = {
   },
   set(key, value, opts) {
     const serialized = JSON.stringify(value);
+    try { localStorage.setItem(key, serialized); } catch (e) {
+      if (!AS.cloudEnabled()) {
+        if (isOverLimit(new Blob([serialized]).size)) {
+          AS.toast('Lokaler Speicher (5 MB) voll – bitte alte Dateien/Notizen löschen oder Online-Speicherung aktivieren.');
+          return false;
+        }
+      }
+    }
     if (AS.cloudEnabled()) {
       if (opts && opts.immediate) {
         cloudPut(key, value);
       } else {
-        cloudPutDebounced(key, value);
-      }
-      try { localStorage.setItem(key, serialized); } catch (e) {}
-      return true;
-    } else {
-      const additionalBytes = new Blob([serialized]).size;
-      if (isOverLimit(additionalBytes)) {
-        AS.toast('Lokaler Speicher (5 MB) voll – bitte alte Dateien/Notizen löschen oder Online-Speicherung aktivieren.');
-        return false;
-      }
-      try { localStorage.setItem(key, serialized); return true; }
-      catch (e) {
-        AS.toast('Speicher ist voll – bitte alte Dateien/Notizen löschen.');
-        return false;
+        cloudPutDebounced(key, value, CLOUD_DEBOUNCE_MS);
       }
     }
+    return true;
   },
   setLocalOnly(key, value) {
     try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
@@ -172,18 +162,29 @@ AS.storage = {
 const BLOB_CACHE_PREFIX = 'as_blob_';
 function blobKey(id) { return 'blob_' + id; }
 
+/**
+ * Speichert einen Blob lokal und (falls aktiviert) in der Cloud.
+ * Gibt { ok: boolean, cloudOk: boolean } zurück.
+ */
 AS.saveBlob = async function (id, dataUrl) {
   const size = new Blob([dataUrl]).size;
+  let cloudOk = true;
+
   if (AS.cloudEnabled()) {
-    const ok = await cloudPut(blobKey(id), dataUrl);
-    if (!ok) {
+    cloudOk = await cloudPut(blobKey(id), dataUrl);
+    if (!cloudOk) {
       AS.toast('⚠️ Datei konnte nicht online gespeichert werden – nur lokal verfügbar.');
     }
   }
-  try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
+
+  try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {
+    console.warn('Lokales Speichern des Blobs fehlgeschlagen', e);
+    return { ok: false, cloudOk: false };
+  }
+
   if (AS.currentUser) saveBlobSize(AS.currentUser.uniqueId, id, size);
-  renderStorageBar(); // NEU: Speicheranzeige aktualisieren
-  return true;
+  renderStorageBar();
+  return { ok: true, cloudOk };
 };
 
 AS.getBlobCached = function (id) {
@@ -207,7 +208,7 @@ AS.deleteBlob = function (id) {
   try { localStorage.removeItem(BLOB_CACHE_PREFIX + id); } catch (e) {}
   if (AS.cloudEnabled()) cloudDelete(blobKey(id));
   if (AS.currentUser) removeBlobSize(AS.currentUser.uniqueId, id);
-  renderStorageBar(); // NEU: Speicheranzeige aktualisieren
+  renderStorageBar();
 };
 
 function asyncImg(blobId, onReady) {
@@ -229,15 +230,15 @@ function genShareId() {
 
 async function createShareAndShowQr(pkg, titleForModal) {
   if (!AS.cloudEnabled()) {
-    AS.toast('Bitte aktiviere zuerst die Online-Speicherung (Einstellungen → Sicherheit), um per QR-Code zu teilen.');
+    AS.toast('Bitte aktiviere zuerst die Online-Speicherung, um per QR-Code zu teilen.');
     return;
   }
   const id = genShareId();
   await cloudPut(shareKey(id), pkg);
   const paramName = pkg.type === 'deck' ? 'importDeck' : 'importMaterial';
   const url = `${location.origin}${location.pathname}?${paramName}=${id}`;
-  AS.modal(`<div style="text-align:center;"><h3>${titleForModal} 📤</h3><div id="shareQrWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="tiny">Scannen überträgt den Inhalt direkt in den Account der Person (dort muss die Online-Speicherung ebenfalls aktiv sein).</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="shareQrClose">Schließen</button></div></div>`,
-    (root) => {
+  AS.modal(`<div style="text-align:center;"><h3>${titleForModal} 📤</h3><div id="shareQrWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="tiny">Scannen überträgt den Inhalt direkt in den Account der Person.</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="shareQrClose">Schließen</button></div></div>`,
+    root => {
       new QRCode(root.querySelector('#shareQrWrap'), { text: url, width: 200, height: 200, colorDark: '#3C4340', colorLight: '#ffffff' });
       root.querySelector('#shareQrClose').onclick = AS.closeModal;
     });
@@ -265,7 +266,7 @@ async function handleImportShare() {
   if (!importDeck && !importMaterial) return;
   history.replaceState({}, '', location.pathname);
   if (!AS.cloudEnabled()) {
-    AS.toast('Aktiviere die Online-Speicherung in den Einstellungen, um geteilte Inhalte zu empfangen.');
+    AS.toast('Aktiviere die Online-Speicherung, um geteilte Inhalte zu empfangen.');
     return;
   }
   if (importDeck) {
@@ -273,10 +274,7 @@ async function handleImportShare() {
     if (!pkg || pkg.type !== 'deck') { AS.toast('Dieser Teilen-Link ist nicht mehr gültig.'); return; }
     const newDeckId = 'd_' + Date.now();
     AS.currentData.decks.push({ id: newDeckId, name: pkg.name, color: pkg.color || 'mint' });
-    (pkg.cards || []).forEach(c => AS.currentData.flashcards.push({
-      id: 'c_' + Date.now() + Math.random().toString(36).slice(2, 6),
-      deckId: newDeckId, front: c.front, back: c.back
-    }));
+    (pkg.cards || []).forEach(c => AS.currentData.flashcards.push({ id: 'c_' + Date.now(), deckId: newDeckId, front: c.front, back: c.back }));
     persist();
     AS.toast(`Karteikarten-Stapel "${pkg.name}" wurde hinzugefügt ✦`);
     if (getCurrentViewSafe() === 'learn') RENDERERS.learn();
@@ -285,10 +283,8 @@ async function handleImportShare() {
     const pkg = await cloudGet(shareKey(importMaterial));
     if (!pkg || pkg.type !== 'material') { AS.toast('Dieser Teilen-Link ist nicht mehr gültig.'); return; }
     (pkg.items || []).forEach(it => AS.currentData.materials.push({
-      id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6),
-      name: it.name, subject: it.subject || '', topic: it.topic || '',
-      type: it.type, size: it.size || 0, blobId: it.blobId,
-      favorite: false, addedAt: Date.now()
+      id: 'm_' + Date.now(), name: it.name, subject: it.subject || '', topic: it.topic || '',
+      type: it.type, size: it.size || 0, blobId: it.blobId, favorite: false, addedAt: Date.now()
     }));
     persist();
     AS.toast('Schulmaterial wurde übernommen ✦');
@@ -337,22 +333,14 @@ function defaultData() {
     todoTemplate: { 0: [], 1: [], 2: [], 3: [], 4: [] },
     todoLog: {}, todoStreak: 0, todoBestStreak: 0, todoMode: 'checklist',
     decks: [], flashcards: [],
-    devices: [{
-      id: 'device-' + Math.random().toString(36).slice(2, 8),
-      label: navigator.userAgent.slice(0, 40),
-      lastActive: Date.now()
-    }],
+    devices: [{ id: 'device-' + Math.random().toString(36).slice(2, 8), label: navigator.userAgent.slice(0, 40), lastActive: Date.now() }],
     security: {
       profileVisibility: 'everyone', avatarVisibility: 'everyone', discoverableByUid: true,
       whoCanFriendRequest: 'everyone', whoCanMessage: 'friends', blockUnknown: true,
       onlineStatusVisible: true, onlineStatusFriendsOnly: true, activityStatus: true, readReceipts: true,
       airsignalActive: true, airsignalVisibility: 'friends', airsignalReceiveFrom: 'friends', airsignalAutoAccept: false,
     },
-    settings: {
-      accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false,
-      notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true,
-      language: 'de'
-    },
+    settings: { accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false, notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true, language: 'de' },
     session: null
   };
 }
@@ -373,7 +361,19 @@ AS.saveData = (uid, d, opts) => AS.storage.set(dataKey(uid), d, opts);
 
 AS.currentUser = null;
 AS.currentData = null;
-function persist() { AS.saveData(AS.currentUser.uniqueId, AS.currentData); }
+
+function persist() {
+  if (!AS.currentUser || !AS.currentData) return;
+  try {
+    localStorage.setItem(dataKey(AS.currentUser.uniqueId), JSON.stringify(AS.currentData));
+  } catch (e) {
+    console.warn('Lokales Speichern fehlgeschlagen', e);
+  }
+  if (AS.cloudEnabled()) {
+    cloudPutDebounced(dataKey(AS.currentUser.uniqueId), AS.currentData, CLOUD_DEBOUNCE_MS);
+  }
+  renderStorageBar();
+}
 window.persist = persist;
 
 function generateUniqueId() {
@@ -399,17 +399,13 @@ AS.modal = function (innerHtml, onMount) {
   const root = document.getElementById('modalRoot');
   if (!root) return;
   root.innerHTML = `<div class="modal-backdrop" id="mbackdrop"><div class="modal">${innerHtml}</div></div>`;
-  document.getElementById('mbackdrop').addEventListener('click', (e) => {
-    if (e.target.id === 'mbackdrop') AS.closeModal();
-  });
+  document.getElementById('mbackdrop').addEventListener('click', (e) => { if (e.target.id === 'mbackdrop') AS.closeModal(); });
   if (onMount) onMount(root);
 };
 AS.closeModal = function () { document.getElementById('modalRoot').innerHTML = ''; };
 
 function escapeHtml(s) {
-  return (s || '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[c]));
+  return (s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 window.escapeHtml = escapeHtml;
 
@@ -419,7 +415,7 @@ function confirmModal(title, msg, onYes) {
       <button class="btn btn-ghost btn-sm" id="cfNo">Abbrechen</button>
       <button class="btn btn-danger btn-sm" id="cfYes">Löschen</button>
     </div>`,
-    (root) => {
+    root => {
       root.querySelector('#cfNo').onclick = AS.closeModal;
       root.querySelector('#cfYes').onclick = () => { AS.closeModal(); onYes(); };
     });
@@ -440,11 +436,9 @@ function compressImage(file, maxDim, quality) {
           h = Math.round(h * scale);
         }
         const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
+        canvas.width = w; canvas.height = h;
         const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, w, h);
+        ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
         resolve(canvas.toDataURL('image/jpeg', quality));
       };
@@ -488,11 +482,7 @@ window.usageLimitBytes = usageLimitBytes;
 function usageBytes() {
   let dataSize = 0;
   if (AS.currentData) {
-    try {
-      dataSize = new Blob([JSON.stringify(AS.currentData)]).size;
-    } catch (e) {
-      dataSize = JSON.stringify(AS.currentData).length * 2;
-    }
+    try { dataSize = new Blob([JSON.stringify(AS.currentData)]).size; } catch (e) { dataSize = JSON.stringify(AS.currentData).length * 2; }
   }
   const blobTotal = Object.values(AS._blobSizes || {}).reduce((a, b) => a + (b || 0), 0);
   return dataSize + blobTotal;
@@ -543,7 +533,6 @@ function renderStorageBar() {
 }
 window.renderStorageBar = renderStorageBar;
 
-/* Event-Hilfe für Session-Synchronisierung */
 function notifyDataChange(collection) {
   window.dispatchEvent(new CustomEvent('schoolify:dataChanged', { detail: { collection } }));
 }
@@ -551,18 +540,8 @@ window.notifyDataChange = notifyDataChange;
 
 /* Sprachsystem */
 const I18N = {
-  de: {
-    dashboard: 'Dashboard', timetable: 'Stundenplan', tasks: 'Aufgaben', todo: 'To-Do',
-    learn: 'Lernen', calendar: 'Kalender', notes: 'Notizen', materials: 'Material',
-    friends: 'Freunde', chat: 'Chat', airsignal: 'AirSignal', session: 'Session',
-    security: 'Sicherheit', settings: 'Einstellungen', profile: 'Profil'
-  },
-  en: {
-    dashboard: 'Dashboard', timetable: 'Timetable', tasks: 'Tasks', todo: 'To-Do',
-    learn: 'Learn', calendar: 'Calendar', notes: 'Notes', materials: 'Materials',
-    friends: 'Friends', chat: 'Chat', airsignal: 'AirSignal', session: 'Session',
-    security: 'Security', settings: 'Settings', profile: 'Profile'
-  }
+  de: { dashboard: 'Dashboard', timetable: 'Stundenplan', tasks: 'Aufgaben', todo: 'To-Do', learn: 'Lernen', calendar: 'Kalender', notes: 'Notizen', materials: 'Material', friends: 'Freunde', chat: 'Chat', airsignal: 'AirSignal', session: 'Session', security: 'Sicherheit', settings: 'Einstellungen', profile: 'Profil' },
+  en: { dashboard: 'Dashboard', timetable: 'Timetable', tasks: 'Tasks', todo: 'To-Do', learn: 'Learn', calendar: 'Calendar', notes: 'Notes', materials: 'Materials', friends: 'Friends', chat: 'Chat', airsignal: 'AirSignal', session: 'Session', security: 'Security', settings: 'Settings', profile: 'Profile' }
 };
 function t(key) {
   const lang = AS.currentData?.settings?.language || 'de';
@@ -594,31 +573,16 @@ function initials(user) {
 }
 function renderAvatar(el, user) {
   if (!el) return;
-  if (!user) {
-    el.style.background = 'var(--border)';
-    el.innerHTML = '';
-    return;
-  }
-  if (user.avatar) {
-    el.style.background = 'transparent';
-    el.innerHTML = `<img src="${user.avatar}" alt="">`;
-    return;
-  }
+  if (!user) { el.style.background = 'var(--border)'; el.innerHTML = ''; return; }
+  if (user.avatar) { el.style.background = 'transparent'; el.innerHTML = `<img src="${user.avatar}" alt="">`; return; }
   const [a, b] = avatarGradientFor(user.uniqueId || user.username || 'x');
   el.style.background = `linear-gradient(135deg, ${a}, ${b})`;
   el.innerHTML = initials(user);
   if (user.avatarBlobId) {
     const cached = AS.getBlobCached(user.avatarBlobId);
-    if (cached) {
-      el.style.background = 'transparent';
-      el.innerHTML = `<img src="${cached}" alt="">`;
-      return;
-    }
+    if (cached) { el.style.background = 'transparent'; el.innerHTML = `<img src="${cached}" alt="">`; return; }
     AS.getBlob(user.avatarBlobId).then(data => {
-      if (data && el.isConnected) {
-        el.style.background = 'transparent';
-        el.innerHTML = `<img src="${data}" alt="">`;
-      }
+      if (data && el.isConnected) { el.style.background = 'transparent'; el.innerHTML = `<img src="${data}" alt="">`; }
     });
   }
 }
@@ -644,7 +608,7 @@ function openFriendProfileModal(uid) {
       ${isFriend ? `<button class="btn btn-sm" id="pmChatBtn">Chat öffnen</button>` : ''}
       <button class="btn btn-ghost btn-sm" id="pmCloseBtn">Schließen</button>
     </div>`,
-    (root) => {
+    root => {
       renderAvatar(root.querySelector('#pmAvatar'), p);
       root.querySelector('#pmCloseBtn').onclick = AS.closeModal;
       const chatBtn = root.querySelector('#pmChatBtn');
@@ -657,7 +621,7 @@ function openFriendProfileModal(uid) {
 }
 window.openFriendProfileModal = openFriendProfileModal;
 
-document.addEventListener('click', (e) => {
+document.addEventListener('click', e => {
   const av = e.target.closest('.avatar.clickable[data-uid]');
   if (!av) return;
   if (av.closest('#chatMessages') || av.closest('.chat-header') || av.closest('#chatConvoList')) return;
@@ -699,7 +663,6 @@ function initConsentFlow(next) {
   });
 }
 
-/* Auth-UI Umschalter für Speichermodus */
 function updateAuthStorageToggle() {
   const toggle = document.getElementById('authStorageToggle');
   if (!toggle) return;
@@ -709,17 +672,12 @@ function updateAuthStorageToggle() {
   toggle.checked = cloud;
 }
 
-/* Helper für sichere Event-Listener */
 function on(id, event, fn) {
   const el = document.getElementById(id);
   if (el) el.addEventListener(event, fn);
 }
 
-/* Auth-Funktionen */
-function normName(s) {
-  return (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
+function normName(s) { return (s || '').trim().toLowerCase().replace(/\s+/g, ' '); }
 let forgotUid = null;
 
 function goToRegStep(n) {
@@ -765,7 +723,6 @@ function logout() {
   location.reload();
 }
 
-/* Boot & Router */
 function boot() {
   initConsentFlow(async () => {
     const session = AS.getSession();
@@ -781,7 +738,7 @@ function boot() {
     AS.currentUser = users[session.currentUserId];
     AS.currentData = AS.getData(AS.currentUser.uniqueId);
     await loadBlobSizes(AS.currentUser.uniqueId);
-    renderStorageBar(); // NEU: initiale Speicheranzeige
+    renderStorageBar();
     document.getElementById('authScreen').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
     applyTheme();
@@ -1037,7 +994,7 @@ function openLessonModal(lesson, day, period) {
     <div class="row between list-row"><span>Fällt aus</span><label class="switch"><input type="checkbox" id="lCancelled" ${lesson && lesson.cancelled ? 'checked' : ''}><span class="track"></span></label></div>
     <div class="field"><label>Vertretung (optional)</label><input type="text" id="lSub" value="${lesson ? escapeHtml(lesson.substitution || '') : ''}"></div>
     <div class="row" style="margin-top:14px;gap:8px;justify-content:flex-end;">${isEdit ? '<button class="btn btn-danger btn-sm" id="delLesson">Löschen</button>' : ''}<button class="btn btn-ghost btn-sm" id="cancelLesson">Abbrechen</button><button class="btn btn-sm" id="saveLesson">Speichern</button></div>`,
-    (root) => {
+    root => {
       let chosenColor = lesson ? lesson.color : 'sky';
       root.querySelectorAll('#lColorPick [data-c]').forEach(el => {
         el.addEventListener('click', () => {
@@ -1160,7 +1117,7 @@ function openTaskModal(task) {
       <button class="btn btn-ghost btn-sm" id="cancelTask">Abbrechen</button>
       <button class="btn btn-sm" id="saveTask">Speichern</button>
     </div>`,
-    (root) => {
+    root => {
       root.querySelector('#cancelTask').onclick = AS.closeModal;
       if (isEdit) root.querySelector('#delTask').onclick = () => {
         AS.currentData.tasks = AS.currentData.tasks.filter(t => t.id !== task.id);
@@ -1205,18 +1162,14 @@ function openAddGoalModal() {
       <button class="btn btn-ghost btn-sm" id="agCancel">Abbrechen</button>
       <button class="btn btn-sm" id="agSave">Hinzufügen</button>
     </div>`,
-    (root) => {
+    root => {
       root.querySelector('#agCancel').onclick = AS.closeModal;
       root.querySelector('#agSave').onclick = () => {
         const label = root.querySelector('#agLabel').value.trim();
         const target = +root.querySelector('#agTarget').value || 1;
         if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; }
         if (!AS.currentData.todoTemplate[todoEditDay]) AS.currentData.todoTemplate[todoEditDay] = [];
-        AS.currentData.todoTemplate[todoEditDay].push({
-          id: 'tg_' + Date.now(),
-          label,
-          target
-        });
+        AS.currentData.todoTemplate[todoEditDay].push({ id: 'tg_' + Date.now(), label, target });
         persist();
         AS.closeModal();
         renderTodoTemplate();
@@ -1368,7 +1321,7 @@ function openQuickGoalModal(log) {
       <button class="btn btn-ghost btn-sm" id="qgCancel">Abbrechen</button>
       <button class="btn btn-sm" id="qgSave">Hinzufügen</button>
     </div>`,
-    (root) => {
+    root => {
       root.querySelector('#qgCancel').onclick = AS.closeModal;
       root.querySelector('#qgSave').onclick = () => {
         const label = root.querySelector('#qgLabel').value.trim();
@@ -1475,7 +1428,7 @@ function openCalDayModal(iso) {
       <button class="btn btn-ghost btn-sm" id="ceCancel">Schließen</button>
       <button class="btn btn-sm" id="ceSave">Hinzufügen</button>
     </div>`,
-    (root) => {
+    root => {
       root.querySelector('#ceCancel').onclick = AS.closeModal;
       root.querySelectorAll('[data-quickdel]').forEach(el => {
         el.addEventListener('click', () => {
@@ -1579,14 +1532,13 @@ function iconForType(t) {
   return '📁';
 }
 
-// NEU: Material-Upload Handler
 async function handleMaterialUpload(e) {
   const files = Array.from(e.target.files);
   e.target.value = '';
   if (!files.length) return;
 
   for (const file of files) {
-    // Speicherlimit grob prüfen, wird später genauer geprüft
+    // Vorab prüfen: grobe Größe
     if (isOverLimit(file.size)) {
       AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) – Datei "${file.name}" wurde übersprungen.`);
       continue;
@@ -1602,10 +1554,25 @@ async function handleMaterialUpload(e) {
         dataUrl = await fileToDataUrl(file);
       }
 
+      // Nach Komprimierung erneut prüfen
+      const blobSize = new Blob([dataUrl]).size;
+      if (isOverLimit(blobSize)) {
+        AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) – Datei "${file.name}" wurde übersprungen.`);
+        continue;
+      }
+
       const blobId = 'mat_' + Date.now() + Math.random().toString(36).slice(2, 7);
-      const ok = await AS.saveBlob(blobId, dataUrl);
-      if (!ok) {
+      const saveResult = await AS.saveBlob(blobId, dataUrl);
+      if (!saveResult.ok) {
         AS.toast(`Datei "${file.name}" konnte nicht gespeichert werden.`);
+        continue;
+      }
+      if (!saveResult.cloudOk && AS.cloudEnabled()) {
+        // Cloud-Upload fehlgeschlagen, aber lokal gespeichert.
+        // Materialeintrag nur hinzufügen, wenn der Nutzer es trotzdem will? Oder abbrechen.
+        // Hier brechen wir ab, um spätere 404 zu vermeiden.
+        AS.deleteBlob(blobId); // lokalen Blob wieder löschen
+        AS.toast(`Online-Speicherung fehlgeschlagen – Datei "${file.name}" wurde nicht gespeichert. Bitte versuche es erneut.`);
         continue;
       }
 
@@ -1615,7 +1582,7 @@ async function handleMaterialUpload(e) {
         subject: '',
         topic: '',
         type: file.type,
-        size: new Blob([dataUrl]).size,
+        size: blobSize,
         blobId: blobId,
         favorite: false,
         addedAt: Date.now()
@@ -1692,7 +1659,6 @@ RENDERERS.settings = function () {
     persist();
     applyTheme();
   };
-  // Sprache
   const langSelect = document.getElementById('languageSelect');
   langSelect.value = AS.currentData.settings.language || 'de';
   langSelect.onchange = () => {
@@ -1701,7 +1667,6 @@ RENDERERS.settings = function () {
     updateNavLanguage();
     AS.toast(langSelect.value === 'de' ? 'Sprache: Deutsch' : 'Language: English');
   };
-  // Benachrichtigungen
   const notifBox = document.getElementById('notifSettingsList');
   const notifFields = [['notifFriendRequests', 'Freundschaftsanfragen'], ['notifMessages', 'Neue Nachrichten'], ['notifAirsignal', 'AirSignal'], ['notifTasks', 'Aufgaben & Deadlines']];
   notifBox.innerHTML = notifFields.map(([k, l]) => `<div class="row between list-row"><span>${l}</span><label class="switch"><input type="checkbox" data-notif="${k}" ${AS.currentData.settings[k] ? 'checked' : ''}><span class="track"></span></label></div>`).join('');
@@ -1774,7 +1739,6 @@ window.broadcastProfileUpdate = broadcastProfileUpdate;
    EVENT-LISTENER (zentral, mit Null-Checks)
    ====================================================================== */
 function initAppEvents() {
-  // Auth-Tabs
   document.querySelectorAll('[data-authtab]').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('[data-authtab]').forEach(t => t.classList.remove('active'));
@@ -2078,23 +2042,16 @@ function initAppEvents() {
   on('openQrFullBtn', 'click', () => {
     const qrUrl = `${location.origin}${location.pathname}?addfriend=${AS.currentUser.uniqueId}`;
     AS.modal(`<div style="text-align:center;"><h3>${escapeHtml(AS.currentUser.firstName)}s QR-Code</h3><div id="qrFullWrap" style="display:flex;justify-content:center;margin:16px 0;"></div><p class="pill">${AS.currentUser.uniqueId}</p><p class="tiny" style="margin-top:6px;">Scannen sendet automatisch eine Freundschaftsanfrage.</p><div style="margin-top:14px;"><button class="btn btn-sm btn-ghost" id="qrClose">Schließen</button></div></div>`,
-      (root) => {
+      root => {
         new QRCode(root.querySelector('#qrFullWrap'), { text: qrUrl, width: 220, height: 220, colorDark: '#3C4340', colorLight: '#ffffff' });
         root.querySelector('#qrClose').onclick = AS.closeModal;
       });
   });
 
   // NEUE EVENT-LISTENER FÜR FEHLENDE BUTTONS
-  // Stundenplan
   on('addLessonBtn', 'click', () => openLessonModal(null));
-
-  // Aufgaben
   on('addTaskBtn', 'click', () => openTaskModal(null));
-
-  // To-Do Wochenvorlage
   on('addTodoGoalBtn', 'click', () => openAddGoalModal());
-
-  // Kalender Navigation
   on('calPrevBtn', 'click', () => {
     calViewDate = new Date(calViewDate.getFullYear(), calViewDate.getMonth() - 1, 1);
     RENDERERS.calendar();
@@ -2108,12 +2065,8 @@ function initAppEvents() {
     calViewDate = new Date(calViewDate.getFullYear(), calViewDate.getMonth() + 1, 1);
     RENDERERS.calendar();
   });
-
-  // Material Upload
   on('uploadMaterialBtn', 'click', () => document.getElementById('materialFileInput').click());
   on('materialFileInput', 'change', handleMaterialUpload);
-
-  // Material Suche
   on('materialSearch', 'input', (e) => {
     materialQuery = e.target.value;
     RENDERERS.materials();
