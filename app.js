@@ -1,8 +1,5 @@
 /* ==========================================================================
-   Schoolify — app.js (v11.0, final)
-   - Blob-Upload-Fix: AS.saveBlob gibt {ok, cloudOk} zurück
-   - Material-Upload prüft Cloud-Erfolg
-   - Logout / Alle Geräte abmelden / Account hinzufügen mit try/finally
+   Schoolify — app.js (v11.1, fix: let statt const für Debounce-Objekte)
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -52,8 +49,8 @@ async function cloudDelete(key) {
 }
 
 /* Debounce-Verwaltung (für Cloud-Writes) */
-const _cloudDebounceTimers = {};
-const _cloudDebounceData = {};
+let _cloudDebounceTimers = {};   // ⬅️ geändert von const zu let
+let _cloudDebounceData = {};     // ⬅️ geändert von const zu let
 const CLOUD_DEBOUNCE_MS = 10000;
 
 function cloudPutDebounced(key, value, delay = CLOUD_DEBOUNCE_MS) {
@@ -77,12 +74,23 @@ function flushPendingCloudWrites() {
   const mainKey = AS.currentUser ? dataKey(AS.currentUser.uniqueId) : null;
   const hasMainPending = mainKey && _cloudDebounceData[mainKey] !== undefined;
 
+  // Alle geplanten Writes mit keepalive senden
   Object.keys(_cloudDebounceData).forEach(k => {
-    cloudPut(k, _cloudDebounceData[k], true);
+    // Fehler beim Senden nicht den ganzen Ablauf blockieren lassen
+    try {
+      cloudPut(k, _cloudDebounceData[k], true);
+    } catch (e) {
+      console.warn('cloudPut während flush fehlgeschlagen', k, e);
+    }
   });
 
+  // Hauptdatensatz immer zusätzlich senden, falls noch nicht geplant
   if (mainKey && !hasMainPending && AS.currentData) {
-    cloudPut(mainKey, AS.currentData, true);
+    try {
+      cloudPut(mainKey, AS.currentData, true);
+    } catch (e) {
+      console.warn('cloudPut für Hauptdatensatz fehlgeschlagen', e);
+    }
   }
 
   Object.keys(_cloudDebounceTimers).forEach(k => clearTimeout(_cloudDebounceTimers[k]));
