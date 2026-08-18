@@ -1,6 +1,10 @@
 /* ==========================================================================
-   Schoolify — app.js (v9.2, keepalive-Fix)
-   cloudPut ohne keepalive, aber flushPendingCloudWrites mit keepalive.
+   Schoolify — app.js (v9.3, alle Fixes)
+   - Fehlende Event-Listener ergänzt
+   - Material-Upload implementiert
+   - Wochenvorlagen-Ziel hinzufügen implementiert
+   - Speicheranzeige aktualisiert
+   - cloudPut ohne keepalive, aber flushPendingCloudWrites mit keepalive.
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -178,6 +182,7 @@ AS.saveBlob = async function (id, dataUrl) {
   }
   try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
   if (AS.currentUser) saveBlobSize(AS.currentUser.uniqueId, id, size);
+  renderStorageBar(); // NEU: Speicheranzeige aktualisieren
   return true;
 };
 
@@ -202,6 +207,7 @@ AS.deleteBlob = function (id) {
   try { localStorage.removeItem(BLOB_CACHE_PREFIX + id); } catch (e) {}
   if (AS.cloudEnabled()) cloudDelete(blobKey(id));
   if (AS.currentUser) removeBlobSize(AS.currentUser.uniqueId, id);
+  renderStorageBar(); // NEU: Speicheranzeige aktualisieren
 };
 
 function asyncImg(blobId, onReady) {
@@ -775,6 +781,7 @@ function boot() {
     AS.currentUser = users[session.currentUserId];
     AS.currentData = AS.getData(AS.currentUser.uniqueId);
     await loadBlobSizes(AS.currentUser.uniqueId);
+    renderStorageBar(); // NEU: initiale Speicheranzeige
     document.getElementById('authScreen').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
     applyTheme();
@@ -1188,6 +1195,36 @@ function openTaskModal(task) {
    ====================================================================== */
 let todoEditDay = todayDayIdx() >= 0 ? todayDayIdx() : 0;
 const MOTIVATE_MSGS = ['Weiter so! ✨', 'Du rockst das! 💪', 'Fast geschafft! 🌟', 'Klasse gemacht! 🎉', 'Ein Schritt näher am Cookie 🍪'];
+
+function openAddGoalModal() {
+  const dayLabel = DAYS_FULL[todoEditDay] || '';
+  AS.modal(`<h3>Ziel für ${dayLabel} hinzufügen</h3>
+    <div class="field"><label>Was möchtest du erreichen?</label><input type="text" id="agLabel" placeholder="z. B. 10 Minuten Vokabeln"></div>
+    <div class="field"><label>Zielwert</label><input type="number" id="agTarget" min="1" value="1"></div>
+    <div class="row" style="justify-content:flex-end;gap:8px;">
+      <button class="btn btn-ghost btn-sm" id="agCancel">Abbrechen</button>
+      <button class="btn btn-sm" id="agSave">Hinzufügen</button>
+    </div>`,
+    (root) => {
+      root.querySelector('#agCancel').onclick = AS.closeModal;
+      root.querySelector('#agSave').onclick = () => {
+        const label = root.querySelector('#agLabel').value.trim();
+        const target = +root.querySelector('#agTarget').value || 1;
+        if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; }
+        if (!AS.currentData.todoTemplate[todoEditDay]) AS.currentData.todoTemplate[todoEditDay] = [];
+        AS.currentData.todoTemplate[todoEditDay].push({
+          id: 'tg_' + Date.now(),
+          label,
+          target
+        });
+        persist();
+        AS.closeModal();
+        renderTodoTemplate();
+        AS.toast('Ziel zur Wochenvorlage hinzugefügt.');
+      };
+    });
+}
+
 RENDERERS.todo = function () {
   renderTodoToday();
   renderTodoTemplate();
@@ -1540,6 +1577,59 @@ function iconForType(t) {
   if (t.includes('presentation') || t.includes('powerpoint')) return '📊';
   if (t.includes('word') || t.includes('document')) return '📄';
   return '📁';
+}
+
+// NEU: Material-Upload Handler
+async function handleMaterialUpload(e) {
+  const files = Array.from(e.target.files);
+  e.target.value = '';
+  if (!files.length) return;
+
+  for (const file of files) {
+    // Speicherlimit grob prüfen, wird später genauer geprüft
+    if (isOverLimit(file.size)) {
+      AS.toast(`Speicher voll (${formatBytes(usageLimitBytes())}) – Datei "${file.name}" wurde übersprungen.`);
+      continue;
+    }
+
+    try {
+      const isImg = (file.type || '').includes('image');
+      const lim = limitsFor('material');
+      let dataUrl;
+      if (isImg) {
+        dataUrl = await compressImage(file, lim.maxDim, lim.quality);
+      } else {
+        dataUrl = await fileToDataUrl(file);
+      }
+
+      const blobId = 'mat_' + Date.now() + Math.random().toString(36).slice(2, 7);
+      const ok = await AS.saveBlob(blobId, dataUrl);
+      if (!ok) {
+        AS.toast(`Datei "${file.name}" konnte nicht gespeichert werden.`);
+        continue;
+      }
+
+      AS.currentData.materials.push({
+        id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 7),
+        name: file.name,
+        subject: '',
+        topic: '',
+        type: file.type,
+        size: new Blob([dataUrl]).size,
+        blobId: blobId,
+        favorite: false,
+        addedAt: Date.now()
+      });
+      persist();
+      AS.toast(`"${file.name}" hochgeladen ✓`);
+    } catch (err) {
+      AS.toast(`Fehler bei "${file.name}": ${err.message || err}`);
+    }
+  }
+
+  renderStorageBar();
+  RENDERERS.materials();
+  notifyDataChange('materials');
 }
 
 /* ======================================================================
@@ -1994,6 +2084,42 @@ function initAppEvents() {
       });
   });
 
+  // NEUE EVENT-LISTENER FÜR FEHLENDE BUTTONS
+  // Stundenplan
+  on('addLessonBtn', 'click', () => openLessonModal(null));
+
+  // Aufgaben
+  on('addTaskBtn', 'click', () => openTaskModal(null));
+
+  // To-Do Wochenvorlage
+  on('addTodoGoalBtn', 'click', () => openAddGoalModal());
+
+  // Kalender Navigation
+  on('calPrevBtn', 'click', () => {
+    calViewDate = new Date(calViewDate.getFullYear(), calViewDate.getMonth() - 1, 1);
+    RENDERERS.calendar();
+  });
+  on('calTodayBtn', 'click', () => {
+    const now = new Date();
+    calViewDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    RENDERERS.calendar();
+  });
+  on('calNextBtn', 'click', () => {
+    calViewDate = new Date(calViewDate.getFullYear(), calViewDate.getMonth() + 1, 1);
+    RENDERERS.calendar();
+  });
+
+  // Material Upload
+  on('uploadMaterialBtn', 'click', () => document.getElementById('materialFileInput').click());
+  on('materialFileInput', 'change', handleMaterialUpload);
+
+  // Material Suche
+  on('materialSearch', 'input', (e) => {
+    materialQuery = e.target.value;
+    RENDERERS.materials();
+  });
+
+  // Navigation
   document.querySelectorAll('[data-view]').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
   on('moreNavBtn', 'click', openMoreMenu);
   on('moreSheetBackdrop', 'click', closeMoreMenu);
