@@ -1,13 +1,12 @@
 /* ==========================================================================
-   Schoolify — app.js (v8.1, vollständig, robust gegen fehlende Elemente)
-   Cloudflare-Speicher mit keepalive, sparsamen Writes und Debounce.
-   Alle Event-Listener werden zentral und mit Null-Checks registriert.
+   Schoolify — app.js (v8.2, vollständig, robust gegen fehlende Elemente)
+   Alle Event-Listener über zentrale on()-Funktion mit Null-Check.
    ========================================================================== */
 
 const AS = (window.AS = {});
 
 /* Cloud-Speicher */
-const CLOUD_BASE = "https://speicher-api.xyz.workers.dev/c786ab5ff69c43738470d3a4a9a9c34d";
+const CLOUD_BASE = "https://scholifydatahandler.akkermann-elias.workers.dev";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
@@ -46,9 +45,7 @@ async function cloudDelete(key) {
   } catch (e) {}
 }
 
-/* ---------------------------------------------------------------------- */
-/* Debounce-Verwaltung                                                     */
-/* ---------------------------------------------------------------------- */
+/* Debounce-Verwaltung */
 const _cloudDebounceTimers = {};
 const _cloudDebounceData = {};
 
@@ -89,9 +86,7 @@ function flushPendingCloudWrites() {
 window.flushPendingCloudWrites = flushPendingCloudWrites;
 window.addEventListener('beforeunload', flushPendingCloudWrites);
 
-/* ---------------------------------------------------------------------- */
-/* Storage mit Blob-Größenverwaltung                                       */
-/* ---------------------------------------------------------------------- */
+/* Storage mit Blob-Größenverwaltung */
 AS._blobSizes = {};
 
 async function loadBlobSizes(uid) {
@@ -159,9 +154,7 @@ AS.storage = {
   }
 };
 
-/* ---------------------------------------------------------------------- */
-/* Blob-Speicher                                                          */
-/* ---------------------------------------------------------------------- */
+/* Blob-Speicher */
 const BLOB_CACHE_PREFIX = 'as_blob_';
 function blobKey(id) { return 'blob_' + id; }
 
@@ -203,9 +196,7 @@ function asyncImg(blobId, onReady) {
 }
 window.asyncImg = asyncImg;
 
-/* ---------------------------------------------------------------------- */
-/* Teilen per QR-Code                                                      */
-/* ---------------------------------------------------------------------- */
+/* Teilen per QR-Code */
 function shareKey(id) { return 'share_' + id; }
 function genShareId() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -283,9 +274,7 @@ async function handleImportShare() {
   }
 }
 
-/* ---------------------------------------------------------------------- */
-/* Nutzer-Verzeichnis                                                     */
-/* ---------------------------------------------------------------------- */
+/* Nutzer-Verzeichnis */
 const KEY_USERS = 'as_users';
 const KEY_SESSION = 'as_session';
 const dataKey = (uid) => `as_data_${uid}`;
@@ -413,9 +402,7 @@ function confirmModal(title, msg, onYes) {
 }
 window.confirmModal = confirmModal;
 
-/* ---------------------------------------------------------------------- */
-/* Bild-Kompression                                                       */
-/* ---------------------------------------------------------------------- */
+/* Bild-Kompression */
 function compressImage(file, maxDim, quality) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -468,9 +455,7 @@ function limitsFor(kind) {
 }
 window.limitsFor = limitsFor;
 
-/* ---------------------------------------------------------------------- */
-/* Speicher-Limits & Anzeige                                              */
-/* ---------------------------------------------------------------------- */
+/* Speicher-Limits & Anzeige */
 function usageLimitBytes() {
   return AS.cloudEnabled() ? 12 * 1024 * 1024 : 5 * 1024 * 1024;
 }
@@ -536,9 +521,7 @@ function notifyDataChange(collection) {
 }
 window.notifyDataChange = notifyDataChange;
 
-/* ---------------------------------------------------------------------- */
-/* Avatare                                                                */
-/* ---------------------------------------------------------------------- */
+/* Avatare */
 const AVATAR_GRADIENTS = [
   ['#B7E4D4', '#C3DFF7'],
   ['#F6D3B8', '#F8E39B'],
@@ -633,9 +616,7 @@ function hideSplash() {
   setTimeout(() => s.remove(), 450);
 }
 
-/* ---------------------------------------------------------------------- */
-/* Auth & Consent Flow                                                    */
-/* ---------------------------------------------------------------------- */
+/* Auth & Consent Flow */
 function initConsentFlow(next) {
   const existing = AS.getConsent();
   if (existing) { next(); return; }
@@ -673,17 +654,13 @@ function updateAuthStorageToggle() {
   toggle.checked = cloud;
 }
 
-/* ---------------------------------------------------------------------- */
-/* Helper für sichere Event-Listener                                       */
-/* ---------------------------------------------------------------------- */
+/* Helper für sichere Event-Listener */
 function on(id, event, fn) {
   const el = document.getElementById(id);
   if (el) el.addEventListener(event, fn);
 }
 
-/* ---------------------------------------------------------------------- */
-/* Auth-Funktionen                                                        */
-/* ---------------------------------------------------------------------- */
+/* Auth-Funktionen */
 function normName(s) {
   return (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -1005,9 +982,7 @@ function initAuthEvents() {
   document.querySelectorAll('#moreMenuSheet .sheet-item').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
 }
 
-/* ---------------------------------------------------------------------- */
-/* Boot / Router                                                          */
-/* ---------------------------------------------------------------------- */
+/* Boot / Router */
 function boot() {
   initConsentFlow(async () => {
     const session = AS.getSession();
