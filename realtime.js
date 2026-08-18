@@ -1,6 +1,5 @@
 /* ==========================================================================
    Schoolify — realtime.js (v6 FINAL, vollständig, robust)
-   Alle Event-Listener über on() abgesichert.
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
