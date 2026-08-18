@@ -1,6 +1,5 @@
 /* ==========================================================================
-   Schoolify — notes.js (v7, vollständig)
-   + Debounced Notification für Session-Sync
+   Schoolify — notes.js (v7 FINAL, vollständig)
    ========================================================================== */
 
 const FOLDER_COLORS = [
@@ -46,8 +45,13 @@ RENDERERS.notes = function () { notesView = 'folders'; activeFolderId = null; ac
 
 function renderNotesHead() {
   const headActions = document.getElementById('notesHeadActions');
-  if (notesView === 'folders') { headActions.innerHTML = `<button class="btn btn-sm" id="addFolderBtn">+ Ordner</button>`; document.getElementById('addFolderBtn').addEventListener('click', openFolderCreateModal); }
-  else headActions.innerHTML = '';
+  if (!headActions) return;
+  if (notesView === 'folders') {
+    headActions.innerHTML = `<button class="btn btn-sm" id="addFolderBtn">+ Ordner</button>`;
+    document.getElementById('addFolderBtn').addEventListener('click', openFolderCreateModal);
+  } else {
+    headActions.innerHTML = '';
+  }
 }
 function renderNotesView() {
   document.getElementById('notesFoldersLayer').classList.toggle('hidden', notesView !== 'folders');
@@ -56,8 +60,11 @@ function renderNotesView() {
   renderNotesHead();
   const crumbBox = document.getElementById('notesBreadcrumbs');
   const titleEl = document.getElementById('notesTitle');
-  if (notesView === 'folders') { titleEl.textContent = 'Ordner'; crumbBox.innerHTML = ''; renderFolderGrid(); }
-  else if (notesView === 'pages') {
+  if (notesView === 'folders') {
+    titleEl.textContent = 'Ordner';
+    crumbBox.innerHTML = '';
+    renderFolderGrid();
+  } else if (notesView === 'pages') {
     const folder = AS.currentData.noteFolders.find(f => f.id === activeFolderId);
     titleEl.textContent = folder ? folder.name : 'Seiten';
     crumbBox.innerHTML = `<span class="crumb" data-back="folders">📓 Ordner</span><span class="tiny">/</span><span class="tiny">${escapeHtml(folder ? folder.name : '')}</span>`;
@@ -84,7 +91,12 @@ function renderFolderGrid() {
   }).join('');
   if (folders.length < MAX_FOLDERS) html += `<div class="folder-tile add-tile" id="addFolderTile"><div class="folder-shape">+</div><div class="folder-name">Neuer Ordner</div></div>`;
   grid.innerHTML = html || `<div class="empty" style="grid-column:1/-1;"><div class="em-ic">📓</div>Noch keine Ordner — leg deinen ersten an ♡</div>`;
-  grid.querySelectorAll('[data-folder]').forEach(el => el.addEventListener('click', (e) => { if (e.target.dataset.delfolder) return; activeFolderId = el.dataset.folder; notesView = 'pages'; renderNotesView(); }));
+  grid.querySelectorAll('[data-folder]').forEach(el => el.addEventListener('click', (e) => {
+    if (e.target.dataset.delfolder) return;
+    activeFolderId = el.dataset.folder;
+    notesView = 'pages';
+    renderNotesView();
+  }));
   grid.querySelectorAll('[data-delfolder]').forEach(el => el.addEventListener('click', (e) => {
     e.stopPropagation();
     const f = folders.find(x => x.id === el.dataset.delfolder);
@@ -93,7 +105,9 @@ function renderFolderGrid() {
       pagesToDelete.forEach(p => { if (p.drawingBlobId) AS.deleteBlob(p.drawingBlobId); (p.imageBlobIds || []).forEach(id => AS.deleteBlob(id)); });
       AS.currentData.noteFolders = AS.currentData.noteFolders.filter(x => x.id !== el.dataset.delfolder);
       AS.currentData.notePages = AS.currentData.notePages.filter(p => p.folderId !== el.dataset.delfolder);
-      persist(); renderFolderGrid(); scheduleNoteChange();
+      persist();
+      renderFolderGrid();
+      scheduleNoteChange();
     });
   }));
   const addTile = document.getElementById('addFolderTile');
@@ -105,16 +119,25 @@ function openFolderCreateModal() {
   AS.modal(`<h3>Neuer Ordner 📓</h3>
     <div class="field"><label>Name</label><input type="text" id="fName" placeholder="z. B. Mathe" maxlength="24"></div>
     <div class="field"><label>Farbe (nur Pastell &amp; Verläufe)</label><div class="row wrap" id="folderColorPick" style="gap:8px;">${FOLDER_COLORS.map((c, i) => `<div class="color-swatch ${i === 0 ? 'selected' : ''}" data-c="${c.key}" style="background:${c.css};"></div>`).join('')}</div></div>
-    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px;"><button class="btn btn-ghost btn-sm" id="fCancel">Abbrechen</button><button class="btn btn-sm" id="fSave">Ordner erstellen</button></div>`, (root) => {
-    root.querySelectorAll('#folderColorPick .color-swatch').forEach(el => el.addEventListener('click', () => { chosenColor = el.dataset.c; root.querySelectorAll('#folderColorPick .color-swatch').forEach(x => x.classList.remove('selected')); el.classList.add('selected'); }));
-    root.querySelector('#fCancel').onclick = AS.closeModal;
-    root.querySelector('#fSave').onclick = () => {
-      const name = root.querySelector('#fName').value.trim();
-      if (!name) { AS.toast('Bitte einen Namen angeben.'); return; }
-      AS.currentData.noteFolders.push({ id: 'f_' + Date.now(), name, color: chosenColor });
-      persist(); AS.closeModal(); renderNotesView(); AS.toast('Ordner erstellt ✦'); scheduleNoteChange();
-    };
-  });
+    <div class="row" style="justify-content:flex-end;gap:8px;margin-top:8px;"><button class="btn btn-ghost btn-sm" id="fCancel">Abbrechen</button><button class="btn btn-sm" id="fSave">Ordner erstellen</button></div>`,
+    (root) => {
+      root.querySelectorAll('#folderColorPick .color-swatch').forEach(el => el.addEventListener('click', () => {
+        chosenColor = el.dataset.c;
+        root.querySelectorAll('#folderColorPick .color-swatch').forEach(x => x.classList.remove('selected'));
+        el.classList.add('selected');
+      }));
+      root.querySelector('#fCancel').onclick = AS.closeModal;
+      root.querySelector('#fSave').onclick = () => {
+        const name = root.querySelector('#fName').value.trim();
+        if (!name) { AS.toast('Bitte einen Namen angeben.'); return; }
+        AS.currentData.noteFolders.push({ id: 'f_' + Date.now(), name, color: chosenColor });
+        persist();
+        AS.closeModal();
+        renderNotesView();
+        AS.toast('Ordner erstellt ✦');
+        scheduleNoteChange();
+      };
+    });
 }
 
 /* Seiten */
@@ -135,14 +158,21 @@ function renderPageGrid() {
     const p = pages.find(x => x.id === el.dataset.pagethumb);
     if (p.drawingBlobId) asyncImg(p.drawingBlobId, (data) => { el.innerHTML = `<img src="${data}" alt="">`; });
   });
-  grid.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', (e) => { if (e.target.dataset.delpage) return; activePageId = el.dataset.page; notesView = 'editor'; renderNotesView(); }));
+  grid.querySelectorAll('[data-page]').forEach(el => el.addEventListener('click', (e) => {
+    if (e.target.dataset.delpage) return;
+    activePageId = el.dataset.page;
+    notesView = 'editor';
+    renderNotesView();
+  }));
   grid.querySelectorAll('[data-delpage]').forEach(el => el.addEventListener('click', (e) => {
     e.stopPropagation();
     confirmModal('Seite löschen?', 'Diese Notizseite wird unwiderruflich gelöscht.', () => {
       const p = AS.currentData.notePages.find(x => x.id === el.dataset.delpage);
       if (p) { if (p.drawingBlobId) AS.deleteBlob(p.drawingBlobId); (p.imageBlobIds || []).forEach(id => AS.deleteBlob(id)); }
       AS.currentData.notePages = AS.currentData.notePages.filter(x => x.id !== el.dataset.delpage);
-      persist(); renderPageGrid(); scheduleNoteChange();
+      persist();
+      renderPageGrid();
+      scheduleNoteChange();
     });
   }));
   const addTile = document.getElementById('addPageTile');
@@ -152,8 +182,12 @@ function createNewPage() {
   const pages = AS.currentData.notePages.filter(p => p.folderId === activeFolderId);
   if (pages.length >= MAX_PAGES) { AS.toast(`Maximal ${MAX_PAGES} Seiten pro Ordner möglich.`); return; }
   const page = { id: 'p_' + Date.now(), folderId: activeFolderId, title: '', paper: AS.currentData.settings.paperStyle || 'kariert', body: '', drawingBlobId: null, imageBlobIds: [], updatedAt: Date.now() };
-  AS.currentData.notePages.push(page); persist();
-  activePageId = page.id; notesView = 'editor'; renderNotesView(); scheduleNoteChange();
+  AS.currentData.notePages.push(page);
+  persist();
+  activePageId = page.id;
+  notesView = 'editor';
+  renderNotesView();
+  scheduleNoteChange();
 }
 
 /* Editor */
@@ -185,7 +219,12 @@ function renderPageEditor() {
     if (!penActive) textarea.focus();
   }
   penColorRow.innerHTML = PEN_COLORS.map((c) => `<div class="pen-color-dot ${c === currentPenColor ? 'selected' : ''}" data-pen="${c}" style="background:${c};"></div>`).join('');
-  penColorRow.querySelectorAll('[data-pen]').forEach(el => el.addEventListener('click', () => { currentPenColor = el.dataset.pen; penColorRow.querySelectorAll('[data-pen]').forEach(x => x.classList.remove('selected')); el.classList.add('selected'); if (drawCtx) drawCtx.strokeStyle = currentPenColor; }));
+  penColorRow.querySelectorAll('[data-pen]').forEach(el => el.addEventListener('click', () => {
+    currentPenColor = el.dataset.pen;
+    penColorRow.querySelectorAll('[data-pen]').forEach(x => x.classList.remove('selected'));
+    el.classList.add('selected');
+    if (drawCtx) drawCtx.strokeStyle = currentPenColor;
+  }));
   applyPenUI();
 
   textarea.value = page.body || '';
@@ -200,7 +239,10 @@ function renderPageEditor() {
     confirmModal('Zeichnung löschen?', 'Die aktuelle Zeichnung auf dieser Seite wird entfernt (dein Text bleibt erhalten).', () => {
       drawCtx.clearRect(0, 0, canvas.width, canvas.height);
       if (page.drawingBlobId) { AS.deleteBlob(page.drawingBlobId); page.drawingBlobId = null; }
-      page.updatedAt = Date.now(); persist(); scheduleNoteChange(); AS.toast('Zeichnung gelöscht.');
+      page.updatedAt = Date.now();
+      persist();
+      scheduleNoteChange();
+      AS.toast('Zeichnung gelöscht.');
     });
   };
   document.getElementById('deletePageBtn').onclick = () => {
@@ -208,7 +250,10 @@ function renderPageEditor() {
       if (page.drawingBlobId) AS.deleteBlob(page.drawingBlobId);
       (page.imageBlobIds || []).forEach(id => AS.deleteBlob(id));
       AS.currentData.notePages = AS.currentData.notePages.filter(p => p.id !== page.id);
-      persist(); notesView = 'pages'; renderNotesView(); scheduleNoteChange();
+      persist();
+      notesView = 'pages';
+      renderNotesView();
+      scheduleNoteChange();
     });
   };
 
@@ -222,7 +267,11 @@ function renderPageEditor() {
         const dataUrl = await compressImage(file, lim.maxDim, lim.quality);
         const blobId = 'nimg_' + Date.now() + Math.random().toString(36).slice(2, 7);
         await AS.saveBlob(blobId, dataUrl);
-        page.imageBlobIds.push(blobId); page.updatedAt = Date.now(); persist(); renderImgStrip(page); scheduleNoteChange();
+        page.imageBlobIds.push(blobId);
+        page.updatedAt = Date.now();
+        persist();
+        renderImgStrip(page);
+        scheduleNoteChange();
       } catch (err) { AS.toast(`"${file.name}" konnte nicht verarbeitet werden.`); }
     }
     imgInput.value = '';
@@ -234,12 +283,20 @@ function renderPageEditor() {
 function renderImgStrip(page) {
   const strip = document.getElementById('noteImgStrip');
   strip.innerHTML = page.imageBlobIds.map((blobId, i) => `<div style="position:relative;" data-imgslot="${blobId}"><div style="width:74px;height:74px;border-radius:8px;border:1.5px solid var(--border);background:var(--cream-2);display:flex;align-items:center;justify-content:center;">⏳</div><span class="tiny" data-delimg="${i}" style="position:absolute;top:-4px;right:-4px;background:var(--danger-bg);color:var(--danger);border-radius:50%;width:18px;height:18px;display:flex;align-items:center;justify-content:center;cursor:pointer;">✕</span></div>`).join('');
-  strip.querySelectorAll('[data-imgslot]').forEach(el => { asyncImg(el.dataset.imgslot, (data) => { el.querySelector('div').outerHTML = `<img src="${data}" style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1.5px solid var(--border);">`; }); });
+  strip.querySelectorAll('[data-imgslot]').forEach(el => {
+    asyncImg(el.dataset.imgslot, (data) => {
+      el.querySelector('div').outerHTML = `<img src="${data}" style="width:74px;height:74px;object-fit:cover;border-radius:8px;border:1.5px solid var(--border);">`;
+    });
+  });
   strip.querySelectorAll('[data-delimg]').forEach(el => el.addEventListener('click', () => {
     const idx = +el.dataset.delimg;
     const blobId = page.imageBlobIds[idx];
     if (blobId) AS.deleteBlob(blobId);
-    page.imageBlobIds.splice(idx, 1); page.updatedAt = Date.now(); persist(); renderImgStrip(page); scheduleNoteChange();
+    page.imageBlobIds.splice(idx, 1);
+    page.updatedAt = Date.now();
+    persist();
+    renderImgStrip(page);
+    scheduleNoteChange();
   }));
 }
 
@@ -247,13 +304,17 @@ function setupCanvas(page, canvas) {
   const rectW = canvas.parentElement.clientWidth;
   const rectH = canvas.parentElement.clientHeight || 820;
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = rectW * dpr; canvas.height = rectH * dpr;
-  canvas.style.width = rectW + 'px'; canvas.style.height = rectH + 'px';
+  canvas.width = rectW * dpr;
+  canvas.height = rectH * dpr;
+  canvas.style.width = rectW + 'px';
+  canvas.style.height = rectH + 'px';
   drawCtx = canvas.getContext('2d');
   drawCtx.clearRect(0, 0, canvas.width, canvas.height);
   drawCtx.scale(dpr, dpr);
-  drawCtx.lineCap = 'round'; drawCtx.lineJoin = 'round';
-  drawCtx.strokeStyle = currentPenColor; drawCtx.lineWidth = 2.6;
+  drawCtx.lineCap = 'round';
+  drawCtx.lineJoin = 'round';
+  drawCtx.strokeStyle = currentPenColor;
+  drawCtx.lineWidth = 2.6;
 
   if (page.drawingBlobId) {
     asyncImg(page.drawingBlobId, (data) => {
@@ -263,19 +324,46 @@ function setupCanvas(page, canvas) {
     });
   }
 
-  function getPos(e) { const rect = canvas.getBoundingClientRect(); const t = e.touches ? e.touches[0] : e; return { x: t.clientX - rect.left, y: t.clientY - rect.top }; }
-  function start(e) { if (!canvas.classList.contains('pen-active')) return; drawCtx.strokeStyle = currentPenColor; drawing = true; lastPt = getPos(e); e.preventDefault(); }
-  function move(e) { if (!drawing) return; const p = getPos(e); drawCtx.beginPath(); drawCtx.moveTo(lastPt.x, lastPt.y); drawCtx.lineTo(p.x, p.y); drawCtx.stroke(); lastPt = p; e.preventDefault(); }
+  function getPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const t = e.touches ? e.touches[0] : e;
+    return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+  }
+  function start(e) {
+    if (!canvas.classList.contains('pen-active')) return;
+    drawCtx.strokeStyle = currentPenColor;
+    drawing = true;
+    lastPt = getPos(e);
+    e.preventDefault();
+  }
+  function move(e) {
+    if (!drawing) return;
+    const p = getPos(e);
+    drawCtx.beginPath();
+    drawCtx.moveTo(lastPt.x, lastPt.y);
+    drawCtx.lineTo(p.x, p.y);
+    drawCtx.stroke();
+    lastPt = p;
+    e.preventDefault();
+  }
   function end() {
-    if (!drawing) return; drawing = false;
+    if (!drawing) return;
+    drawing = false;
     if (drawSaveTimer) clearTimeout(drawSaveTimer);
     drawSaveTimer = setTimeout(async () => {
       const dataUrl = DRAW_QUALITY !== undefined ? canvas.toDataURL(DRAW_MIME, DRAW_QUALITY) : canvas.toDataURL(DRAW_MIME);
       const blobId = page.drawingBlobId || ('draw_' + page.id);
       await AS.saveBlob(blobId, dataUrl);
-      page.drawingBlobId = blobId; page.updatedAt = Date.now(); persist(); scheduleNoteChange();
+      page.drawingBlobId = blobId;
+      page.updatedAt = Date.now();
+      persist();
+      scheduleNoteChange();
     }, 800);
   }
-  canvas.onmousedown = start; canvas.onmousemove = move; window.addEventListener('mouseup', end);
-  canvas.ontouchstart = start; canvas.ontouchmove = move; canvas.ontouchend = end;
+  canvas.onmousedown = start;
+  canvas.onmousemove = move;
+  window.addEventListener('mouseup', end);
+  canvas.ontouchstart = start;
+  canvas.ontouchmove = move;
+  canvas.ontouchend = end;
 }
