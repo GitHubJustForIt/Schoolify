@@ -1,7 +1,7 @@
 /* ==========================================================================
-   Schoolify — Design System v5
-   Collegeblock-Ästhetik, neutrale Mint-Pastelltöne. Einladenderer
-   Login-Bereich, Text+Zeichnen auf einer Notizseite vereint.
+   Schoolify — Design System (final)
+   Collegeblock-Ästhetik, neutrale Mint-Pastelltöne (Akzentfarbe global
+   änderbar), responsive für Handy / Tablet / Desktop.
    ========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500;1,9..144,600&family=Figtree:wght@400;500;600;700;800&family=Caveat:wght@500;600;700&display=swap');
@@ -94,7 +94,6 @@ body[data-paper="liniert"] .bg-pattern{
 #cookieBanner h3{margin:0 0 6px 0; font-size:1.05rem;}
 #cookieBanner p{margin:0 0 12px 0; font-size:.82rem; color:var(--ink-soft);}
 
-/* ---- Sidebar: Desktop ---- */
 .sidebar{ width:var(--sidebar-w); flex-shrink:0; padding:20px 12px; display:flex; flex-direction:column; gap:2px; border-right:1.5px solid var(--border); position:relative; overflow-y:auto; }
 .sidebar::after{ content:""; position:absolute; right:0; top:14px; bottom:14px; width:6px; background-image:radial-gradient(var(--cream) 2.5px, transparent 3px); background-size:6px 16px; }
 .brand{ display:flex; align-items:center; gap:9px; padding:6px 10px 16px 10px; font-family:var(--font-display); font-size:1.2rem; font-weight:700; }
@@ -189,7 +188,7 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 @keyframes fadein{from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:translateY(0);}}
 
 /* ==========================================================================
-   LOGIN / REGISTRIEREN — Split-Screen mit Vorstellung (neu, einladender)
+   LOGIN / REGISTRIEREN — Split-Screen mit Vorstellung
    ========================================================================== */
 .auth-wrap{ min-height:100vh; width:100%; display:flex; align-items:center; justify-content:center; padding:24px; position:relative; z-index:1; }
 .auth-shell{ display:flex; width:100%; max-width:980px; min-height:600px; border-radius:26px; overflow:hidden; box-shadow:var(--shadow-2); border:1.5px solid var(--border); }
@@ -252,7 +251,6 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .tt-now-line::before{content:"";position:absolute; left:-5px; top:-4px; width:9px; height:9px; border-radius:50%; background:var(--danger);}
 .tt-now-badge{ position:absolute; left:-4px; top:-9px; background:var(--danger); color:#fff; font-size:.58rem; font-weight:800; padding:1px 5px; border-radius:6px; transform:translateX(-100%); white-space:nowrap; }
 
-/* ================= NOTIZEN — Ordner/Seiten ================= */
 .folder-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(120px,1fr)); gap:16px;}
 .folder-tile{ cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:6px; padding:6px; border-radius:12px; transition:transform .12s ease; position:relative; }
 .folder-tile:hover{transform:translateY(-3px);}
@@ -278,7 +276,6 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .color-swatch{width:30px; height:30px; border-radius:9px; cursor:pointer; border:2.5px solid transparent; flex-shrink:0;}
 .color-swatch.selected{border-color:var(--ink);}
 
-/* --- Notiz-Editor: Text UND Zeichnen auf EINER Seite (kein Umschalten) --- */
 .note-editor-toolbar{display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:10px 12px; border-bottom:1.5px solid var(--border); background:var(--cream-2); position:sticky; top:0; z-index:2; border-radius:16px 16px 0 0;}
 .note-toolbar-group{display:flex; gap:4px; background:var(--white); padding:3px; border-radius:10px; border:1.5px solid var(--border);}
 .note-page-surface{ position:relative; background:var(--white); border:1.5px solid var(--border); border-radius:0 0 16px 16px; height:820px; overflow:hidden; background-image:linear-gradient(var(--paper-line) 1px, transparent 1px); background-size:100% 30px; }
@@ -298,7 +295,6 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .pen-color-dot{width:20px; height:20px; border-radius:50%; cursor:pointer; border:2px solid transparent;}
 .pen-color-dot.selected{border-color:var(--ink);}
 
-/* ================= TO-DO ================= */
 .todo-check-row{ display:flex; align-items:center; gap:12px; padding:12px 10px; border-bottom:1px dashed var(--border); }
 .todo-check-row:last-child{border-bottom:none;}
 .todo-check-row.done .todo-check-label{text-decoration:line-through; color:var(--ink-faint);}
@@ -320,7 +316,6 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .streak-badge{display:inline-flex; align-items:center; gap:5px; font-size:.78rem; font-weight:800; background:var(--butter-2); padding:4px 11px; border-radius:999px;}
 .motivate-msg{font-family:var(--font-hand); font-size:1.15rem; font-weight:700; color:var(--ink-soft); margin-top:6px;}
 
-/* ================= LERNEN ================= */
 .deck-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:16px;}
 .deck-tile{cursor:pointer; border-radius:14px; padding:16px 14px; position:relative; box-shadow:var(--shadow-1); min-height:100px; display:flex; flex-direction:column; justify-content:space-between; border:1.5px solid var(--border);}
 .deck-tile strong{font-size:.9rem;}
@@ -335,7 +330,6 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .card-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:14px;}
 .card-tile{ border-radius:12px; border:1.5px solid var(--border); background:var(--white); padding:12px; position:relative; box-shadow:var(--shadow-1); }
 
-/* ================= KALENDER ================= */
 .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:6px;}
 .cal-daylabel{font-size:.66rem; font-weight:800; color:var(--ink-soft); text-align:center; padding-bottom:4px;}
 .cal-cell{ min-height:70px; border-radius:10px; border:1.5px dashed var(--border); padding:6px; cursor:pointer; font-size:.72rem; position:relative; }
@@ -344,7 +338,6 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .cal-cell .cal-num{font-weight:800; font-size:.75rem;}
 .cal-dot{width:6px; height:6px; border-radius:50%; display:inline-block; margin:2px 1px 0 0;}
 
-/* ================= CHAT ================= */
 .chat-shell{display:flex; gap:0; min-height:460px;}
 .chat-side{width:210px; border-right:1.5px solid var(--border); padding:12px; flex-shrink:0; overflow-y:auto;}
 .chat-main{flex:1; display:flex; flex-direction:column; min-width:0;}
@@ -356,7 +349,6 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .chat-file-chip{display:flex; align-items:center; gap:8px; background:var(--cream-2); border-radius:12px; padding:8px 10px; font-size:.78rem; max-width:220px;}
 .chat-date-sep{text-align:center; font-size:.66rem; color:var(--ink-faint); margin:10px 0; font-weight:700;}
 
-/* ================= AIRSIGNAL ================= */
 .air-friend-chip{ display:flex; flex-direction:column; align-items:center; gap:5px; cursor:pointer; padding:6px; border-radius:12px; border:2px solid transparent; transition:.15s; position:relative; }
 .air-friend-chip.selected{border-color:var(--accent); background:var(--accent-2);}
 .air-friend-chip .sel-check{ position:absolute; top:-2px; right:2px; width:18px; height:18px; border-radius:50%; background:var(--success); color:#fff; font-size:.65rem; display:flex; align-items:center; justify-content:center; }
@@ -372,6 +364,15 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 
 .settings-cat-title{font-size:.68rem; font-weight:800; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint); margin:22px 0 8px 4px;}
 .settings-cat-title:first-child{margin-top:0;}
+
+/* ================= Speicherleiste (Collegeblock-Style) ================= */
+.storage-card{position:relative;}
+.storage-label-row{display:flex;justify-content:space-between;align-items:baseline;}
+.storage-bar-track{width:100%;height:22px;border-radius:12px;background:var(--cream-2);border:1.5px dashed var(--border);overflow:hidden;position:relative;}
+.storage-bar-fill{height:100%;border-radius:12px 0 0 12px;background:linear-gradient(90deg,var(--mint),var(--sky));transition:width .3s ease, background .3s ease;}
+.storage-bar-fill.warn{background:linear-gradient(90deg,var(--butter),var(--peach));}
+.storage-bar-fill.full{background:linear-gradient(90deg,var(--danger),#c96f80);}
+#storageFullMsg{color:var(--danger);font-weight:700;}
 
 @media (max-width: 1080px) and (min-width: 701px){
   .sidebar{ width:var(--sidebar-w-tablet); padding:16px 8px; align-items:center; }
@@ -402,12 +403,3 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 @media (max-width:420px){
   .grid-2, .grid-3{grid-template-columns:1fr;}
 }
-
-/* ================= Speicherleiste (Collegeblock-Style) ================= */
-.storage-card{position:relative;}
-.storage-label-row{display:flex;justify-content:space-between;align-items:baseline;}
-.storage-bar-track{width:100%;height:22px;border-radius:12px;background:var(--cream-2);border:1.5px dashed var(--border);overflow:hidden;position:relative;}
-.storage-bar-fill{height:100%;border-radius:12px 0 0 12px;background:linear-gradient(90deg,var(--mint),var(--sky));transition:width .3s ease, background .3s ease;}
-.storage-bar-fill.warn{background:linear-gradient(90deg,var(--butter),var(--peach));}
-.storage-bar-fill.full{background:linear-gradient(90deg,var(--danger),#c96f80);}
-#storageFullMsg{color:var(--danger);font-weight:700;}
