@@ -1,13 +1,13 @@
 /* ==========================================================================
-   Schoolify — app.js (v8.5 FINAL, vollständig, robust)
-   Cloudflare-Speicher mit keepalive, sparsamen Writes, Debounce,
-   12 MB Online- / 5 MB Lokal-Limit, alle Event-Listener abgesichert.
+   Schoolify — app.js (v8.6 FINAL KOMPLETT)
+   Cloudflare-Speicher mit keepalive, sparsamen Writes und Debounce.
+   Alle Event-Listener robust über on().
    ========================================================================== */
 
 const AS = (window.AS = {});
 
 /* Cloud-Speicher */
-const CLOUD_BASE = "https://scholifydatahandler.akkermann-elias.workers.dev";
+const CLOUD_BASE = "https://speicher-api.xyz.workers.dev/c786ab5ff69c43738470d3a4a9a9c34d";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
