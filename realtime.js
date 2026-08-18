@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Schoolify — realtime.js (v8.0, robustes Peer-System)
+   Schoolify — realtime.js (v8.1, PeerJS-Backoff)
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
@@ -7,6 +7,7 @@ const ASRealtime = (window.ASRealtime = {
   _reconnectTimer: null, _pendingRequests: {},
   sessionHostUid: null, sessionMembers: [], sessionId: null,
   sessionInviteCooldowns: {},
+  _serverOverloaded: false,
 });
 
 function myData() { return AS.currentData; }
@@ -23,20 +24,27 @@ const ICE_CONFIG = {
   ]
 };
 
+// Eigener API-Key möglich (kostenlos unter https://peerjs.com/peerserver)
+const PEERJS_KEY = 'peerjs'; // <-- Hier eigenen Key eintragen, wenn vorhanden
+
 const PEERJS_OPTIONS = {
   debug: 1,
   host: '0.peerjs.com',
   port: 443,
   path: '/',
+  key: PEERJS_KEY,
   secure: true,
   config: ICE_CONFIG
 };
 
 ASRealtime.init = function (uid) {
   if (this.peer && !this.peer.destroyed) return;
+  this._serverOverloaded = false;
   this._createPeer(uid);
   if (this._reconnectTimer) clearInterval(this._reconnectTimer);
-  this._reconnectTimer = setInterval(() => this._reconnectAllFriends(), 5000);
+  this._reconnectTimer = setInterval(() => {
+    if (!this._serverOverloaded) this._reconnectAllFriends();
+  }, 15000); // alle 15 Sekunden statt 5
 };
 
 ASRealtime._createPeer = function (uid) {
@@ -51,6 +59,7 @@ ASRealtime._createPeer = function (uid) {
 
   this.peer.on('open', () => {
     console.log('[PeerJS] Verbunden mit Signalisierungsserver.');
+    this._serverOverloaded = false;
     this._reconnectAllFriends();
     this._retryPendingRequests();
   });
@@ -59,21 +68,30 @@ ASRealtime._createPeer = function (uid) {
 
   this.peer.on('disconnected', () => {
     console.warn('[PeerJS] Verbindung zum Server verloren, versuche Neustart...');
-    if (this.peer && !this.peer.destroyed) {
+    if (!this._serverOverloaded && this.peer && !this.peer.destroyed) {
       try { this.peer.reconnect(); } catch (e) {}
     }
   });
 
   this.peer.on('close', () => {
     console.log('[PeerJS] Peer geschlossen, starte neu...');
-    setTimeout(() => {
-      if (AS.currentUser) this._createPeer(AS.currentUser.uniqueId);
-    }, 2000);
+    if (!this._serverOverloaded) {
+      setTimeout(() => {
+        if (AS.currentUser) this._createPeer(AS.currentUser.uniqueId);
+      }, 2000);
+    }
   });
 
   this.peer.on('error', (err) => {
     const msg = String(err);
     console.error('[PeerJS] Fehler:', msg);
+    if (msg.includes('429')) {
+      // Server überlastet, automatische Wiederverbindung stoppen
+      this._serverOverloaded = true;
+      if (this._reconnectTimer) clearInterval(this._reconnectTimer);
+      AS.toast('Der Peer-Server ist gerade überlastet. Bitte versuche es später erneut.');
+      return;
+    }
     if (msg.includes('unavailable-id')) {
       AS.toast('Dein Account ist bereits in einem anderen Tab geöffnet.');
       return;
@@ -86,7 +104,7 @@ ASRealtime._createPeer = function (uid) {
 };
 
 ASRealtime._reconnectAllFriends = function () {
-  if (!AS.currentData) return;
+  if (this._serverOverloaded || !AS.currentData) return;
   myData().friends.forEach(fid => {
     if (myData().blocked.includes(fid)) return;
     if (!(this.conns[fid] && this.conns[fid].open)) this.connectToPeer(fid, true);
