@@ -1,26 +1,25 @@
 /* ==========================================================================
-   Schoolify — session.js (v1)
-   Gemeinsame Session: QR-Beitritt, Mitgliederverwaltung, Live-Sync.
+   Schoolify — session.js (v1 FINAL, vollständig)
    ========================================================================== */
 
-let sessionQRCode = null;
-
-/* Beim Boot: URL-Parameter ?joinsession=<id>&host=<hostUid> prüfen */
 async function handleSessionJoin() {
   const params = new URLSearchParams(location.search);
   const sessionId = params.get('joinsession');
   const hostUid = params.get('host');
   if (!sessionId || !hostUid) return;
   history.replaceState({}, '', location.pathname);
-  if (!AS.cloudEnabled()) { AS.toast('Für Sessions ist die Online-Speicherung erforderlich.'); return; }
-  const btn = document.getElementById('sessionJoinBtn');
-  if (btn) btn.disabled = true;
+  if (!AS.cloudEnabled()) {
+    AS.toast('Für Sessions ist die Online-Speicherung erforderlich.');
+    return;
+  }
   const conn = await ASRealtime.connectToPeer(hostUid, true);
-  if (!conn) { AS.toast('Der Session-Leiter ist nicht erreichbar.'); if (btn) btn.disabled = false; return; }
+  if (!conn) {
+    AS.toast('Der Session-Leiter ist nicht erreichbar.');
+    return;
+  }
   ASRealtime.sendTo(hostUid, { type: 'session_join', sessionId, profile: publicProfile() });
 }
 
-/* Session-View rendern */
 RENDERERS.session = function () {
   const isHost = AS.currentData.session && AS.currentData.session.hostUid === AS.currentUser.uniqueId;
   const isMember = ASRealtime.sessionMembers.includes(AS.currentUser.uniqueId) || isHost;
@@ -31,13 +30,11 @@ RENDERERS.session = function () {
   document.getElementById('sessionWaitingArea').classList.toggle('hidden', isHost || isMember);
 
   if (!isHost && !isMember) {
-    // Zeige Start-Button
     document.getElementById('startSessionBtn').onclick = startSession;
     return;
   }
 
   if (isHost) {
-    // Host-Ansicht
     document.getElementById('sessionQrWrap').innerHTML = '';
     const url = `${location.origin}${location.pathname}?joinsession=${session.id}&host=${AS.currentUser.uniqueId}`;
     new QRCode(document.getElementById('sessionQrWrap'), { text: url, width: 200, height: 200, colorDark: '#3C4340', colorLight: '#ffffff' });
@@ -45,7 +42,6 @@ RENDERERS.session = function () {
     document.getElementById('leaveSessionBtn').onclick = leaveSession;
     renderSessionMembers(true);
   } else {
-    // Mitglied-Ansicht
     document.getElementById('sessionWaitingText').textContent = 'Warte auf Freigabe durch den Leiter…';
     document.getElementById('leaveSessionBtn').onclick = leaveSession;
     renderSessionMembers(false);
@@ -82,8 +78,10 @@ function renderSessionMembers(isHost) {
     } else if (!isHost && uid === ASRealtime.sessionHostUid) {
       actions = `<span class="pill">Leiter</span>`;
     }
-    return `<div class="list-row"><div class="avatar clickable" data-uid="${uid}" style="width:32px;height:32px;font-size:.7rem;"></div>
-      <span style="flex:1;font-size:.85rem;">${escapeHtml(p.firstName)} ${escapeHtml(p.lastName || '')} ${isLeader ? '👑' : ''}</span>${actions}</div>`;
+    return `<div class="list-row">
+      <div class="avatar clickable" data-uid="${uid}" style="width:32px;height:32px;font-size:.7rem;"></div>
+      <span style="flex:1;font-size:.85rem;">${escapeHtml(p.firstName)} ${escapeHtml(p.lastName || '')} ${isLeader ? '👑' : ''}</span>${actions}
+    </div>`;
   }).join('');
 
   list.querySelectorAll('.avatar[data-uid]').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
@@ -118,7 +116,6 @@ function broadcastSessionMembers() {
 
 function leaveSession() {
   if (ASRealtime.sessionHostUid === AS.currentUser.uniqueId) {
-    // Leiter verlässt: Session auflösen
     const members = [...ASRealtime.sessionMembers];
     members.forEach(uid => {
       if (uid !== AS.currentUser.uniqueId) {
@@ -126,7 +123,6 @@ function leaveSession() {
       }
     });
   } else {
-    // Mitglied verlässt
     const host = ASRealtime.sessionHostUid;
     if (host) ASRealtime.sendTo(host, { type: 'session_join', leaving: true, profile: publicProfile() });
   }
@@ -138,7 +134,7 @@ function leaveSession() {
   RENDERERS.session();
 }
 
-/* ---------- Eingehende Session-Nachrichten ---------- */
+/* Eingehende Session-Nachrichten */
 function handleSessionJoinRequest(fromUid, msg) {
   if (msg.leaving) {
     ASRealtime.sessionMembers = ASRealtime.sessionMembers.filter(u => u !== fromUid);
@@ -168,7 +164,6 @@ function handleSessionJoinRequest(fromUid, msg) {
 function handleSessionWelcome(fromUid, msg) {
   ASRealtime.sessionHostUid = msg.hostUid;
   ASRealtime.sessionMembers = msg.members;
-  ASRealtime.sessionId = AS.currentData.session?.id;
   if (!AS.currentData.session) {
     AS.currentData.session = { id: null, hostUid: msg.hostUid, members: msg.members, createdAt: Date.now() };
     persist();
@@ -196,7 +191,7 @@ function handleSessionLeaderChange(msg) {
   if (getCurrentView() === 'session') RENDERERS.session();
 }
 
-/* ---------- Live-Sync ---------- */
+/* Live-Sync */
 window.addEventListener('schoolify:dataChanged', (e) => {
   if (!AS.currentData.session || AS.currentData.session.hostUid !== AS.currentUser.uniqueId) return;
   const { collection } = e.detail;
@@ -258,8 +253,6 @@ function handleSessionSyncFlashcards(msg) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  const startBtn = document.getElementById('startSessionBtn');
-  if (startBtn) startBtn.addEventListener('click', startSession);
-  const leaveBtn = document.getElementById('leaveSessionBtn');
-  if (leaveBtn) leaveBtn.addEventListener('click', leaveSession);
+  on('startSessionBtn', 'click', startSession);
+  on('leaveSessionBtn', 'click', leaveSession);
 });
