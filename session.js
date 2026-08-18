@@ -1,7 +1,3 @@
-/* ==========================================================================
-   Schoolify — session.js (v2, vollständig überarbeitet)
-   ========================================================================== */
-
 const ASRealtime = window.ASRealtime;
 
 async function handleSessionJoin() {
