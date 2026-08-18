@@ -645,6 +645,16 @@ function initConsentFlow(next) {
   });
 }
 
+/* Auth-UI Umschalter für Speichermodus */
+function updateAuthStorageToggle() {
+  const toggle = document.getElementById('authStorageToggle');
+  if (!toggle) return;
+  const cloud = AS.cloudEnabled();
+  const label = document.getElementById('authStorageLabel');
+  if (label) label.textContent = cloud ? 'Online-Speicherung (12 MB)' : 'Lokale Speicherung (5 MB)';
+  toggle.checked = cloud;
+}
+
 /* Helper für sichere Event-Listener */
 function on(id, event, fn) {
   const el = document.getElementById(id);
