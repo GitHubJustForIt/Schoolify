@@ -1,15 +1,12 @@
 /* ==========================================================================
-   Schoolify — realtime.js (v4, vollständig)
-   Chat-Dateien nutzen jetzt Blob-Speicher (kleine Referenz im
-   Hauptdatensatz statt eingebettetem Base64). Zuverlässiges PeerJS mit
-   STUN/TURN + Dauer-Reconnect. Kategorisierte, live wirksame
-   Sicherheitseinstellungen. AirSignal-Direktauswahl. Funktionierendes
-   Blockieren/Entblocken.
+   Schoolify — realtime.js (v5, vollständig)
+   Erweiterte PeerJS-Kommunikation inkl. Session-Verwaltung.
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
   peer: null, conns: {}, knownProfiles: {}, pendingSearch: null, activeChatUid: null, lastGeo: null, airSelected: new Set(),
   _reconnectTimer: null, _pendingRequests: {},
+  sessionHostUid: null, sessionMembers: [], sessionId: null,
 });
 
 function myData() { return AS.currentData; }
@@ -24,9 +21,7 @@ const ICE_CONFIG = {
   ]
 };
 
-/* ---------------------------------------------------------------------- */
-/* Connection lifecycle — mit automatischem Dauer-Reconnect               */
-/* ---------------------------------------------------------------------- */
+/* Connection lifecycle */
 ASRealtime.init = function (uid) {
   if (this.peer && !this.peer.destroyed) return;
   this._createPeer(uid);
@@ -85,9 +80,7 @@ ASRealtime._retryOne = async function (key) {
 };
 ASRealtime._retryPendingRequests = function () { Object.keys(this._pendingRequests).forEach(key => this._retryOne(key)); };
 
-/* ---------------------------------------------------------------------- */
-/* Incoming message router                                                */
-/* ---------------------------------------------------------------------- */
+/* Incoming message router */
 ASRealtime.handleMessage = function (fromUid, msg) {
   if (myData().blocked.includes(fromUid)) return;
   switch (msg.type) {
@@ -98,6 +91,7 @@ ASRealtime.handleMessage = function (fromUid, msg) {
       if (getCurrentView() === 'chat') { renderChatConvoList(); if (ASRealtime.activeChatUid === fromUid) refreshChatHeader(fromUid); }
       if (getCurrentView() === 'airsignal') RENDERERS.airsignal();
       if (getCurrentView() === 'dashboard') RENDERERS.dashboard();
+      if (getCurrentView() === 'session') RENDERERS.session();
       break;
     case 'friend_request':
       if (mySec().whoCanFriendRequest === 'nobody') return;
@@ -126,6 +120,32 @@ ASRealtime.handleMessage = function (fromUid, msg) {
       if (getCurrentView() === 'airsignal') RENDERERS.airsignal();
       break;
     case 'block_notice': delete this.conns[fromUid]; if (getCurrentView() === 'friends') RENDERERS.friends(); break;
+
+    /* Session-Nachrichten */
+    case 'session_join':
+      handleSessionJoinRequest(fromUid, msg);
+      break;
+    case 'session_welcome':
+      handleSessionWelcome(fromUid, msg);
+      break;
+    case 'session_members':
+      handleSessionMembersUpdate(msg);
+      break;
+    case 'session_kick':
+      handleSessionKicked(msg);
+      break;
+    case 'session_leader':
+      handleSessionLeaderChange(msg);
+      break;
+    case 'session_sync_notes':
+      handleSessionSyncNotes(msg);
+      break;
+    case 'session_sync_materials':
+      handleSessionSyncMaterials(msg);
+      break;
+    case 'session_sync_flashcards':
+      handleSessionSyncFlashcards(msg);
+      break;
   }
 };
 function getCurrentView() { return VIEWS.find(v => !document.getElementById('view-' + v).classList.contains('hidden')); }
@@ -198,7 +218,7 @@ RENDERERS.friends = function () {
 };
 
 /* ======================================================================
-   CHAT — Dateien als Blob-Referenz statt eingebettetem Base64
+   CHAT
    ====================================================================== */
 function renderChatConvoList() {
   const box = document.getElementById('chatConvoList');
@@ -300,8 +320,6 @@ document.getElementById('chatFileInput').addEventListener('change', async (e) =>
     const blobId = 'cf_' + Date.now() + Math.random().toString(36).slice(2, 7);
     await AS.saveBlob(blobId, dataUrl);
     const fileObj = { name: file.name, type: file.type, blobId, bytes: dataUrl.length };
-    // Wird per WebRTC direkt an den Freund mitgesendet, damit dieser das Bild
-    // sofort sieht (nicht erst über die Cloud warten muss).
     ASRealtime.sendTo(uid, { type: 'chat', text: '', file: { ...fileObj, dataUrl } });
     if (!myData().conversations[uid]) myData().conversations[uid] = [];
     myData().conversations[uid].push({ id: 'msg_' + Date.now(), from: 'me', text: '', file: fileObj, ts: Date.now() });
