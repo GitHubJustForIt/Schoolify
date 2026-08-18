@@ -1,27 +1,27 @@
 /* ==========================================================================
-   Schoolify — app.js (v9.1 FINAL)
-   Alle Event-Listener korrekt registriert, Material-Upload repariert,
-   Sicherheitsansicht vollständig, Speicheranzeige funktioniert.
+   Schoolify — app.js (v9.2, keepalive-Fix)
+   cloudPut ohne keepalive, aber flushPendingCloudWrites mit keepalive.
    ========================================================================== */
 
 const AS = (window.AS = {});
 
 /* Cloud-Speicher */
-const CLOUD_BASE = "https://scholifydatahandler.akkermann-elias.workers.dev";
+const CLOUD_BASE = "https://speicher-api.xyz.workers.dev/c786ab5ff69c43738470d3a4a9a9c34d";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
 AS.setConsent = (v) => localStorage.setItem(CONSENT_KEY, v);
 AS.cloudEnabled = () => AS.getConsent() === 'cloud';
 
-async function cloudPut(key, value) {
+async function cloudPut(key, value, useKeepalive = false) {
   try {
-    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
+    const options = {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(value),
-      keepalive: true
-    });
+      body: JSON.stringify(value)
+    };
+    if (useKeepalive) options.keepalive = true;
+    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, options);
     if (!res.ok) {
       console.warn('cloudPut failed for', key, res.status);
       return false;
@@ -36,8 +36,7 @@ async function cloudPut(key, value) {
 async function cloudGet(key) {
   try {
     const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
-      method: 'GET',
-      keepalive: true
+      method: 'GET'
     });
     if (!res.ok) return undefined;
     const text = await res.text();
@@ -48,8 +47,7 @@ async function cloudGet(key) {
 async function cloudDelete(key) {
   try {
     const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
-      method: 'DELETE',
-      keepalive: true
+      method: 'DELETE'
     });
     return res.ok;
   } catch (e) { return false; }
@@ -63,7 +61,7 @@ function cloudPutDebounced(key, value, delay = 3000) {
   if (_cloudDebounceTimers[key]) clearTimeout(_cloudDebounceTimers[key]);
   _cloudDebounceData[key] = value;
   _cloudDebounceTimers[key] = setTimeout(() => {
-    cloudPut(key, value);
+    cloudPut(key, value); // normaler Writes ohne keepalive
     delete _cloudDebounceData[key];
     delete _cloudDebounceTimers[key];
   }, delay);
@@ -80,12 +78,14 @@ function flushPendingCloudWrites() {
   const mainKey = AS.currentUser ? dataKey(AS.currentUser.uniqueId) : null;
   const hasMainPending = mainKey && _cloudDebounceData[mainKey] !== undefined;
 
+  // Alle geplanten Writes mit keepalive senden
   Object.keys(_cloudDebounceData).forEach(k => {
-    cloudPut(k, _cloudDebounceData[k]);
+    cloudPut(k, _cloudDebounceData[k], true);
   });
 
+  // Hauptdatensatz immer zusätzlich senden, falls noch nicht geplant
   if (mainKey && !hasMainPending && AS.currentData) {
-    cloudPut(mainKey, AS.currentData);
+    cloudPut(mainKey, AS.currentData, true);
   }
 
   Object.keys(_cloudDebounceTimers).forEach(k => clearTimeout(_cloudDebounceTimers[k]));
@@ -1874,74 +1874,6 @@ function initAppEvents() {
   });
 
   updateAuthStorageToggle();
-
-  // Alle weiteren statischen Buttons
-  on('addLessonBtn', 'click', () => openLessonModal(null));
-  on('addTaskBtn', 'click', () => openTaskModal(null));
-  on('addTodoGoalBtn', 'click', () => {
-    AS.modal(`<h3>Ziel für ${DAYS_FULL[todoEditDay]}</h3>
-      <div class="field"><label>Was willst du erreichen?</label><input type="text" id="goalLabel" placeholder="z. B. 4× melden"></div>
-      <div class="field"><label>Wie oft / Zielwert</label><input type="number" id="goalTarget" min="1" value="1"></div>
-      <div class="row" style="justify-content:flex-end;gap:8px;">
-        <button class="btn btn-ghost btn-sm" id="goalCancel">Abbrechen</button>
-        <button class="btn btn-sm" id="goalSave">Speichern</button>
-      </div>`,
-      (root) => {
-        root.querySelector('#goalCancel').onclick = AS.closeModal;
-        root.querySelector('#goalSave').onclick = () => {
-          const label = root.querySelector('#goalLabel').value.trim();
-          const target = +root.querySelector('#goalTarget').value || 1;
-          if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; }
-          if (!AS.currentData.todoTemplate[todoEditDay]) AS.currentData.todoTemplate[todoEditDay] = [];
-          AS.currentData.todoTemplate[todoEditDay].push({ id: 'g_' + Date.now(), label, target });
-          persist();
-          AS.closeModal();
-          renderTodoTemplate();
-        };
-      });
-  });
-
-  on('calPrevBtn', 'click', () => { calViewDate.setMonth(calViewDate.getMonth() - 1); RENDERERS.calendar(); });
-  on('calNextBtn', 'click', () => { calViewDate.setMonth(calViewDate.getMonth() + 1); RENDERERS.calendar(); });
-  on('calTodayBtn', 'click', () => { calViewDate = new Date(); RENDERERS.calendar(); });
-
-  on('materialSearch', 'input', (e) => { materialQuery = e.target.value; RENDERERS.materials(); });
-  on('uploadMaterialBtn', 'click', () => document.getElementById('materialFileInput').click());
-  on('materialFileInput', 'change', async (e) => {
-    const files = Array.from(e.target.files);
-    const lim = limitsFor('material');
-    let added = 0;
-    for (const file of files) {
-      try {
-        const isImg = (file.type || '').includes('image');
-        const dataUrl = isImg ? await compressImage(file, lim.maxDim, lim.quality) : await fileToDataUrl(file);
-        const blobId = 'mat_' + Date.now() + Math.random().toString(36).slice(2, 7);
-        await AS.saveBlob(blobId, dataUrl);
-        const approxBytes = new Blob([dataUrl]).size;
-        AS.currentData.materials.push({
-          id: 'm_' + Date.now() + Math.random().toString(36).slice(2, 6),
-          name: file.name,
-          subject: '',
-          topic: '',
-          type: file.type || 'application/octet-stream',
-          size: approxBytes,
-          blobId,
-          favorite: false,
-          addedAt: Date.now()
-        });
-        added++;
-      } catch (err) {
-        AS.toast(`"${file.name}" konnte nicht verarbeitet werden.`);
-      }
-    }
-    if (added) {
-      persist();
-      RENDERERS.materials();
-      AS.toast(`${added} Datei(en) hinzugefügt — platzsparend gespeichert.`);
-      notifyDataChange('materials');
-    }
-    e.target.value = '';
-  });
 
   on('logoutBtn', 'click', logout);
   on('logoutAllBtn', 'click', () => {
