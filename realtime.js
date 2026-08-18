@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Schoolify — realtime.js (v7 FINAL, korrigiert)
+   Schoolify — realtime.js (v8.0, robustes Peer-System)
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
@@ -23,27 +23,68 @@ const ICE_CONFIG = {
   ]
 };
 
-/* Connection lifecycle */
+const PEERJS_OPTIONS = {
+  debug: 1,
+  host: '0.peerjs.com',
+  port: 443,
+  path: '/',
+  secure: true,
+  config: ICE_CONFIG
+};
+
 ASRealtime.init = function (uid) {
   if (this.peer && !this.peer.destroyed) return;
   this._createPeer(uid);
   if (this._reconnectTimer) clearInterval(this._reconnectTimer);
   this._reconnectTimer = setInterval(() => this._reconnectAllFriends(), 5000);
 };
+
 ASRealtime._createPeer = function (uid) {
-  try { this.peer = new Peer(uid, { debug: 0, config: ICE_CONFIG }); }
-  catch (e) { AS.toast('Echtzeit-Verbindung konnte nicht gestartet werden.'); return; }
-  this.peer.on('open', () => { this._reconnectAllFriends(); this._retryPendingRequests(); });
+  console.log('[PeerJS] Erstelle Peer mit ID:', uid);
+  try {
+    this.peer = new Peer(uid, PEERJS_OPTIONS);
+  } catch (e) {
+    console.error('[PeerJS] Konnte Peer nicht erstellen:', e);
+    AS.toast('Echtzeit-Verbindung konnte nicht gestartet werden.');
+    return;
+  }
+
+  this.peer.on('open', () => {
+    console.log('[PeerJS] Verbunden mit Signalisierungsserver.');
+    this._reconnectAllFriends();
+    this._retryPendingRequests();
+  });
+
   this.peer.on('connection', (conn) => this.handleIncomingConnection(conn));
-  this.peer.on('disconnected', () => { if (this.peer && !this.peer.destroyed) { try { this.peer.reconnect(); } catch (e) {} } });
-  this.peer.on('close', () => { setTimeout(() => { if (AS.currentUser) this._createPeer(AS.currentUser.uniqueId); }, 2000); });
+
+  this.peer.on('disconnected', () => {
+    console.warn('[PeerJS] Verbindung zum Server verloren, versuche Neustart...');
+    if (this.peer && !this.peer.destroyed) {
+      try { this.peer.reconnect(); } catch (e) {}
+    }
+  });
+
+  this.peer.on('close', () => {
+    console.log('[PeerJS] Peer geschlossen, starte neu...');
+    setTimeout(() => {
+      if (AS.currentUser) this._createPeer(AS.currentUser.uniqueId);
+    }, 2000);
+  });
+
   this.peer.on('error', (err) => {
     const msg = String(err);
-    if (msg.includes('unavailable-id')) { AS.toast('Dieses Gerät ist bereits mit deinem Account verbunden (anderer Tab?).'); return; }
+    console.error('[PeerJS] Fehler:', msg);
+    if (msg.includes('unavailable-id')) {
+      AS.toast('Dein Account ist bereits in einem anderen Tab geöffnet.');
+      return;
+    }
     if (msg.includes('peer-unavailable')) return;
-    setTimeout(() => { if (AS.currentUser && (!this.peer || this.peer.destroyed)) this._createPeer(AS.currentUser.uniqueId); }, 3000);
+    setTimeout(() => {
+      if (AS.currentUser && (!this.peer || this.peer.destroyed)) this._createPeer(AS.currentUser.uniqueId);
+    }, 3000);
   });
 };
+
 ASRealtime._reconnectAllFriends = function () {
   if (!AS.currentData) return;
   myData().friends.forEach(fid => {
@@ -51,30 +92,51 @@ ASRealtime._reconnectAllFriends = function () {
     if (!(this.conns[fid] && this.conns[fid].open)) this.connectToPeer(fid, true);
   });
 };
+
 ASRealtime.disconnect = function () {
+  console.log('[PeerJS] Trenne alle Verbindungen.');
   if (this._reconnectTimer) clearInterval(this._reconnectTimer);
   Object.values(this.conns).forEach(c => { try { c.close(); } catch (e) {} });
   this.conns = {};
   if (this.peer) { try { this.peer.destroy(); } catch (e) {} }
 };
+
 ASRealtime.connectToPeer = function (uid, silent) {
   return new Promise((resolve) => {
     if (myData().blocked.includes(uid)) { resolve(null); return; }
     if (this.conns[uid] && this.conns[uid].open) { resolve(this.conns[uid]); return; }
 
-    // Alte, nicht offene Verbindung schließen und entfernen
     if (this.conns[uid] && !this.conns[uid].open) {
       try { this.conns[uid].close(); } catch (e) {}
       delete this.conns[uid];
     }
 
-    if (!this.peer || this.peer.destroyed) { resolve(null); return; }
+    if (!this.peer || this.peer.destroyed) {
+      console.warn('[PeerJS] Peer nicht bereit, versuche in 1s erneut...');
+      setTimeout(() => resolve(this.connectToPeer(uid, silent)), 1000);
+      return;
+    }
+
     let settled = false;
     let conn;
-    try { conn = this.peer.connect(uid, { reliable: true, metadata: { from: AS.currentUser.uniqueId } }); }
-    catch (e) { resolve(null); return; }
-    const timeout = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, 8000);
+    try {
+      conn = this.peer.connect(uid, { reliable: true, metadata: { from: AS.currentUser.uniqueId } });
+    } catch (e) {
+      console.error('[PeerJS] connect() Fehler:', e);
+      resolve(null);
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        console.warn(`[PeerJS] Timeout bei Verbindung zu ${uid}`);
+        resolve(null);
+      }
+    }, 12000);
+
     conn.on('open', () => {
+      console.log(`[PeerJS] Verbindung zu ${uid} geöffnet.`);
       this.conns[uid] = conn;
       this.wireConnection(conn);
       this.sendTo(uid, { type: 'hello', profile: publicProfile() });
@@ -83,33 +145,58 @@ ASRealtime.connectToPeer = function (uid, silent) {
       resolve(conn);
       this.refreshPresenceUI();
     });
-    conn.on('error', () => { if (!settled) { settled = true; clearTimeout(timeout); resolve(null); } });
+
+    conn.on('error', (err) => {
+      console.error(`[PeerJS] Verbindungsfehler zu ${uid}:`, err);
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
+        resolve(null);
+      }
+    });
   });
 };
+
 ASRealtime.handleIncomingConnection = function (conn) {
   const fromUid = conn.peer;
+  console.log(`[PeerJS] Eingehende Verbindung von ${fromUid}`);
   if (myData().blocked.includes(fromUid)) { conn.close(); return; }
   conn.on('open', () => {
+    console.log(`[PeerJS] Eingehende Verbindung von ${fromUid} geöffnet.`);
     this.conns[fromUid] = conn;
     this.wireConnection(conn);
     this.sendTo(fromUid, { type: 'hello', profile: publicProfile() });
     this.refreshPresenceUI();
   });
 };
+
 ASRealtime.wireConnection = function (conn) {
   conn.off && conn.off('data');
   conn.on('data', (msg) => this.handleMessage(conn.peer, msg));
-  conn.on('close', () => { delete this.conns[conn.peer]; this.refreshPresenceUI(); });
-  conn.on('error', () => { delete this.conns[conn.peer]; this.refreshPresenceUI(); });
+  conn.on('close', () => {
+    console.log(`[PeerJS] Verbindung zu ${conn.peer} geschlossen.`);
+    delete this.conns[conn.peer];
+    this.refreshPresenceUI();
+  });
+  conn.on('error', (err) => {
+    console.error(`[PeerJS] Fehler auf Verbindung zu ${conn.peer}:`, err);
+    delete this.conns[conn.peer];
+    this.refreshPresenceUI();
+  });
 };
+
 ASRealtime.sendTo = function (uid, obj) {
   const c = this.conns[uid];
-  if (c && c.open) { c.send(obj); return true; }
+  if (c && c.open) {
+    try { c.send(obj); return true; } catch (e) { return false; }
+  }
   return false;
 };
+
 ASRealtime.onlineFriends = function () {
   return myData().friends.filter(f => this.conns[f] && this.conns[f].open);
 };
+
 ASRealtime.sendReliable = async function (uid, payload, key) {
   const attemptKey = key || uid + '_' + payload.type;
   let tries = 0;
@@ -125,6 +212,7 @@ ASRealtime.sendReliable = async function (uid, payload, key) {
     setTimeout(() => this._retryOne(attemptKey), 3000);
   }
 };
+
 ASRealtime._retryOne = async function (key) {
   const p = this._pendingRequests[key];
   if (!p) return;
@@ -138,6 +226,7 @@ ASRealtime._retryOne = async function (key) {
   if (p.tries < 6) setTimeout(() => this._retryOne(key), 3000);
   else delete this._pendingRequests[key];
 };
+
 ASRealtime._retryPendingRequests = function () {
   Object.keys(this._pendingRequests).forEach(key => this._retryOne(key));
 };
@@ -186,8 +275,6 @@ ASRealtime.handleMessage = function (fromUid, msg) {
       delete this.conns[fromUid];
       if (getCurrentView() === 'friends') RENDERERS.friends();
       break;
-
-    /* Session-Nachrichten */
     case 'session_join': handleSessionJoinRequest(fromUid, msg); break;
     case 'session_welcome': handleSessionWelcome(fromUid, msg); break;
     case 'session_members': handleSessionMembersUpdate(msg); break;
@@ -229,7 +316,7 @@ function renderFriendSearchResult(profile) {
         <button class="btn btn-ghost btn-sm" id="cfCancel">Abbrechen</button>
         <button class="btn btn-sm" id="cfOk">Anfrage senden</button>
       </div>`,
-      (root) => {
+      root => {
         renderAvatar(root.querySelector('.cf-av'), profile);
         root.querySelector('#cfCancel').onclick = AS.closeModal;
         root.querySelector('#cfOk').onclick = () => {
@@ -243,6 +330,7 @@ function renderFriendSearchResult(profile) {
       });
   });
 }
+
 RENDERERS.friends = function () {
   const reqBox = document.getElementById('friendRequestsList');
   const incoming = myData().friendRequestsIn;
@@ -356,12 +444,14 @@ function renderChatConvoList() {
   box.querySelectorAll('.cv-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
   box.querySelectorAll('[data-convo]').forEach(el => el.addEventListener('click', () => openConversation(el.dataset.convo)));
 }
+
 RENDERERS.chat = function () {
   ASRealtime.activeChatUid = null;
   renderChatConvoList();
   document.getElementById('chatEmptyState').classList.remove('hidden');
   document.getElementById('chatActive').classList.add('hidden');
 };
+
 window.openConversation = async function (uid) {
   ASRealtime.activeChatUid = uid;
   document.getElementById('chatEmptyState').classList.add('hidden');
@@ -375,11 +465,13 @@ window.openConversation = async function (uid) {
   renderChatMessages(uid);
   renderChatConvoList();
 };
+
 function refreshChatHeader(uid) {
   const p = friendProfile(uid) || { firstName: uid, lastName: '' };
   renderAvatar(document.getElementById('chatPartnerAvatar'), p);
   document.getElementById('chatPartnerName').textContent = `${p.firstName} ${p.lastName || ''}`.trim();
 }
+
 function renderChatMessages(uid) {
   const box = document.getElementById('chatMessages');
   const msgs = myData().conversations[uid] || [];
@@ -426,6 +518,7 @@ function renderChatMessages(uid) {
     renderChatConvoList();
   }));
 }
+
 function addIncomingChatMessage(fromUid, text, file) {
   if (!myData().conversations[fromUid]) myData().conversations[fromUid] = [];
   const isOpen = ASRealtime.activeChatUid === fromUid && getCurrentView() === 'chat';
@@ -443,6 +536,7 @@ function addIncomingChatMessage(fromUid, text, file) {
   renderChatConvoList();
   if (getCurrentView() === 'dashboard') RENDERERS.dashboard();
 }
+
 async function sendChatMessage() {
   const uid = ASRealtime.activeChatUid;
   if (!uid) return;
@@ -529,6 +623,7 @@ RENDERERS.airsignal = function () {
   nearBox.innerHTML = html;
   nearBox.querySelectorAll('.nf-av').forEach(el => renderAvatar(el, friendProfile(el.dataset.uid)));
 };
+
 function requestGeoAndBroadcast() {
   if (!navigator.geolocation) { AS.toast('Geolocation wird von diesem Browser nicht unterstützt.'); return; }
   navigator.geolocation.getCurrentPosition((pos) => {
@@ -541,6 +636,7 @@ function requestGeoAndBroadcast() {
     AS.toast('Ungefährer Standort geteilt.');
   }, () => AS.toast('Standortfreigabe wurde nicht erteilt.'), { enableHighAccuracy: false, timeout: 8000 });
 }
+
 function distanceBand(a, b) {
   const R = 6371;
   const dLat = (b.lat - a.lat) * Math.PI / 180;
@@ -552,10 +648,12 @@ function distanceBand(a, b) {
   if (dist < 80) return 'in der Region';
   return 'weiter weg';
 }
+
 function autoAcceptAirsignal(fromUid, payload) {
   AS.toast(`${payload.from.firstName} hat dir automatisch etwas gesendet.`);
   showAirsignalPopup(fromUid, payload, true);
 }
+
 function showAirsignalPopup(fromUid, payload) {
   if (myData().settings.notifAirsignal === false) return;
   AS.modal(`<h3>${escapeHtml(payload.from.firstName)} möchte dir etwas senden ✦</h3>
@@ -568,7 +666,7 @@ function showAirsignalPopup(fromUid, payload) {
       <button class="btn btn-ghost btn-sm" id="apDecline">Ablehnen</button>
       <button class="btn btn-sm" id="apAccept">Annehmen</button>
     </div>`,
-    (root) => {
+    root => {
       renderAvatar(root.querySelector('.ap-av'), payload.from);
       root.querySelector('#apDecline').onclick = AS.closeModal;
       root.querySelector('#apAccept').onclick = () => {
@@ -581,10 +679,11 @@ function showAirsignalPopup(fromUid, payload) {
           <div class="row" style="justify-content:flex-end;margin-top:14px;">
             <button class="btn btn-sm" id="apClose">Schließen</button>
           </div>`,
-          (r2) => r2.querySelector('#apClose').onclick = AS.closeModal);
+          r2 => r2.querySelector('#apClose').onclick = AS.closeModal);
       };
     });
 }
+
 ASRealtime.refreshPresenceUI = function () {
   const v = getCurrentView();
   if (v === 'friends') RENDERERS.friends();
