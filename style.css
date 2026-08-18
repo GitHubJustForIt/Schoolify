@@ -353,7 +353,14 @@ body[data-paper="liniert"] .bg-pattern{
 #moreMenuSheet .sheet-item .ic{font-size:1.4rem;}
 
 /* Hauptbereich */
-main{flex:1; min-width:0; padding:24px 30px 60px 30px;}
+main{
+  flex:1;
+  min-width:0;
+  padding:24px 30px 60px 30px;
+  height:100vh;
+  overflow-y:auto;
+  box-sizing:border-box;
+}
 .view{max-width:1000px; margin:0 auto;}
 .view-head{
   display:flex;
@@ -1610,7 +1617,11 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   .sidebar{display:none;}
   .topbar{display:flex;}
   .bottomnav{display:flex;}
-  main{padding:14px 14px 88px 14px;}
+  main{
+    padding:14px 14px 88px 14px;
+    height:calc(100vh - 120px);
+    overflow-y:auto;
+  }
   .card{padding-left:32px;}
   .view-head h1{font-size:1.4rem;}
   .grid-2,
