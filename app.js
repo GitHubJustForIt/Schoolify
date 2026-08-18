@@ -1,13 +1,13 @@
 /* ==========================================================================
-   Schoolify — app.js (v7, vollständig)
-   Cloudflare-Speicher, konsistente 12-MB-Online- / 5-MB-Lokal-Limits,
-   Cookie-Umschaltung im Auth, Session-Integration, Fußzeile.
+   Schoolify — app.js (v8, vollständig)
+   Cloudflare-Speicher mit keepalive, sparsamen Writes und robustem
+   Debounce-Mechanismus. 12 MB Online- / 5 MB Lokal-Limit.
    ========================================================================== */
 
 const AS = (window.AS = {});
 
 /* Cloud-Speicher */
-const CLOUD_BASE = "https://scholifydatahandler.akkermann-elias.workers.dev";
+const CLOUD_BASE = "https://speicher-api.xyz.workers.dev/c786ab5ff69c43738470d3a4a9a9c34d";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
@@ -19,36 +19,85 @@ async function cloudPut(key, value) {
     await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(value)
+      body: JSON.stringify(value),
+      keepalive: true
     });
   } catch (e) {}
 }
+
 async function cloudGet(key) {
   try {
-    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`);
+    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
+      method: 'GET',
+      keepalive: true
+    });
     if (!res.ok) return undefined;
     const text = await res.text();
     try { return JSON.parse(text); } catch { return text; }
   } catch (e) { return undefined; }
 }
+
 async function cloudDelete(key) {
-  try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {}
+  try {
+    await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+      keepalive: true
+    });
+  } catch (e) {}
 }
 
+/* ---------------------------------------------------------------------- */
+/* Debounce-Verwaltung – speichert anstehende Daten und sendet sie gebündelt */
+/* ---------------------------------------------------------------------- */
 const _cloudDebounceTimers = {};
-function cloudPutDebounced(key, value, delay = 900) {
-  if (_cloudDebounceTimers[key]) clearTimeout(_cloudDebounceTimers[key]);
-  _cloudDebounceTimers[key] = setTimeout(() => { cloudPut(key, value); delete _cloudDebounceTimers[key]; }, delay);
+const _cloudDebounceData = {};
+
+function cloudPutDebounced(key, value, delay = 3000) {
+  if (_cloudDebounceTimers[key]) {
+    clearTimeout(_cloudDebounceTimers[key]);
+  }
+  _cloudDebounceData[key] = value;
+  _cloudDebounceTimers[key] = setTimeout(() => {
+    cloudPut(key, value);
+    delete _cloudDebounceData[key];
+    delete _cloudDebounceTimers[key];
+  }, delay);
 }
+
 function flushPendingCloudWrites() {
-  if (AS.currentUser && AS.currentData && AS.cloudEnabled()) cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData);
+  // Nur leeren, wenn Cloud aktiv – sonst nichts senden
+  if (!AS.cloudEnabled()) {
+    Object.keys(_cloudDebounceTimers).forEach(k => clearTimeout(_cloudDebounceTimers[k]));
+    _cloudDebounceTimers = {};
+    _cloudDebounceData = {};
+    return;
+  }
+
+  const mainKey = AS.currentUser ? dataKey(AS.currentUser.uniqueId) : null;
+  const hasMainPending = mainKey && _cloudDebounceData[mainKey] !== undefined;
+
+  // Alle geplanten Writes sofort senden
+  Object.keys(_cloudDebounceData).forEach(k => {
+    cloudPut(k, _cloudDebounceData[k]);
+  });
+
+  // Falls der Hauptdatensatz nicht bereits geplant war, aktuellen Stand senden
+  if (mainKey && !hasMainPending && AS.currentData) {
+    cloudPut(mainKey, AS.currentData);
+  }
+
+  // Timer aufräumen
   Object.keys(_cloudDebounceTimers).forEach(k => clearTimeout(_cloudDebounceTimers[k]));
-  Object.keys(_cloudDebounceTimers).forEach(k => delete _cloudDebounceTimers[k]);
+  _cloudDebounceTimers = {};
+  _cloudDebounceData = {};
 }
+
 window.flushPendingCloudWrites = flushPendingCloudWrites;
 window.addEventListener('beforeunload', flushPendingCloudWrites);
 
-/* Storage mit Blob-Größenverwaltung */
+/* ---------------------------------------------------------------------- */
+/* Storage mit Blob-Größenverwaltung                                       */
+/* ---------------------------------------------------------------------- */
 AS._blobSizes = {};
 
 async function loadBlobSizes(uid) {
@@ -62,17 +111,19 @@ async function loadBlobSizes(uid) {
     if (remote && typeof remote === 'object') { AS._blobSizes = remote; }
   }
 }
+
 function saveBlobSize(uid, blobId, size) {
   AS._blobSizes[blobId] = size;
   const localKey = `as_blob_sizes_${uid}`;
   try { localStorage.setItem(localKey, JSON.stringify(AS._blobSizes)); } catch (e) {}
-  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 1500);
+  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 5000);
 }
+
 function removeBlobSize(uid, blobId) {
   delete AS._blobSizes[blobId];
   const localKey = `as_blob_sizes_${uid}`;
   try { localStorage.setItem(localKey, JSON.stringify(AS._blobSizes)); } catch (e) {}
-  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 1500);
+  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 5000);
 }
 
 AS.storage = {
@@ -83,8 +134,11 @@ AS.storage = {
   set(key, value, opts) {
     const serialized = JSON.stringify(value);
     if (AS.cloudEnabled()) {
-      if (opts && opts.immediate) cloudPut(key, value);
-      else cloudPutDebounced(key, value);
+      if (opts && opts.immediate) {
+        cloudPut(key, value);
+      } else {
+        cloudPutDebounced(key, value);
+      }
       try { localStorage.setItem(key, serialized); } catch (e) {}
       return true;
     } else {
@@ -106,11 +160,13 @@ AS.storage = {
   }
 };
 
-/* Blob-Speicher */
+/* ---------------------------------------------------------------------- */
+/* Blob-Speicher                                                          */
+/* ---------------------------------------------------------------------- */
 const BLOB_CACHE_PREFIX = 'as_blob_';
 function blobKey(id) { return 'blob_' + id; }
 AS.saveBlob = async function (id, dataUrl) {
-  const size = dataUrl.length * 2;
+  const size = dataUrl.length * 2; // UTF-16 Bytes approx
   if (AS.cloudEnabled()) await cloudPut(blobKey(id), dataUrl);
   try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
   if (AS.currentUser) saveBlobSize(AS.currentUser.uniqueId, id, size);
@@ -141,7 +197,9 @@ function asyncImg(blobId, onReady) {
 }
 window.asyncImg = asyncImg;
 
-/* QR-Teilen */
+/* ---------------------------------------------------------------------- */
+/* Teilen per QR-Code                                                      */
+/* ---------------------------------------------------------------------- */
 function shareKey(id) { return 'share_' + id; }
 function genShareId() { const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 10; i++) s += chars[Math.floor(Math.random() * chars.length)]; return s; }
 async function createShareAndShowQr(pkg, titleForModal) {
@@ -191,7 +249,9 @@ async function handleImportShare() {
   }
 }
 
-/* Nutzer-Verzeichnis */
+/* ---------------------------------------------------------------------- */
+/* Nutzer-Verzeichnis                                                     */
+/* ---------------------------------------------------------------------- */
 const KEY_USERS = 'as_users';
 const KEY_SESSION = 'as_session';
 const dataKey = (uid) => `as_data_${uid}`;
@@ -287,7 +347,9 @@ function confirmModal(title, msg, onYes) {
 }
 window.confirmModal = confirmModal;
 
-/* Bild-Kompression */
+/* ---------------------------------------------------------------------- */
+/* Bild-Kompression                                                       */
+/* ---------------------------------------------------------------------- */
 function compressImage(file, maxDim, quality) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -322,7 +384,9 @@ function limitsFor(kind) {
 }
 window.limitsFor = limitsFor;
 
-/* Speicher-Limits & Anzeige */
+/* ---------------------------------------------------------------------- */
+/* Speicher-Limits & Anzeige                                              */
+/* ---------------------------------------------------------------------- */
 function usageLimitBytes() {
   return AS.cloudEnabled() ? 12 * 1024 * 1024 : 5 * 1024 * 1024;
 }
@@ -388,7 +452,9 @@ function notifyDataChange(collection) {
 }
 window.notifyDataChange = notifyDataChange;
 
-/* Avatare */
+/* ---------------------------------------------------------------------- */
+/* Avatare                                                                */
+/* ---------------------------------------------------------------------- */
 const AVATAR_GRADIENTS = [['#B7E4D4', '#C3DFF7'], ['#F6D3B8', '#F8E39B'], ['#D9CBF2', '#C3DFF7'], ['#F6CBD6', '#B7E4D4'], ['#F8E39B', '#F6D3B8']];
 function avatarGradientFor(uid) { let h = 0; for (const c of uid) h = (h * 31 + c.charCodeAt(0)) >>> 0; return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length]; }
 function initials(user) { return ((user.firstName || '?')[0] + (user.lastName || '?')[0]).toUpperCase(); }
@@ -442,7 +508,9 @@ document.addEventListener('click', (e) => {
 
 function hideSplash() { const s = document.getElementById('splash'); if (!s) return; s.classList.add('fade-out'); setTimeout(() => s.remove(), 450); }
 
-/* Auth & Consent Flow */
+/* ---------------------------------------------------------------------- */
+/* Auth & Consent Flow                                                    */
+/* ---------------------------------------------------------------------- */
 function initConsentFlow(next) {
   const existing = AS.getConsent();
   if (existing) { next(); return; }
@@ -478,7 +546,9 @@ document.addEventListener('DOMContentLoaded', () => {
   updateAuthStorageToggle();
 });
 
-/* Auth-Funktionen */
+/* ---------------------------------------------------------------------- */
+/* Auth-Funktionen                                                        */
+/* ---------------------------------------------------------------------- */
 document.querySelectorAll('[data-authtab]').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('[data-authtab]').forEach(t => t.classList.remove('active'));
@@ -644,7 +714,9 @@ document.getElementById('exportDataBtn').addEventListener('click', () => {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `schoolify-export-${AS.currentUser.username}.json`; a.click();
 });
 
-/* Boot / Router */
+/* ---------------------------------------------------------------------- */
+/* Boot / Router                                                          */
+/* ---------------------------------------------------------------------- */
 function boot() {
   initConsentFlow(async () => {
     const session = AS.getSession(); const users = AS.getUsers();
