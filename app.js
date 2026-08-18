@@ -1,5 +1,9 @@
 /* ==========================================================================
-   Schoolify — app.js (v11.1, fix: let statt const für Debounce-Objekte)
+   Schoolify — app.js (v12.0, final)
+   - Exakte Speicherberechnung über localStorage
+   - Blob-Speicherung als reiner Text (kein JSON-String)
+   - Sprache umschaltbar (DE/EN) für alle wichtigen UI-Texte
+   - Dark Mode vollständig
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -14,10 +18,11 @@ AS.cloudEnabled = () => AS.getConsent() === 'cloud';
 
 async function cloudPut(key, value, useKeepalive = false) {
   try {
+    const isString = typeof value === 'string';
     const options = {
       method: 'PUT',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(value)
+      headers: { 'Content-Type': isString ? 'text/plain' : 'application/json' },
+      body: isString ? value : JSON.stringify(value)
     };
     if (useKeepalive) options.keepalive = true;
     const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, options);
@@ -48,9 +53,9 @@ async function cloudDelete(key) {
   } catch (e) { return false; }
 }
 
-/* Debounce-Verwaltung (für Cloud-Writes) */
-let _cloudDebounceTimers = {};   // ⬅️ geändert von const zu let
-let _cloudDebounceData = {};     // ⬅️ geändert von const zu let
+/* Debounce-Verwaltung */
+let _cloudDebounceTimers = {};
+let _cloudDebounceData = {};
 const CLOUD_DEBOUNCE_MS = 10000;
 
 function cloudPutDebounced(key, value, delay = CLOUD_DEBOUNCE_MS) {
@@ -74,23 +79,12 @@ function flushPendingCloudWrites() {
   const mainKey = AS.currentUser ? dataKey(AS.currentUser.uniqueId) : null;
   const hasMainPending = mainKey && _cloudDebounceData[mainKey] !== undefined;
 
-  // Alle geplanten Writes mit keepalive senden
   Object.keys(_cloudDebounceData).forEach(k => {
-    // Fehler beim Senden nicht den ganzen Ablauf blockieren lassen
-    try {
-      cloudPut(k, _cloudDebounceData[k], true);
-    } catch (e) {
-      console.warn('cloudPut während flush fehlgeschlagen', k, e);
-    }
+    try { cloudPut(k, _cloudDebounceData[k], true); } catch (e) {}
   });
 
-  // Hauptdatensatz immer zusätzlich senden, falls noch nicht geplant
   if (mainKey && !hasMainPending && AS.currentData) {
-    try {
-      cloudPut(mainKey, AS.currentData, true);
-    } catch (e) {
-      console.warn('cloudPut für Hauptdatensatz fehlgeschlagen', e);
-    }
+    try { cloudPut(mainKey, AS.currentData, true); } catch (e) {}
   }
 
   Object.keys(_cloudDebounceTimers).forEach(k => clearTimeout(_cloudDebounceTimers[k]));
@@ -105,7 +99,7 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('beforeunload', flushPendingCloudWrites);
 
-/* Storage mit Blob-Größenverwaltung */
+/* Storage mit Blob-Größenverwaltung (für Cloud-Quota) */
 AS._blobSizes = {};
 
 async function loadBlobSizes(uid) {
@@ -182,6 +176,7 @@ AS.saveBlob = async function (id, dataUrl) {
   let cloudOk = true;
 
   if (AS.cloudEnabled()) {
+    // DataURL als reinen Text speichern (kein JSON-String)
     cloudOk = await cloudPut(blobKey(id), dataUrl);
     if (!cloudOk) {
       AS.toast('⚠️ Datei konnte nicht online gespeichert werden – nur lokal verfügbar.');
@@ -338,20 +333,53 @@ async function deleteUserCloudSafe(uid) {
 
 function defaultData() {
   return {
-    friends: [], friendRequestsIn: [], friendRequestsOut: [], blocked: [],
-    noteFolders: [], notePages: [],
-    tasks: [], timetable: [], materials: [], conversations: {}, calendarEvents: [],
+    friends: [],
+    friendRequestsIn: [],
+    friendRequestsOut: [],
+    blocked: [],
+    blockedFriends: [],   // NEU: hier werden UIDs gespeichert, die vor dem Blockieren Freunde waren
+    noteFolders: [],
+    notePages: [],
+    tasks: [],
+    timetable: [],
+    materials: [],
+    conversations: {},
+    calendarEvents: [],
     todoTemplate: { 0: [], 1: [], 2: [], 3: [], 4: [] },
-    todoLog: {}, todoStreak: 0, todoBestStreak: 0, todoMode: 'checklist',
-    decks: [], flashcards: [],
+    todoLog: {},
+    todoStreak: 0,
+    todoBestStreak: 0,
+    todoMode: 'checklist',
+    decks: [],
+    flashcards: [],
     devices: [{ id: 'device-' + Math.random().toString(36).slice(2, 8), label: navigator.userAgent.slice(0, 40), lastActive: Date.now() }],
     security: {
-      profileVisibility: 'everyone', avatarVisibility: 'everyone', discoverableByUid: true,
-      whoCanFriendRequest: 'everyone', whoCanMessage: 'friends', blockUnknown: true,
-      onlineStatusVisible: true, onlineStatusFriendsOnly: true, activityStatus: true, readReceipts: true,
-      airsignalActive: true, airsignalVisibility: 'friends', airsignalReceiveFrom: 'friends', airsignalAutoAccept: false,
+      profileVisibility: 'everyone',
+      avatarVisibility: 'everyone',
+      discoverableByUid: true,
+      whoCanFriendRequest: 'everyone',
+      whoCanMessage: 'friends',
+      blockUnknown: true,
+      onlineStatusVisible: true,
+      onlineStatusFriendsOnly: true,
+      activityStatus: true,
+      readReceipts: true,
+      airsignalActive: true,
+      airsignalVisibility: 'friends',
+      airsignalReceiveFrom: 'friends',
+      airsignalAutoAccept: false,
     },
-    settings: { accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false, notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true, language: 'de' },
+    settings: {
+      accent: 'mint',
+      paperStyle: 'kariert',
+      darkMode: false,
+      reduceMotion: false,
+      notifFriendRequests: true,
+      notifMessages: true,
+      notifAirsignal: true,
+      notifTasks: true,
+      language: 'de'
+    },
     session: null
   };
 }
@@ -366,6 +394,8 @@ AS.getData = (uid) => {
   if (!d.decks) d.decks = [];
   if (!d.flashcards) d.flashcards = [];
   if (!d.settings.language) d.settings.language = 'de';
+  // Migration: blockedFriends initialisieren
+  if (!d.blockedFriends) d.blockedFriends = [];
   return d;
 };
 AS.saveData = (uid, d, opts) => AS.storage.set(dataKey(uid), d, opts);
@@ -490,13 +520,20 @@ function usageLimitBytes() {
 }
 window.usageLimitBytes = usageLimitBytes;
 
+/**
+ * Exakte Berechnung des belegten Speichers.
+ * Summiert alle localStorage-Einträge, die zu Schoolify gehören.
+ */
 function usageBytes() {
-  let dataSize = 0;
-  if (AS.currentData) {
-    try { dataSize = new Blob([JSON.stringify(AS.currentData)]).size; } catch (e) { dataSize = JSON.stringify(AS.currentData).length * 2; }
+  let total = 0;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('as_')) {
+      const value = localStorage.getItem(key) || '';
+      total += new Blob([value]).size;
+    }
   }
-  const blobTotal = Object.values(AS._blobSizes || {}).reduce((a, b) => a + (b || 0), 0);
-  return dataSize + blobTotal;
+  return total;
 }
 window.usageBytes = usageBytes;
 
@@ -551,19 +588,233 @@ window.notifyDataChange = notifyDataChange;
 
 /* Sprachsystem */
 const I18N = {
-  de: { dashboard: 'Dashboard', timetable: 'Stundenplan', tasks: 'Aufgaben', todo: 'To-Do', learn: 'Lernen', calendar: 'Kalender', notes: 'Notizen', materials: 'Material', friends: 'Freunde', chat: 'Chat', airsignal: 'AirSignal', session: 'Session', security: 'Sicherheit', settings: 'Einstellungen', profile: 'Profil' },
-  en: { dashboard: 'Dashboard', timetable: 'Timetable', tasks: 'Tasks', todo: 'To-Do', learn: 'Learn', calendar: 'Calendar', notes: 'Notes', materials: 'Materials', friends: 'Friends', chat: 'Chat', airsignal: 'AirSignal', session: 'Session', security: 'Security', settings: 'Settings', profile: 'Profile' }
+  de: {
+    dashboard: 'Dashboard',
+    timetable: 'Stundenplan',
+    tasks: 'Aufgaben',
+    todo: 'To-Do',
+    learn: 'Lernen',
+    calendar: 'Kalender',
+    notes: 'Notizen',
+    materials: 'Material',
+    friends: 'Freunde',
+    chat: 'Chat',
+    airsignal: 'AirSignal',
+    session: 'Session',
+    security: 'Sicherheit',
+    settings: 'Einstellungen',
+    profile: 'Profil',
+    // Weitere UI-Texte
+    greeting: 'Hey',
+    date: 'Heute',
+    nextLesson: 'Nächste Stunde',
+    tasksToday: 'Aufgaben heute',
+    todoProgress: 'To-Do-Fortschritt heute',
+    friendsTitle: 'Freunde',
+    airsignalTitle: 'AirSignal',
+    lastNote: 'Letzte Notiz',
+    addLesson: '+ Stunde',
+    addTask: '+ Aufgabe',
+    addGoal: '+ Ziel hinzufügen',
+    addFolder: '+ Ordner',
+    addDeck: '+ Stapel',
+    uploadMaterial: '+ Datei hochladen',
+    searchFriends: 'Suchen & verbinden',
+    friendRequests: 'Anfragen',
+    blocked: 'Blockiert',
+    myFriends: 'Meine Freunde',
+    save: 'Speichern',
+    cancel: 'Abbrechen',
+    delete: 'Löschen',
+    close: 'Schließen',
+    online: 'Online',
+    offline: 'Offline',
+    send: 'Senden',
+    download: 'Download',
+    edit: 'Bearbeiten',
+    remove: 'Entfernen',
+    block: 'Blockieren',
+    unblock: 'Entsperren',
+    chatOpen: 'Chat öffnen',
+    profile: 'Profil',
+    logout: 'Abmelden',
+    addAccount: '+ Account hinzufügen',
+    logoutAll: 'Von allen Geräten abmelden',
+    exportData: 'Daten exportieren',
+    deleteAccount: 'Account löschen',
+    cloudSync: 'Online-Speicherung',
+    darkMode: 'Dark Mode',
+    reduceMotion: 'Animationen reduzieren',
+    language: 'Sprache',
+    notifications: 'Benachrichtigungen',
+    securityTitle: 'Sicherheit',
+    storage: 'Speicherplatz',
+    activeDevices: 'Aktive Geräte',
+    account: 'Konto',
+    privacy: 'Privatsphäre',
+    personalization: 'Personalisierung',
+    me: 'Ich',
+    schoolMaterial: 'Schulmaterial',
+    timetableTitle: 'Stundenplan',
+    tasksTitle: 'Was ansteht',
+    todoTitle: 'To-Do des Tages',
+    learnTitle: 'Karteikarten',
+    calendarTitle: 'Kalender',
+    notesTitle: 'Notizen',
+    friendsTitle: 'Freunde',
+    chatTitle: 'Chat',
+    airsignalTitle: 'AirSignal',
+    sessionTitle: 'Session',
+    settingsTitle: 'Einstellungen',
+    profileTitle: 'Mein Profil',
+  },
+  en: {
+    dashboard: 'Dashboard',
+    timetable: 'Timetable',
+    tasks: 'Tasks',
+    todo: 'To-Do',
+    learn: 'Learn',
+    calendar: 'Calendar',
+    notes: 'Notes',
+    materials: 'Materials',
+    friends: 'Friends',
+    chat: 'Chat',
+    airsignal: 'AirSignal',
+    session: 'Session',
+    security: 'Security',
+    settings: 'Settings',
+    profile: 'Profile',
+    greeting: 'Hey',
+    date: 'Today',
+    nextLesson: 'Next Lesson',
+    tasksToday: 'Tasks Today',
+    todoProgress: "Today's To-Do Progress",
+    friendsTitle: 'Friends',
+    airsignalTitle: 'AirSignal',
+    lastNote: 'Last Note',
+    addLesson: '+ Lesson',
+    addTask: '+ Task',
+    addGoal: '+ Add Goal',
+    addFolder: '+ Folder',
+    addDeck: '+ Deck',
+    uploadMaterial: '+ Upload File',
+    searchFriends: 'Search & Connect',
+    friendRequests: 'Requests',
+    blocked: 'Blocked',
+    myFriends: 'My Friends',
+    save: 'Save',
+    cancel: 'Cancel',
+    delete: 'Delete',
+    close: 'Close',
+    online: 'Online',
+    offline: 'Offline',
+    send: 'Send',
+    download: 'Download',
+    edit: 'Edit',
+    remove: 'Remove',
+    block: 'Block',
+    unblock: 'Unblock',
+    chatOpen: 'Open Chat',
+    profile: 'Profile',
+    logout: 'Log out',
+    addAccount: '+ Add Account',
+    logoutAll: 'Log out from all devices',
+    exportData: 'Export data',
+    deleteAccount: 'Delete account',
+    cloudSync: 'Online Storage',
+    darkMode: 'Dark Mode',
+    reduceMotion: 'Reduce Motion',
+    language: 'Language',
+    notifications: 'Notifications',
+    securityTitle: 'Security',
+    storage: 'Storage',
+    activeDevices: 'Active Devices',
+    account: 'Account',
+    privacy: 'Privacy',
+    personalization: 'Personalization',
+    me: 'Me',
+    schoolMaterial: 'School Material',
+    timetableTitle: 'Timetable',
+    tasksTitle: "What's up",
+    todoTitle: "Today's To-Do",
+    learnTitle: 'Flashcards',
+    calendarTitle: 'Calendar',
+    notesTitle: 'Notes',
+    friendsTitle: 'Friends',
+    chatTitle: 'Chat',
+    airsignalTitle: 'AirSignal',
+    sessionTitle: 'Session',
+    settingsTitle: 'Settings',
+    profileTitle: 'My Profile',
+  }
 };
+
 function t(key) {
   const lang = AS.currentData?.settings?.language || 'de';
   return I18N[lang]?.[key] || I18N.de[key] || key;
 }
+
 function updateNavLanguage() {
   document.querySelectorAll('[data-view]').forEach(el => {
     const view = el.dataset.view;
     const textSpan = el.querySelector('span:last-child');
     if (textSpan && t(view)) textSpan.textContent = t(view);
   });
+}
+
+function applyLanguage() {
+  // Navigation
+  updateNavLanguage();
+  // Dynamische Titel und Buttons in den Views
+  const titleMap = {
+    'dashGreeting': () => `Hey ${AS.currentUser.firstName} ♡`,
+    'view-timetable h1': () => t('timetableTitle'),
+    'view-tasks h1': () => t('tasksTitle'),
+    'view-todo h1': () => t('todoTitle'),
+    'learnTitle': () => t('learnTitle'),
+    'calMonthLabel': () => 'Kalender', // wird später überschrieben
+    'notesTitle': () => t('notesTitle'),
+    'view-materials h1': () => t('schoolMaterial'),
+    'view-friends h1': () => t('friendsTitle'),
+    'view-chat h1': () => t('chatTitle'),
+    'view-airsignal h1': () => t('airsignalTitle'),
+    'view-session h1': () => t('sessionTitle'),
+    'view-security h1': () => t('securityTitle'),
+    'view-settings h1': () => t('settingsTitle'),
+    'view-profile h1': () => t('profileTitle'),
+  };
+  for (const [selector, textFn] of Object.entries(titleMap)) {
+    const el = document.querySelector(selector);
+    if (el) el.textContent = textFn();
+  }
+  // Buttons
+  const btnMap = {
+    'addLessonBtn': t('addLesson'),
+    'addTaskBtn': t('addTask'),
+    'addTodoGoalBtn': t('addGoal'),
+    'uploadMaterialBtn': t('uploadMaterial'),
+    'friendSearchBtn': t('searchFriends'),
+    'chatSendBtn': t('send'),
+    'logoutBtn': t('logout'),
+    'addAccountBtn': t('addAccount'),
+    'logoutAllBtn': t('logoutAll'),
+    'exportDataBtn': t('exportData'),
+    'deleteAccountBtn': t('deleteAccount'),
+  };
+  for (const [id, text] of Object.entries(btnMap)) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+  // Spezifische Elemente
+  document.querySelectorAll('.section-tag').forEach(el => {
+    const view = el.closest('section')?.id;
+    if (view) {
+      const key = view.replace('view-', '');
+      if (t(key)) el.textContent = t(key);
+    }
+  });
+  // Dark Mode Status
+  applyTheme();
 }
 
 /* Avatare */
@@ -616,8 +867,8 @@ function openFriendProfileModal(uid) {
       <div><strong>${isFriend ? '💌' : '➕'}</strong><span>${isFriend ? 'Befreundet' : 'Nicht befreundet'}</span></div>
     </div>
     <div class="row" style="justify-content:center;gap:8px;margin-top:16px;">
-      ${isFriend ? `<button class="btn btn-sm" id="pmChatBtn">Chat öffnen</button>` : ''}
-      <button class="btn btn-ghost btn-sm" id="pmCloseBtn">Schließen</button>
+      ${isFriend ? `<button class="btn btn-sm" id="pmChatBtn">${t('chatOpen')}</button>` : ''}
+      <button class="btn btn-ghost btn-sm" id="pmCloseBtn">${t('close')}</button>
     </div>`,
     root => {
       renderAvatar(root.querySelector('#pmAvatar'), p);
@@ -760,7 +1011,7 @@ function boot() {
     initNavGroups();
     showView('dashboard');
     hideSplash();
-    updateNavLanguage();
+    applyLanguage();
     if (window.ASRealtime) window.ASRealtime.init(AS.currentUser.uniqueId);
     startTimetableClock();
     handleQrAutoFriend();
@@ -869,7 +1120,7 @@ window.getCurrentViewSafe = getCurrentViewSafe;
    ====================================================================== */
 RENDERERS.dashboard = function () {
   document.getElementById('dashGreeting').textContent = `Hey ${AS.currentUser.firstName} ♡`;
-  document.getElementById('dashDate').textContent = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+  document.getElementById('dashDate').textContent = new Date().toLocaleDateString(AS.currentData.settings.language === 'de' ? 'de-DE' : 'en-US', { weekday: 'long', day: 'numeric', month: 'long' });
   const dayIdx = todayDayIdx();
   const todays = AS.currentData.timetable.filter(l => l.day === dayIdx).sort((a, b) => a.period - b.period);
   document.getElementById('dashNextLesson').textContent = todays.length
@@ -985,7 +1236,7 @@ function updateNowLine() {
   line.style.top = (headerH + frac * (totalH - headerH)) + 'px';
   const badge = document.createElement('div');
   badge.className = 'tt-now-badge';
-  badge.textContent = now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  badge.textContent = now.toLocaleTimeString(AS.currentData.settings.language === 'de' ? 'de-DE' : 'en-US', { hour: '2-digit', minute: '2-digit' });
   line.appendChild(badge);
   grid.style.position = 'relative';
   grid.appendChild(line);
@@ -1382,7 +1633,7 @@ function renderTodoTemplate() {
 let calViewDate = new Date();
 RENDERERS.calendar = function () {
   document.getElementById('calGridHead').innerHTML = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'].map(d => `<div class="cal-daylabel">${d}</div>`).join('');
-  document.getElementById('calMonthLabel').textContent = calViewDate.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+  document.getElementById('calMonthLabel').textContent = calViewDate.toLocaleDateString(AS.currentData.settings.language === 'de' ? 'de-DE' : 'en-US', { month: 'long', year: 'numeric' });
   const year = calViewDate.getFullYear(), month = calViewDate.getMonth();
   const firstOfMonth = new Date(year, month, 1);
   const startOffset = firstOfMonth.getDay();
@@ -1673,7 +1924,7 @@ RENDERERS.settings = function () {
   langSelect.onchange = () => {
     AS.currentData.settings.language = langSelect.value;
     persist();
-    updateNavLanguage();
+    applyLanguage();
     AS.toast(langSelect.value === 'de' ? 'Sprache: Deutsch' : 'Language: English');
   };
   const notifBox = document.getElementById('notifSettingsList');
@@ -1933,6 +2184,7 @@ function initAppEvents() {
   on('authStorageToggle', 'change', (e) => {
     AS.setConsent(e.target.checked ? 'cloud' : 'local');
     updateAuthStorageToggle();
+    renderStorageBar();
     AS.toast(e.target.checked ? 'Online-Speicherung aktiviert.' : 'Lokale Speicherung aktiviert.');
   });
 
@@ -2002,6 +2254,7 @@ function initAppEvents() {
     } else {
       AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
     }
+    renderStorageBar();
   });
 
   on('saveProfileBtn', 'click', async () => {
