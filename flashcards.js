@@ -1,7 +1,6 @@
 /* ==========================================================================
-   Schoolify — flashcards.js (v6, vollständig)
-   Neu: 🔗 Teilen-Button pro Stapel — QR-Code überträgt den kompletten
-   Kartensatz direkt in den Account der scannenden Person.
+   Schoolify — flashcards.js (v7, vollständig)
+   + Notification für Session-Sync
    ========================================================================== */
 
 const DECK_COLORS = [
@@ -18,6 +17,10 @@ let learnView = 'decks';
 let activeDeckId = null;
 let studyIndex = 0;
 let studyOrder = [];
+
+function notifyFlashcardChange() {
+  window.dispatchEvent(new CustomEvent('schoolify:dataChanged', { detail: { collection: 'flashcards' } }));
+}
 
 RENDERERS.learn = function () { learnView = 'decks'; activeDeckId = null; renderLearnView(); };
 
@@ -81,7 +84,7 @@ function renderDeckGrid() {
     confirmModal('Stapel löschen?', 'Alle Karteikarten in diesem Stapel werden ebenfalls gelöscht.', () => {
       AS.currentData.decks = AS.currentData.decks.filter(d => d.id !== el.dataset.deldeck);
       AS.currentData.flashcards = AS.currentData.flashcards.filter(c => c.deckId !== el.dataset.deldeck);
-      persist(); renderDeckGrid();
+      persist(); renderDeckGrid(); notifyFlashcardChange();
     });
   }));
   grid.querySelectorAll('[data-sharedeck]').forEach(el => el.addEventListener('click', (e) => {
@@ -102,7 +105,7 @@ function openDeckCreateModal() {
       const name = root.querySelector('#dName').value.trim();
       if (!name) { AS.toast('Bitte einen Namen angeben.'); return; }
       AS.currentData.decks.push({ id: 'd_' + Date.now(), name, color: chosenColor });
-      persist(); AS.closeModal(); renderLearnView(); AS.toast('Stapel erstellt ✦');
+      persist(); AS.closeModal(); renderLearnView(); AS.toast('Stapel erstellt ✦'); notifyFlashcardChange();
     };
   });
 }
@@ -113,7 +116,7 @@ function renderCardGrid() {
   let html = cards.map(c => `<div class="card-tile"><span class="tile-del" data-delcard="${c.id}">✕</span><strong style="font-size:.82rem;display:block;margin-bottom:4px;">${escapeHtml(c.front)}</strong><div class="tiny">${escapeHtml(c.back)}</div></div>`).join('');
   html += `<div class="card-tile" id="addCardTile" style="display:flex;align-items:center;justify-content:center;cursor:pointer;border:2px dashed var(--border);color:var(--ink-faint);min-height:80px;">+ Neue Karte</div>`;
   grid.innerHTML = html;
-  grid.querySelectorAll('[data-delcard]').forEach(el => el.addEventListener('click', () => { AS.currentData.flashcards = AS.currentData.flashcards.filter(c => c.id !== el.dataset.delcard); persist(); renderLearnView(); }));
+  grid.querySelectorAll('[data-delcard]').forEach(el => el.addEventListener('click', () => { AS.currentData.flashcards = AS.currentData.flashcards.filter(c => c.id !== el.dataset.delcard); persist(); renderLearnView(); notifyFlashcardChange(); }));
   document.getElementById('addCardTile').addEventListener('click', openCardModal);
 }
 function openCardModal() {
@@ -126,7 +129,7 @@ function openCardModal() {
       const front = root.querySelector('#cFront').value.trim(); const back = root.querySelector('#cBack').value.trim();
       if (!front || !back) { AS.toast('Bitte Vorder- und Rückseite ausfüllen.'); return; }
       AS.currentData.flashcards.push({ id: 'c_' + Date.now(), deckId: activeDeckId, front, back });
-      persist(); AS.closeModal(); renderLearnView();
+      persist(); AS.closeModal(); renderLearnView(); notifyFlashcardChange();
     };
   });
 }
