@@ -1,7 +1,7 @@
 /* ==========================================================================
-   Schoolify — realtime.js (v10.1, final)
+   Schoolify — realtime.js (v11.0, final)
    - Beibehaltung der stabilen Backoff-Logik aus v10
-   - Zusätzliche Listener für benutzerdefinierten AirSignal-Datei-Button
+   - Blockieren/Entblockieren stellt Freundschaft wieder her
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
@@ -44,7 +44,6 @@ const ICE_CONFIG = {
 };
 
 const PEERJS_KEY = 'peerjs'; // optional eigener Key
-
 const PEERJS_OPTIONS = {
   debug: 1,
   host: '0.peerjs.com',
@@ -114,12 +113,7 @@ ASRealtime._scheduleReconnect = function (reason) {
     this._backoffMs = Math.min(this._backoffMs * 2, this._maxBackoffMs);
 
     if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
-      try {
-        this.peer.reconnect();
-      } catch (e) {
-        console.error('[PeerJS] reconnect() fehlgeschlagen, baue Peer neu auf:', e);
-        this._createPeer(AS.currentUser.uniqueId);
-      }
+      try { this.peer.reconnect(); } catch (e) { this._createPeer(AS.currentUser.uniqueId); }
     } else {
       this._createPeer(AS.currentUser.uniqueId);
     }
@@ -136,14 +130,10 @@ ASRealtime._resetBackoff = function () {
    ====================================================================== */
 ASRealtime._createPeer = function (uid) {
   console.log('[PeerJS] Erstelle Peer mit ID:', uid);
+  if (this.peer && !this.peer.destroyed) { try { this.peer.destroy(); } catch (e) {} }
 
-  if (this.peer && !this.peer.destroyed) {
-    try { this.peer.destroy(); } catch (e) {}
-  }
-
-  try {
-    this.peer = new Peer(uid, PEERJS_OPTIONS);
-  } catch (e) {
+  try { this.peer = new Peer(uid, PEERJS_OPTIONS); }
+  catch (e) {
     console.error('[PeerJS] Konnte Peer nicht erstellen:', e);
     AS.toast('Echtzeit-Verbindung konnte nicht gestartet werden.');
     this._scheduleReconnect('createPeer-exception');
@@ -183,18 +173,13 @@ ASRealtime._createPeer = function (uid) {
       AS.toast('Dein Account ist bereits in einem anderen Tab/Fenster geöffnet.');
       return;
     }
-
-    if (type === 'peer-unavailable') {
-      return;
-    }
-
+    if (type === 'peer-unavailable') return;
     if (type === 'browser-incompatible' || type === 'invalid-id' || type === 'invalid-key') {
       this._fatalError = true;
       this._clearReconnectTimer();
       AS.toast('Echtzeit-Verbindung: Konfigurationsfehler. Bitte Seite neu laden.');
       return;
     }
-
     this._scheduleReconnect('error:' + (type || 'unknown'));
   });
 };
@@ -233,20 +218,15 @@ ASRealtime.connectToPeer = function (uid, silent) {
 
     let settled = false;
     let conn;
-    try {
-      conn = this.peer.connect(uid, { reliable: true, metadata: { from: AS.currentUser.uniqueId } });
-    } catch (e) {
+    try { conn = this.peer.connect(uid, { reliable: true, metadata: { from: AS.currentUser.uniqueId } }); }
+    catch (e) {
       console.error('[PeerJS] connect() Fehler:', e);
       resolve(null);
       return;
     }
 
     const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        console.warn(`[PeerJS] Timeout bei Verbindung zu ${uid}`);
-        resolve(null);
-      }
+      if (!settled) { settled = true; console.warn(`[PeerJS] Timeout bei Verbindung zu ${uid}`); resolve(null); }
     }, 12000);
 
     conn.on('open', () => {
@@ -262,11 +242,7 @@ ASRealtime.connectToPeer = function (uid, silent) {
 
     conn.on('error', (err) => {
       console.error(`[PeerJS] Verbindungsfehler zu ${uid}:`, err);
-      if (!settled) {
-        settled = true;
-        clearTimeout(timeout);
-        resolve(null);
-      }
+      if (!settled) { settled = true; clearTimeout(timeout); resolve(null); }
     });
   });
 };
@@ -368,8 +344,15 @@ ASRealtime.handleMessage = function (fromUid, msg) {
       }
       break;
     case 'friend_response':
-      if (msg.accepted) { if (!myData().friends.includes(fromUid)) myData().friends.push(fromUid); myData().friendRequestsOut = myData().friendRequestsOut.filter(u => u !== fromUid); persist(); AS.toast(`Ihr seid jetzt befreundet ♡`); }
-      else { myData().friendRequestsOut = myData().friendRequestsOut.filter(u => u !== fromUid); persist(); }
+      if (msg.accepted) {
+        if (!myData().friends.includes(fromUid)) myData().friends.push(fromUid);
+        myData().friendRequestsOut = myData().friendRequestsOut.filter(u => u !== fromUid);
+        persist();
+        AS.toast(`Ihr seid jetzt befreundet ♡`);
+      } else {
+        myData().friendRequestsOut = myData().friendRequestsOut.filter(u => u !== fromUid);
+        persist();
+      }
       if (getCurrentView() === 'friends') RENDERERS.friends();
       break;
     case 'chat':
@@ -404,7 +387,7 @@ ASRealtime.handleMessage = function (fromUid, msg) {
 function getCurrentView() { return VIEWS.find(v => !document.getElementById('view-' + v).classList.contains('hidden')); }
 
 /* ======================================================================
-   FRIENDS
+   FRIENDS (inkl. Blockieren/Entblockieren)
    ====================================================================== */
 function renderFriendSearchResult(profile) {
   const resBox = document.getElementById('friendSearchResult');
@@ -478,7 +461,13 @@ RENDERERS.friends = function () {
   blockedBox.innerHTML = myData().blocked.length ? myData().blocked.map(uid => `<div class="list-row"><span style="flex:1;" class="tiny">${uid}</span><button class="btn btn-sm btn-ghost" data-unblock="${uid}">Entsperren</button></div>`).join('') : `<span class="muted tiny">Niemand blockiert.</span>`;
   blockedBox.querySelectorAll('[data-unblock]').forEach(el => el.addEventListener('click', () => {
     const uid = el.dataset.unblock;
+    // Person aus Blockliste entfernen
     myData().blocked = myData().blocked.filter(u => u !== uid);
+    // Falls die Person vor dem Blockieren Freund war, wieder als Freund hinzufügen
+    if (myData().blockedFriends && myData().blockedFriends.includes(uid)) {
+      if (!myData().friends.includes(uid)) myData().friends.push(uid);
+      myData().blockedFriends = myData().blockedFriends.filter(u => u !== uid);
+    }
     persist();
     RENDERERS.friends();
     if (myData().friends.includes(uid)) ASRealtime.connectToPeer(uid, true);
@@ -521,6 +510,11 @@ RENDERERS.friends = function () {
   listBox.querySelectorAll('[data-block]').forEach(el => el.addEventListener('click', () => {
     const uid = el.dataset.block;
     confirmModal('Person blockieren?', 'Ihr werdet automatisch keine Freunde mehr sein und diese Person kann dir nicht mehr schreiben.', () => {
+      // Wenn die Person vorher Freund war, in blockedFriends speichern, um sie beim Entblockieren wiederherzustellen
+      if (myData().friends.includes(uid)) {
+        if (!myData().blockedFriends) myData().blockedFriends = [];
+        myData().blockedFriends.push(uid);
+      }
       myData().friends = myData().friends.filter(u => u !== uid);
       if (!myData().blocked.includes(uid)) myData().blocked.push(uid);
       persist();
@@ -604,7 +598,7 @@ function renderChatMessages(uid) {
     html += `<div style="align-self:${m.from === 'me' ? 'flex-end' : 'flex-start'};max-width:78%;">
       <div style="background:${bubbleBg};padding:9px 13px;border-radius:16px;font-size:.87rem;">${content}${m.text ? escapeHtml(m.text) : ''}</div>
       <div class="tiny" style="text-align:${m.from === 'me' ? 'right' : 'left'};margin-top:2px;">
-        ${new Date(m.ts).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}
+        ${new Date(m.ts).toLocaleTimeString(AS.currentData.settings.language === 'de' ? 'de-DE' : 'en-US', { hour: '2-digit', minute: '2-digit' })}
         ${m.from === 'me' ? ' <span data-delmsg="' + (m.id || '') + '" style="cursor:pointer;">🗑️</span>' : ''}
       </div>
     </div>`;
