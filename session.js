@@ -1,4 +1,6 @@
-const ASRealtime = window.ASRealtime;
+/* ==========================================================================
+   Schoolify — session.js (v7 FINAL, korrigiert)
+   ========================================================================== */
 
 async function handleSessionJoin() {
   const params = new URLSearchParams(location.search);
