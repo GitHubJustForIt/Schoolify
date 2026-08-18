@@ -1,18 +1,13 @@
 /* ==========================================================================
-   Schoolify — app.js (v6, vollständig)
-   Cloud-Speicher jetzt über Cloudflare Worker (speicher-api.xyz.workers.dev)
-   Online-Limit: 12 MB pro User, Lokal-Limit: 5 MB.
-   Speicheranzeige in der Sicherheitsansicht zeigt den Füllstand an und
-   bittet bei vollem Speicher um Löschen des Accounts, um den Service
-   kostenlos zu halten.
+   Schoolify — app.js (v7, vollständig)
+   Cloudflare-Speicher, konsistente 12-MB-Online- / 5-MB-Lokal-Limits,
+   Cookie-Umschaltung im Auth, Session-Integration, Fußzeile.
    ========================================================================== */
 
 const AS = (window.AS = {});
 
-/* ---------------------------------------------------------------------- */
-/* Cloud-Speicher (Personal Data Box)                                     */
-/* ---------------------------------------------------------------------- */
-const CLOUD_BASE = "https://scholifydatahandler.akkermann-elias.workers.dev";
+/* Cloud-Speicher */
+const CLOUD_BASE = "https://speicher-api.xyz.workers.dev/c786ab5ff69c43738470d3a4a9a9c34d";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
@@ -21,15 +16,13 @@ AS.cloudEnabled = () => AS.getConsent() === 'cloud';
 
 async function cloudPut(key, value) {
   try {
-    const url = `${CLOUD_BASE}/${encodeURIComponent(key)}`;
-    await fetch(url, {
+    await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(value)
     });
   } catch (e) {}
 }
-
 async function cloudGet(key) {
   try {
     const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`);
@@ -38,7 +31,6 @@ async function cloudGet(key) {
     try { return JSON.parse(text); } catch { return text; }
   } catch (e) { return undefined; }
 }
-
 async function cloudDelete(key) {
   try { await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, { method: 'DELETE' }); } catch (e) {}
 }
@@ -56,6 +48,33 @@ function flushPendingCloudWrites() {
 window.flushPendingCloudWrites = flushPendingCloudWrites;
 window.addEventListener('beforeunload', flushPendingCloudWrites);
 
+/* Storage mit Blob-Größenverwaltung */
+AS._blobSizes = {};
+
+async function loadBlobSizes(uid) {
+  const localKey = `as_blob_sizes_${uid}`;
+  try {
+    const local = localStorage.getItem(localKey);
+    if (local) { AS._blobSizes = JSON.parse(local); return; }
+  } catch (e) {}
+  if (AS.cloudEnabled()) {
+    const remote = await cloudGet(localKey);
+    if (remote && typeof remote === 'object') { AS._blobSizes = remote; }
+  }
+}
+function saveBlobSize(uid, blobId, size) {
+  AS._blobSizes[blobId] = size;
+  const localKey = `as_blob_sizes_${uid}`;
+  try { localStorage.setItem(localKey, JSON.stringify(AS._blobSizes)); } catch (e) {}
+  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 1500);
+}
+function removeBlobSize(uid, blobId) {
+  delete AS._blobSizes[blobId];
+  const localKey = `as_blob_sizes_${uid}`;
+  try { localStorage.setItem(localKey, JSON.stringify(AS._blobSizes)); } catch (e) {}
+  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 1500);
+}
+
 AS.storage = {
   get(key, fallback) {
     try { const raw = localStorage.getItem(key); return raw === null ? fallback : JSON.parse(raw); }
@@ -63,16 +82,13 @@ AS.storage = {
   },
   set(key, value, opts) {
     const serialized = JSON.stringify(value);
-    const additionalBytes = serialized.length * 2;
-    // Bei Cloud-Aktivierung speichern wir zuerst online und versuchen dann lokal zu cachen.
     if (AS.cloudEnabled()) {
       if (opts && opts.immediate) cloudPut(key, value);
       else cloudPutDebounced(key, value);
-      // Lokal nur als Cache speichern, aber nicht scheitern, wenn localStorage voll ist.
-      try { localStorage.setItem(key, serialized); } catch (e) { /* Cache voll – online ist gespeichert */ }
+      try { localStorage.setItem(key, serialized); } catch (e) {}
       return true;
     } else {
-      // Lokale Speicherung: hartes Limit von 5 MB prüfen.
+      const additionalBytes = serialized.length * 2;
       if (isOverLimit(additionalBytes)) {
         AS.toast('Lokaler Speicher (5 MB) voll – bitte alte Dateien/Notizen löschen oder Online-Speicherung aktivieren.');
         return false;
@@ -90,16 +106,14 @@ AS.storage = {
   }
 };
 
-/* ---------------------------------------------------------------------- */
-/* Blob-Speicher                                                          */
-/* ---------------------------------------------------------------------- */
+/* Blob-Speicher */
 const BLOB_CACHE_PREFIX = 'as_blob_';
 function blobKey(id) { return 'blob_' + id; }
 AS.saveBlob = async function (id, dataUrl) {
-  // Online speichern (falls Cloud aktiv)
+  const size = dataUrl.length * 2;
   if (AS.cloudEnabled()) await cloudPut(blobKey(id), dataUrl);
-  // Lokal nur cachen, wenn Platz (bei Cloud nicht kritisch)
   try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
+  if (AS.currentUser) saveBlobSize(AS.currentUser.uniqueId, id, size);
 };
 AS.getBlobCached = function (id) { try { return localStorage.getItem(BLOB_CACHE_PREFIX + id); } catch (e) { return null; } };
 AS.getBlob = async function (id) {
@@ -117,6 +131,7 @@ AS.getBlob = async function (id) {
 AS.deleteBlob = function (id) {
   try { localStorage.removeItem(BLOB_CACHE_PREFIX + id); } catch (e) {}
   if (AS.cloudEnabled()) cloudDelete(blobKey(id));
+  if (AS.currentUser) removeBlobSize(AS.currentUser.uniqueId, id);
 };
 function asyncImg(blobId, onReady) {
   if (!blobId) return;
@@ -126,9 +141,7 @@ function asyncImg(blobId, onReady) {
 }
 window.asyncImg = asyncImg;
 
-/* ---------------------------------------------------------------------- */
-/* Teilen per QR-Code (Schulmaterial & Karteikarten-Stapel)               */
-/* ---------------------------------------------------------------------- */
+/* QR-Teilen */
 function shareKey(id) { return 'share_' + id; }
 function genShareId() { const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''; for (let i = 0; i < 10; i++) s += chars[Math.floor(Math.random() * chars.length)]; return s; }
 async function createShareAndShowQr(pkg, titleForModal) {
@@ -178,9 +191,7 @@ async function handleImportShare() {
   }
 }
 
-/* ---------------------------------------------------------------------- */
-/* Nutzer-Verzeichnis                                                     */
-/* ---------------------------------------------------------------------- */
+/* Nutzer-Verzeichnis */
 const KEY_USERS = 'as_users';
 const KEY_SESSION = 'as_session';
 const dataKey = (uid) => `as_data_${uid}`;
@@ -221,7 +232,8 @@ function defaultData() {
       onlineStatusVisible: true, onlineStatusFriendsOnly: true, activityStatus: true, readReceipts: true,
       airsignalActive: true, airsignalVisibility: 'friends', airsignalReceiveFrom: 'friends', airsignalAutoAccept: false,
     },
-    settings: { accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false, notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true }
+    settings: { accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false, notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true },
+    session: null
   };
 }
 AS.getData = (uid) => {
@@ -275,9 +287,7 @@ function confirmModal(title, msg, onYes) {
 }
 window.confirmModal = confirmModal;
 
-/* ---------------------------------------------------------------------- */
-/* Bild-Kompression                                                       */
-/* ---------------------------------------------------------------------- */
+/* Bild-Kompression */
 function compressImage(file, maxDim, quality) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -312,23 +322,19 @@ function limitsFor(kind) {
 }
 window.limitsFor = limitsFor;
 
-/* ---------------------------------------------------------------------- */
-/* Speicher-Limits & Anzeige                                              */
-/* ---------------------------------------------------------------------- */
+/* Speicher-Limits & Anzeige */
 function usageLimitBytes() {
   return AS.cloudEnabled() ? 12 * 1024 * 1024 : 5 * 1024 * 1024;
 }
 window.usageLimitBytes = usageLimitBytes;
 
 function usageBytes() {
-  let total = 0;
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (!key || !key.startsWith('as_')) continue;
-    const val = localStorage.getItem(key);
-    total += (val ? val.length : 0) * 2; // UTF-16 → Bytes ungefähr
+  let dataSize = 0;
+  if (AS.currentData) {
+    try { dataSize = JSON.stringify(AS.currentData).length * 2; } catch (e) {}
   }
-  return total;
+  const blobTotal = Object.values(AS._blobSizes || {}).reduce((a, b) => a + (b || 0), 0);
+  return dataSize + blobTotal;
 }
 window.usageBytes = usageBytes;
 
@@ -376,9 +382,13 @@ function renderStorageBar() {
 }
 window.renderStorageBar = renderStorageBar;
 
-/* ---------------------------------------------------------------------- */
-/* Avatare                                                                */
-/* ---------------------------------------------------------------------- */
+/* Event-Hilfe für Session-Synchronisierung */
+function notifyDataChange(collection) {
+  window.dispatchEvent(new CustomEvent('schoolify:dataChanged', { detail: { collection } }));
+}
+window.notifyDataChange = notifyDataChange;
+
+/* Avatare */
 const AVATAR_GRADIENTS = [['#B7E4D4', '#C3DFF7'], ['#F6D3B8', '#F8E39B'], ['#D9CBF2', '#C3DFF7'], ['#F6CBD6', '#B7E4D4'], ['#F8E39B', '#F6D3B8']];
 function avatarGradientFor(uid) { let h = 0; for (const c of uid) h = (h * 31 + c.charCodeAt(0)) >>> 0; return AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length]; }
 function initials(user) { return ((user.firstName || '?')[0] + (user.lastName || '?')[0]).toUpperCase(); }
@@ -432,6 +442,7 @@ document.addEventListener('click', (e) => {
 
 function hideSplash() { const s = document.getElementById('splash'); if (!s) return; s.classList.add('fade-out'); setTimeout(() => s.remove(), 450); }
 
+/* Auth & Consent Flow */
 function initConsentFlow(next) {
   const existing = AS.getConsent();
   if (existing) { next(); return; }
@@ -446,9 +457,28 @@ function initConsentFlow(next) {
   document.getElementById('cookieDeclineBtn').addEventListener('click', () => { AS.setConsent('local'); banner.classList.add('hidden'); next(); });
 }
 
-/* ---------------------------------------------------------------------- */
-/* Auth                                                                   */
-/* ---------------------------------------------------------------------- */
+/* Auth-UI Umschalter für Speichermodus */
+function updateAuthStorageToggle() {
+  const toggle = document.getElementById('authStorageToggle');
+  if (!toggle) return;
+  const cloud = AS.cloudEnabled();
+  const label = document.getElementById('authStorageLabel');
+  if (label) label.textContent = cloud ? 'Online-Speicherung (12 MB)' : 'Lokale Speicherung (5 MB)';
+  toggle.checked = cloud;
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const toggle = document.getElementById('authStorageToggle');
+  if (toggle) {
+    toggle.addEventListener('change', (e) => {
+      AS.setConsent(e.target.checked ? 'cloud' : 'local');
+      updateAuthStorageToggle();
+      AS.toast(e.target.checked ? 'Online-Speicherung aktiviert.' : 'Lokale Speicherung aktiviert.');
+    });
+  }
+  updateAuthStorageToggle();
+});
+
+/* Auth-Funktionen */
 document.querySelectorAll('[data-authtab]').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('[data-authtab]').forEach(t => t.classList.remove('active'));
@@ -474,7 +504,11 @@ document.getElementById('loginBtn').addEventListener('click', async () => {
     if (remoteUsers) { users = { ...remoteUsers, ...users }; AS.saveUsersLocalOnly(users); found = Object.values(users).find(u => u.email.toLowerCase() === email && normName(`${u.firstName} ${u.lastName}`) === normName(name)); }
   }
   if (!found) { AS.toast(AS.cloudEnabled() ? 'Kein Account mit diesen Daten gefunden.' : 'Kein Account gefunden. Aktiviere in den Einstellungen die Online-Speicherung, um dich auf einem neuen Gerät anzumelden.'); btn.disabled = false; btn.textContent = 'Anmelden'; return; }
-  if (AS.cloudEnabled()) { const remoteData = await cloudGet(dataKey(found.uniqueId)); if (remoteData) AS.storage.setLocalOnly(dataKey(found.uniqueId), remoteData); }
+  if (AS.cloudEnabled()) {
+    const remoteData = await cloudGet(dataKey(found.uniqueId));
+    if (remoteData) AS.storage.setLocalOnly(dataKey(found.uniqueId), remoteData);
+    await loadBlobSizes(found.uniqueId);
+  }
   loginAs(found.uniqueId);
 });
 
@@ -589,7 +623,7 @@ document.getElementById('logoutBtn').addEventListener('click', logout);
 document.getElementById('logoutAllBtn').addEventListener('click', () => { flushPendingCloudWrites(); AS.saveSession({ currentUserId: null, accounts: [] }); AS.toast('Von allen Geräten abgemeldet (lokal).'); setTimeout(() => location.reload(), 700); });
 document.getElementById('addAccountBtn').addEventListener('click', () => { flushPendingCloudWrites(); const session = AS.getSession(); session.currentUserId = null; AS.saveSession(session); location.reload(); });
 
-/* Vollständige Account-Löschung */
+/* Account-Löschung */
 document.getElementById('deleteAccountBtn').addEventListener('click', () => {
   confirmModal('Account wirklich löschen?', 'Alle deine Notizen, Aufgaben, der Stundenplan, deine Freundesliste und alle hochgeladenen Dateien werden unwiderruflich gelöscht — auch online.', async () => {
     const uid = AS.currentUser.uniqueId;
@@ -610,9 +644,7 @@ document.getElementById('exportDataBtn').addEventListener('click', () => {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `schoolify-export-${AS.currentUser.username}.json`; a.click();
 });
 
-/* ---------------------------------------------------------------------- */
-/* Boot / Router                                                          */
-/* ---------------------------------------------------------------------- */
+/* Boot / Router */
 function boot() {
   initConsentFlow(async () => {
     const session = AS.getSession(); const users = AS.getUsers();
@@ -621,10 +653,12 @@ function boot() {
       document.getElementById('authScreen').classList.remove('hidden');
       document.getElementById('app').classList.add('hidden');
       renderLocalAccountsQuickList();
+      updateAuthStorageToggle();
       return;
     }
     AS.currentUser = users[session.currentUserId];
     AS.currentData = AS.getData(AS.currentUser.uniqueId);
+    await loadBlobSizes(AS.currentUser.uniqueId);
     document.getElementById('authScreen').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
     applyTheme(); renderSidebarProfile(); initNavGroups(); showView('dashboard'); hideSplash();
@@ -632,6 +666,7 @@ function boot() {
     startTimetableClock();
     handleQrAutoFriend();
     handleImportShare();
+    if (typeof handleSessionJoin === 'function') handleSessionJoin();
     if (AS.currentUser.avatarBlobId) AS.getBlob(AS.currentUser.avatarBlobId);
   });
 }
@@ -669,7 +704,7 @@ function setupNavGroup(headId, bodyId, defaultOpen) {
   head.onclick = () => { const open = !body.classList.contains('open'); head.classList.toggle('open', open); body.classList.toggle('open', open); localStorage.setItem(key, open ? '1' : '0'); };
 }
 
-const VIEWS = ['dashboard', 'timetable', 'tasks', 'todo', 'learn', 'calendar', 'notes', 'materials', 'friends', 'chat', 'airsignal', 'security', 'settings', 'profile'];
+const VIEWS = ['dashboard', 'timetable', 'tasks', 'todo', 'learn', 'calendar', 'notes', 'materials', 'friends', 'chat', 'airsignal', 'session', 'security', 'settings', 'profile'];
 const RENDERERS = {};
 window.RENDERERS = RENDERERS; window.VIEWS = VIEWS;
 function showView(name) {
@@ -939,7 +974,7 @@ document.getElementById('addTodoGoalBtn').addEventListener('click', () => {
     root.querySelector('#goalCancel').onclick = AS.closeModal;
     root.querySelector('#goalSave').onclick = () => { const label = root.querySelector('#goalLabel').value.trim(); const target = +root.querySelector('#goalTarget').value || 1; if (!label) { AS.toast('Bitte ein Ziel angeben.'); return; } if (!AS.currentData.todoTemplate[todoEditDay]) AS.currentData.todoTemplate[todoEditDay] = []; AS.currentData.todoTemplate[todoEditDay].push({ id: 'g_' + Date.now(), label, target }); persist(); AS.closeModal(); renderTodoTemplate(); };
   });
-});
+}
 
 /* ======================================================================
    KALENDER
@@ -1000,7 +1035,7 @@ RENDERERS.materials = function () {
   }).join('');
   box.querySelectorAll('[data-thumb]').forEach(el => { const m = list.find(x => x.id === el.dataset.thumb); if ((m.type || '').includes('image') && m.blobId) asyncImg(m.blobId, (data) => { el.innerHTML = `<img src="${data}" alt="">`; }); });
   box.querySelectorAll('[data-download]').forEach(el => el.addEventListener('click', async () => { const m = list.find(x => x.id === el.dataset.download); el.textContent = '…'; const data = await AS.getBlob(m.blobId); el.textContent = 'Download'; if (!data) { AS.toast('Datei konnte nicht geladen werden.'); return; } const a = document.createElement('a'); a.href = data; a.download = m.name; a.click(); }));
-  box.querySelectorAll('[data-delm]').forEach(el => el.addEventListener('click', () => { const m = AS.currentData.materials.find(x => x.id === el.dataset.delm); if (m && m.blobId) AS.deleteBlob(m.blobId); AS.currentData.materials = AS.currentData.materials.filter(x => x.id !== el.dataset.delm); persist(); RENDERERS.materials(); }));
+  box.querySelectorAll('[data-delm]').forEach(el => el.addEventListener('click', () => { const m = AS.currentData.materials.find(x => x.id === el.dataset.delm); if (m && m.blobId) AS.deleteBlob(m.blobId); AS.currentData.materials = AS.currentData.materials.filter(x => x.id !== el.dataset.delm); persist(); RENDERERS.materials(); notifyDataChange('materials'); }));
 };
 function iconForType(t) { if (t.includes('pdf')) return '📕'; if (t.includes('image')) return '🖼️'; if (t.includes('presentation') || t.includes('powerpoint')) return '📊'; if (t.includes('word') || t.includes('document')) return '📄'; return '📁'; }
 document.getElementById('materialSearch').addEventListener('input', (e) => { materialQuery = e.target.value; RENDERERS.materials(); });
@@ -1020,7 +1055,7 @@ document.getElementById('materialFileInput').addEventListener('change', async (e
       added++;
     } catch (err) { AS.toast(`"${file.name}" konnte nicht verarbeitet werden.`); }
   }
-  if (added) { persist(); RENDERERS.materials(); AS.toast(`${added} Datei(en) hinzugefügt — platzsparend gespeichert.`); }
+  if (added) { persist(); RENDERERS.materials(); AS.toast(`${added} Datei(en) hinzugefügt — platzsparend gespeichert.`); notifyDataChange('materials'); }
   e.target.value = '';
 });
 
