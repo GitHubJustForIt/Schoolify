@@ -1,6 +1,7 @@
 /* ==========================================================================
    Schoolify — Design System (final)
    Collegeblock-Ästhetik, neutrale Pastelltöne, responsive.
+   Inkl. Dark-Mode-Overrides für alle Elemente.
    ========================================================================== */
 
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500;1,9..144,600&family=Figtree:wght@400;500;600;700;800&family=Caveat:wght@500;600;700&display=swap');
@@ -1675,4 +1676,36 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   background:var(--accent);
   border-color:var(--accent);
   animation:checkPop .35s ease;
+}
+
+/* Dark Mode Overrides für alle Elemente */
+[data-theme="dark"] .modal,
+[data-theme="dark"] .auth-panel,
+[data-theme="dark"] .sheet,
+[data-theme="dark"] .note-page-surface,
+[data-theme="dark"] .card {
+  background: var(--white);
+  border-color: var(--border);
+}
+
+[data-theme="dark"] input,
+[data-theme="dark"] select,
+[data-theme="dark"] textarea {
+  background: var(--cream);
+  color: var(--ink);
+}
+
+[data-theme="dark"] .chat-msgs,
+[data-theme="dark"] .chat-side {
+  background: var(--cream);
+}
+
+[data-theme="dark"] .chat-header,
+[data-theme="dark"] .note-editor-toolbar {
+  background: var(--cream-2);
+}
+
+[data-theme="dark"] .toast {
+  background: var(--ink);
+  color: var(--cream);
 }
