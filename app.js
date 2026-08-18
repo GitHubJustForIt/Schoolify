@@ -1,13 +1,13 @@
 /* ==========================================================================
-   Schoolify — app.js (v8.6 FINAL KOMPLETT)
-   Cloudflare-Speicher mit keepalive, sparsamen Writes und Debounce.
-   Alle Event-Listener robust über on().
+   Schoolify — app.js (v9 FINAL, vollständig)
+   Cloudflare-Speicher mit keepalive, Fehlerprüfung, exakte Größenberechnung,
+   Sprachumschaltung, robuste Event-Listener, Session-Integration.
    ========================================================================== */
 
 const AS = (window.AS = {});
 
 /* Cloud-Speicher */
-const CLOUD_BASE = "https://scholifydatahandler.akkermann-elias.workers.dev";
+const CLOUD_BASE = "https://speicher-api.xyz.workers.dev/c786ab5ff69c43738470d3a4a9a9c34d";
 const CONSENT_KEY = 'as_consent';
 
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
@@ -16,13 +16,21 @@ AS.cloudEnabled = () => AS.getConsent() === 'cloud';
 
 async function cloudPut(key, value) {
   try {
-    await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
+    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(value),
       keepalive: true
     });
-  } catch (e) {}
+    if (!res.ok) {
+      console.warn('cloudPut failed for', key, res.status);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn('cloudPut error for', key, e);
+    return false;
+  }
 }
 
 async function cloudGet(key) {
@@ -39,11 +47,12 @@ async function cloudGet(key) {
 
 async function cloudDelete(key) {
   try {
-    await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
+    const res = await fetch(`${CLOUD_BASE}/${encodeURIComponent(key)}`, {
       method: 'DELETE',
       keepalive: true
     });
-  } catch (e) {}
+    return res.ok;
+  } catch (e) { return false; }
 }
 
 /* Debounce-Verwaltung */
@@ -134,7 +143,7 @@ AS.storage = {
       try { localStorage.setItem(key, serialized); } catch (e) {}
       return true;
     } else {
-      const additionalBytes = serialized.length * 2;
+      const additionalBytes = new Blob([serialized]).size;
       if (isOverLimit(additionalBytes)) {
         AS.toast('Lokaler Speicher (5 MB) voll – bitte alte Dateien/Notizen löschen oder Online-Speicherung aktivieren.');
         return false;
@@ -160,10 +169,17 @@ const BLOB_CACHE_PREFIX = 'as_blob_';
 function blobKey(id) { return 'blob_' + id; }
 
 AS.saveBlob = async function (id, dataUrl) {
-  const size = dataUrl.length * 2;
-  if (AS.cloudEnabled()) await cloudPut(blobKey(id), dataUrl);
+  const size = new Blob([dataUrl]).size; // exakte Bytegröße
+  if (AS.cloudEnabled()) {
+    const ok = await cloudPut(blobKey(id), dataUrl);
+    if (!ok) {
+      AS.toast('⚠️ Datei konnte nicht online gespeichert werden – nur lokal verfügbar.');
+      // Trotzdem lokal speichern, aber nicht als online markieren
+    }
+  }
   try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {}
   if (AS.currentUser) saveBlobSize(AS.currentUser.uniqueId, id, size);
+  return true;
 };
 
 AS.getBlobCached = function (id) {
@@ -329,7 +345,8 @@ function defaultData() {
     },
     settings: {
       accent: 'mint', paperStyle: 'kariert', darkMode: false, reduceMotion: false,
-      notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true
+      notifFriendRequests: true, notifMessages: true, notifAirsignal: true, notifTasks: true,
+      language: 'de'
     },
     session: null
   };
@@ -344,6 +361,7 @@ AS.getData = (uid) => {
   if (!d.todoMode) d.todoMode = 'checklist';
   if (!d.decks) d.decks = [];
   if (!d.flashcards) d.flashcards = [];
+  if (!d.settings.language) d.settings.language = 'de';
   return d;
 };
 AS.saveData = (uid, d, opts) => AS.storage.set(dataKey(uid), d, opts);
@@ -465,8 +483,13 @@ window.usageLimitBytes = usageLimitBytes;
 function usageBytes() {
   let dataSize = 0;
   if (AS.currentData) {
-    try { dataSize = JSON.stringify(AS.currentData).length * 2; } catch (e) {}
+    try {
+      dataSize = new Blob([JSON.stringify(AS.currentData)]).size;
+    } catch (e) {
+      dataSize = JSON.stringify(AS.currentData).length * 2; // Fallback
+    }
   }
+  // Blob-Größen separat addieren
   const blobTotal = Object.values(AS._blobSizes || {}).reduce((a, b) => a + (b || 0), 0);
   return dataSize + blobTotal;
 }
@@ -521,6 +544,33 @@ function notifyDataChange(collection) {
   window.dispatchEvent(new CustomEvent('schoolify:dataChanged', { detail: { collection } }));
 }
 window.notifyDataChange = notifyDataChange;
+
+/* Sprachsystem */
+const I18N = {
+  de: {
+    dashboard: 'Dashboard', timetable: 'Stundenplan', tasks: 'Aufgaben', todo: 'To-Do',
+    learn: 'Lernen', calendar: 'Kalender', notes: 'Notizen', materials: 'Material',
+    friends: 'Freunde', chat: 'Chat', airsignal: 'AirSignal', session: 'Session',
+    security: 'Sicherheit', settings: 'Einstellungen', profile: 'Profil'
+  },
+  en: {
+    dashboard: 'Dashboard', timetable: 'Timetable', tasks: 'Tasks', todo: 'To-Do',
+    learn: 'Learn', calendar: 'Calendar', notes: 'Notes', materials: 'Materials',
+    friends: 'Friends', chat: 'Chat', airsignal: 'AirSignal', session: 'Session',
+    security: 'Security', settings: 'Settings', profile: 'Profile'
+  }
+};
+function t(key) {
+  const lang = AS.currentData?.settings?.language || 'de';
+  return I18N[lang]?.[key] || I18N.de[key] || key;
+}
+function updateNavLanguage() {
+  document.querySelectorAll('[data-view]').forEach(el => {
+    const view = el.dataset.view;
+    const textSpan = el.querySelector('span:last-child');
+    if (textSpan && t(view)) textSpan.textContent = t(view);
+  });
+}
 
 /* Avatare */
 const AVATAR_GRADIENTS = [
@@ -734,6 +784,7 @@ function boot() {
     initNavGroups();
     showView('dashboard');
     hideSplash();
+    updateNavLanguage();
     if (window.ASRealtime) window.ASRealtime.init(AS.currentUser.uniqueId);
     startTimetableClock();
     handleQrAutoFriend();
@@ -1447,7 +1498,7 @@ RENDERERS.materials = function () {
       <div style="padding:12px;">
         <strong style="font-size:.85rem;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.name)}</strong>
         <div class="tiny">${escapeHtml(m.subject || 'Ohne Fach')}${m.topic ? ' · ' + escapeHtml(m.topic) : ''}</div>
-        <div class="tiny">${(m.size / 1024).toFixed(0)} KB</div>
+        <div class="tiny">${(m.size / 1024).toFixed(1)} KB</div>
         <div class="row" style="margin-top:8px;gap:6px;">
           <span class="btn btn-sm btn-outline" data-download="${m.id}" style="cursor:pointer;">Download</span>
           <span class="tiny" style="cursor:pointer;margin-left:auto;color:var(--danger);" data-delm="${m.id}">🗑️</span>
@@ -1507,6 +1558,16 @@ RENDERERS.settings = function () {
       <div class="row between list-row"><span>🌙 Dark Mode</span><label class="switch"><input type="checkbox" id="darkModeToggle"><span class="track"></span></label></div>
       <div class="row between list-row"><span>🍃 Animationen reduzieren</span><label class="switch"><input type="checkbox" id="reduceMotionToggle"><span class="track"></span></label></div>
     </div>
+    <div class="settings-cat-title">Sprache</div>
+    <div class="card">
+      <div class="field">
+        <label>Sprache / Language</label>
+        <select id="languageSelect">
+          <option value="de">Deutsch</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+    </div>
     <div class="settings-cat-title">Benachrichtigungen</div>
     <div class="card"><div id="notifSettingsList"></div></div>`;
   const accentBox = document.getElementById('accentPicker');
@@ -1543,6 +1604,16 @@ RENDERERS.settings = function () {
     persist();
     applyTheme();
   };
+  // Sprache
+  const langSelect = document.getElementById('languageSelect');
+  langSelect.value = AS.currentData.settings.language || 'de';
+  langSelect.onchange = () => {
+    AS.currentData.settings.language = langSelect.value;
+    persist();
+    updateNavLanguage();
+    AS.toast(langSelect.value === 'de' ? 'Sprache: Deutsch' : 'Language: English');
+  };
+  // Benachrichtigungen
   const notifBox = document.getElementById('notifSettingsList');
   const notifFields = [['notifFriendRequests', 'Freundschaftsanfragen'], ['notifMessages', 'Neue Nachrichten'], ['notifAirsignal', 'AirSignal'], ['notifTasks', 'Aufgaben & Deadlines']];
   notifBox.innerHTML = notifFields.map(([k, l]) => `<div class="row between list-row"><span>${l}</span><label class="switch"><input type="checkbox" data-notif="${k}" ${AS.currentData.settings[k] ? 'checked' : ''}><span class="track"></span></label></div>`).join('');
@@ -1615,6 +1686,19 @@ window.broadcastProfileUpdate = broadcastProfileUpdate;
    EVENT-LISTENER (zentral, mit Null-Checks)
    ====================================================================== */
 function initAppEvents() {
+  // Auth-Tabs
+  document.querySelectorAll('[data-authtab]').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('[data-authtab]').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      const which = tab.dataset.authtab;
+      document.getElementById('loginPane').classList.toggle('hidden', which !== 'login');
+      document.getElementById('registerPane').classList.toggle('hidden', which !== 'register');
+      document.getElementById('forgotPane').classList.add('hidden');
+      document.getElementById('authTabsBar').classList.remove('hidden');
+    });
+  });
+
   on('loginBtn', 'click', async () => {
     const name = document.getElementById('loginName').value.trim();
     const email = document.getElementById('loginEmail').value.trim().toLowerCase();
