@@ -1,44 +1,7 @@
 /* ==========================================================================
-   Schoolify — realtime.js (v10.0, robustes PeerJS-Backoff)
-   ==========================================================================
-   WICHTIGSTE ÄNDERUNG GEGENÜBER v9:
-   PeerJS liefert bei einem 429 (Rate-Limit des Signalisierungsservers) NUR
-   die generische Fehlermeldung "Lost connection to server." — der HTTP-
-   Status 429 taucht NICHT im err.message auf (er ist nur in der rohen
-   WebSocket-Konsolenzeile sichtbar, die PeerJS selbst loggt, nicht im
-   Error-Objekt, das an 'error' übergeben wird). Der alte Code prüfte
-   `msg.includes('429')` — das hat NIE gematcht, wodurch die "Server
-   überlastet"-Bremse nie griff. Ergebnis: disconnected → peer.reconnect()
-   feuerte sofort wieder → sofortiger neuer 429 → Reconnect-Sturm, der den
-   Server noch mehr belastet hat.
-
-   Diese Version:
-   - verwendet KEIN Text-Matching auf Fehlermeldungen mehr, um zwischen
-     "normalem" Verbindungsabbruch und Rate-Limit zu unterscheiden
-     (das lässt sich clientseitig nicht zuverlässig unterscheiden),
-   - sondern behandelt JEDEN Verbindungsabbruch zum Signalisierungsserver
-     mit echtem Exponential-Backoff (2s → 4s → 8s … bis max. 60s, plus
-     Jitter), bevor überhaupt ein neuer Verbindungsversuch unternommen wird,
-   - hat GENAU EINEN Reconnect-Pfad (statt drei parallelen in v9), gesteuert
-     über einen einzigen Timer-Handle, damit sich nichts überlappt,
-   - erkennt 'unavailable-id' als fatalen Zustand (kein automatischer Retry
-     mehr, da sich das Problem durch Warten nicht löst),
-   - pausiert den 15s-Freundes-Reconnect-Intervall, solange der Peer selbst
-     nicht verbunden ist, um keine zusätzliche Serverlast zu erzeugen.
-
-   WICHTIGER PRAXIS-HINWEIS:
-   Der kostenlose, öffentliche PeerJS-Cloud-Server (0.peerjs.com) mit dem
-   geteilten Key 'peerjs' wird von sehr vielen Apps gleichzeitig genutzt
-   und limitiert IP-/Key-basiert. Wenn 429-Fehler bei euch häufig auftreten,
-   ist das KEIN Bug in eurem Code, sondern eine Kapazitätsgrenze des
-   kostenlosen Shared-Servers. Backoff mildert das Problem (weniger Last,
-   schnellere Erholung), löst es aber nicht dauerhaft. Für produktiven
-   Betrieb empfehlen wir:
-     1) einen eigenen kostenlosen PeerJS-Server-Account mit eigenem API-Key
-        unter https://peerjs.com/peerserver registrieren (eigenes Kontingent,
-        nicht mit fremden Apps geteilt), oder
-     2) einen eigenen PeerServer selbst hosten (npm-Paket "peer"), dann
-        host/port/path unten entsprechend anpassen.
+   Schoolify — realtime.js (v10.1, final)
+   - Beibehaltung der stabilen Backoff-Logik aus v10
+   - Zusätzliche Listener für benutzerdefinierten AirSignal-Datei-Button
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
@@ -50,23 +13,20 @@ const ASRealtime = (window.ASRealtime = {
   lastGeo: null,
   airSelected: new Set(),
 
-  // Freundes-Reconnect-Intervall (verbindet zu Freunden, NICHT zum Server)
   _friendReconnectTimer: null,
   _pendingRequests: {},
 
-  // Session-State
   sessionHostUid: null,
   sessionMembers: [],
   sessionId: null,
   sessionInviteCooldowns: {},
 
-  // --- Reconnect-State-Machine für die Verbindung zum Signalisierungsserver ---
-  _reconnectHandle: null,     // einziger aktiver Reconnect-Timer
-  _backoffMs: 2000,           // Start-Backoff
+  _reconnectHandle: null,
+  _backoffMs: 2000,
   _minBackoffMs: 2000,
-  _maxBackoffMs: 60000,       // Deckel bei 60s
-  _fatalError: false,         // z.B. unavailable-id: kein Auto-Retry mehr
-  _intentionalDisconnect: false, // true nach explizitem ASRealtime.disconnect()
+  _maxBackoffMs: 60000,
+  _fatalError: false,
+  _intentionalDisconnect: false,
 });
 
 function myData() { return AS.currentData; }
@@ -83,14 +43,10 @@ const ICE_CONFIG = {
   ]
 };
 
-// HIER DEINEN EIGENEN PEERJS-API-KEY EINTRAGEN
-// Kostenlos erhältlich unter: https://peerjs.com/peerserver
-// WICHTIG: der Default-Key 'peerjs' auf 0.peerjs.com wird von vielen fremden
-// Apps gleichzeitig genutzt und ist die häufigste Ursache für 429-Fehler.
-const PEERJS_KEY = 'peerjs'; // z.B. 'dein-eigener-key'
+const PEERJS_KEY = 'peerjs'; // optional eigener Key
 
 const PEERJS_OPTIONS = {
-  debug: 1,                     // Auf 0 setzen, um Logs zu reduzieren
+  debug: 1,
   host: '0.peerjs.com',
   port: 443,
   path: '/',
@@ -112,9 +68,6 @@ ASRealtime.init = function (uid) {
 
   if (this._friendReconnectTimer) clearInterval(this._friendReconnectTimer);
   this._friendReconnectTimer = setInterval(() => {
-    // Nur Freunde erneut verbinden, wenn der eigene Peer tatsächlich
-    // beim Signalisierungsserver online ist — sonst bringt es nichts und
-    // erzeugt nur unnötige Last / Konsolenfehler.
     if (this.peer && this.peer.open && !this._fatalError) this._reconnectAllFriends();
   }, 15000);
 };
@@ -139,19 +92,17 @@ ASRealtime._clearReconnectTimer = function () {
 };
 
 /* ======================================================================
-   RECONNECT-STATE-MACHINE (genau EIN Pfad, mit Exponential-Backoff)
+   RECONNECT-STATE-MACHINE
    ====================================================================== */
 ASRealtime._scheduleReconnect = function (reason) {
   if (this._intentionalDisconnect || this._fatalError) return;
-  if (this._reconnectHandle) return; // schon ein Versuch geplant → nicht duplizieren
+  if (this._reconnectHandle) return;
 
   const jitter = Math.floor(Math.random() * 1000);
   const delay = this._backoffMs + jitter;
   console.warn(`[PeerJS] Verbindung verloren (${reason}). Neuer Versuch in ${Math.round(delay / 1000)}s.`);
 
   if (this._backoffMs >= 15000) {
-    // Erst ab spürbaren Wartezeiten den Nutzer informieren, um bei kurzen
-    // Netz-Hakern nicht unnötig Toasts zu zeigen.
     AS.toast('Echtzeit-Verbindung unterbrochen — versuche automatisch erneut zu verbinden…');
   }
 
@@ -160,12 +111,9 @@ ASRealtime._scheduleReconnect = function (reason) {
     if (this._intentionalDisconnect || this._fatalError) return;
     if (!AS.currentUser) return;
 
-    // Backoff für den NÄCHSTEN Fehlversuch erhöhen (verdoppeln, gedeckelt).
     this._backoffMs = Math.min(this._backoffMs * 2, this._maxBackoffMs);
 
     if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
-      // Peer-Objekt existiert noch und ist nur vom Server getrennt (nicht
-      // zerstört) — leichtgewichtiger reconnect() statt komplettem Neuaufbau.
       try {
         this.peer.reconnect();
       } catch (e) {
@@ -173,7 +121,6 @@ ASRealtime._scheduleReconnect = function (reason) {
         this._createPeer(AS.currentUser.uniqueId);
       }
     } else {
-      // Peer wurde zerstört (z.B. nach 'close') → komplett neu aufbauen.
       this._createPeer(AS.currentUser.uniqueId);
     }
   }, delay);
@@ -190,8 +137,6 @@ ASRealtime._resetBackoff = function () {
 ASRealtime._createPeer = function (uid) {
   console.log('[PeerJS] Erstelle Peer mit ID:', uid);
 
-  // Falls noch ein altes Peer-Objekt existiert, sauber entsorgen, bevor ein
-  // neues erstellt wird (verhindert doppelte offene Sockets).
   if (this.peer && !this.peer.destroyed) {
     try { this.peer.destroy(); } catch (e) {}
   }
@@ -218,8 +163,6 @@ ASRealtime._createPeer = function (uid) {
   this.peer.on('disconnected', () => {
     console.warn('[PeerJS] Verbindung zum Server verloren (disconnected).');
     if (this._intentionalDisconnect || this._fatalError) return;
-    // NICHT sofort peer.reconnect() aufrufen (das hat den Reconnect-Sturm
-    // verursacht) — stattdessen über die Backoff-State-Machine planen.
     this._scheduleReconnect('disconnected');
   });
 
@@ -235,7 +178,6 @@ ASRealtime._createPeer = function (uid) {
     console.error('[PeerJS] Fehler:', type || '(unbekannter Typ)', msg);
 
     if (type === 'unavailable-id') {
-      // Nicht automatisch behebbar (ID ist woanders aktiv) — kein Retry-Loop.
       this._fatalError = true;
       this._clearReconnectTimer();
       AS.toast('Dein Account ist bereits in einem anderen Tab/Fenster geöffnet.');
@@ -243,25 +185,16 @@ ASRealtime._createPeer = function (uid) {
     }
 
     if (type === 'peer-unavailable') {
-      // Betrifft nur den Versuch, EINEN bestimmten Peer zu erreichen —
-      // hat nichts mit der Serververbindung selbst zu tun, kein Reconnect nötig.
       return;
     }
 
     if (type === 'browser-incompatible' || type === 'invalid-id' || type === 'invalid-key') {
-      // Konfigurationsfehler, durch Warten nicht lösbar.
       this._fatalError = true;
       this._clearReconnectTimer();
       AS.toast('Echtzeit-Verbindung: Konfigurationsfehler. Bitte Seite neu laden.');
       return;
     }
 
-    // Alle übrigen Fehlertypen (network, server-error, socket-error,
-    // socket-closed, webrtc, disconnected, "Lost connection to server" etc.)
-    // werden als vorübergehend behandelt und laufen über den Backoff.
-    // PeerJS feuert nach den meisten dieser Fehler ohnehin zusätzlich
-    // 'disconnected' oder 'close' — _scheduleReconnect ist selbst dagegen
-    // abgesichert, mehrfach parallel geplant zu werden.
     this._scheduleReconnect('error:' + (type || 'unknown'));
   });
 };
@@ -275,7 +208,7 @@ ASRealtime._reconnectAllFriends = function () {
 };
 
 /* ======================================================================
-   VERBINDUNGEN ZU ANDEREN PEERS (Freunde, Chat-Partner, ...)
+   VERBINDUNGEN ZU ANDEREN PEERS
    ====================================================================== */
 ASRealtime.connectToPeer = function (uid, silent) {
   return new Promise((resolve) => {
@@ -290,9 +223,6 @@ ASRealtime.connectToPeer = function (uid, silent) {
     if (this._fatalError) { resolve(null); return; }
 
     if (!this.peer || this.peer.destroyed || this.peer.disconnected) {
-      // Peer ist gerade nicht mit dem Server verbunden — nicht sofort erneut
-      // versuchen (das würde die Backoff-Logik umgehen), sondern kurz warten
-      // und nur EINMAL erneut prüfen, statt einer eigenen Retry-Schleife.
       console.warn('[PeerJS] Peer nicht bereit, warte auf Reconnect…');
       setTimeout(() => {
         if (this.peer && this.peer.open) resolve(this.connectToPeer(uid, silent));
@@ -999,6 +929,8 @@ function initRealtimeEvents() {
       AS.toast(`AirSignal an ${recipients.length} Freund(e) gesendet ✦`);
       document.getElementById('airQuickText').value = '';
       fileInput.value = '';
+      const nameEl = document.getElementById('airFileName');
+      if (nameEl) nameEl.textContent = 'Keine Datei gewählt';
       ASRealtime.airSelected.clear();
       RENDERERS.airsignal();
     };
@@ -1010,6 +942,20 @@ function initRealtimeEvents() {
         send([{ name: file.name, type: file.type, dataUrl }]);
       })();
     } else send([]);
+  });
+
+  // Custom AirSignal Datei-Button
+  on('airCustomFileBtn', 'click', () => {
+    const fileInput = document.getElementById('airQuickFile');
+    if (fileInput) fileInput.click();
+  });
+
+  on('airQuickFile', 'change', (e) => {
+    const file = e.target.files[0];
+    const nameEl = document.getElementById('airFileName');
+    if (nameEl) {
+      nameEl.textContent = file ? file.name : 'Keine Datei gewählt';
+    }
   });
 }
 
