@@ -1,14 +1,72 @@
 /* ==========================================================================
-   Schoolify — realtime.js (v9.0, PeerJS-Backoff & API-Key)
+   Schoolify — realtime.js (v10.0, robustes PeerJS-Backoff)
+   ==========================================================================
+   WICHTIGSTE ÄNDERUNG GEGENÜBER v9:
+   PeerJS liefert bei einem 429 (Rate-Limit des Signalisierungsservers) NUR
+   die generische Fehlermeldung "Lost connection to server." — der HTTP-
+   Status 429 taucht NICHT im err.message auf (er ist nur in der rohen
+   WebSocket-Konsolenzeile sichtbar, die PeerJS selbst loggt, nicht im
+   Error-Objekt, das an 'error' übergeben wird). Der alte Code prüfte
+   `msg.includes('429')` — das hat NIE gematcht, wodurch die "Server
+   überlastet"-Bremse nie griff. Ergebnis: disconnected → peer.reconnect()
+   feuerte sofort wieder → sofortiger neuer 429 → Reconnect-Sturm, der den
+   Server noch mehr belastet hat.
+
+   Diese Version:
+   - verwendet KEIN Text-Matching auf Fehlermeldungen mehr, um zwischen
+     "normalem" Verbindungsabbruch und Rate-Limit zu unterscheiden
+     (das lässt sich clientseitig nicht zuverlässig unterscheiden),
+   - sondern behandelt JEDEN Verbindungsabbruch zum Signalisierungsserver
+     mit echtem Exponential-Backoff (2s → 4s → 8s … bis max. 60s, plus
+     Jitter), bevor überhaupt ein neuer Verbindungsversuch unternommen wird,
+   - hat GENAU EINEN Reconnect-Pfad (statt drei parallelen in v9), gesteuert
+     über einen einzigen Timer-Handle, damit sich nichts überlappt,
+   - erkennt 'unavailable-id' als fatalen Zustand (kein automatischer Retry
+     mehr, da sich das Problem durch Warten nicht löst),
+   - pausiert den 15s-Freundes-Reconnect-Intervall, solange der Peer selbst
+     nicht verbunden ist, um keine zusätzliche Serverlast zu erzeugen.
+
+   WICHTIGER PRAXIS-HINWEIS:
+   Der kostenlose, öffentliche PeerJS-Cloud-Server (0.peerjs.com) mit dem
+   geteilten Key 'peerjs' wird von sehr vielen Apps gleichzeitig genutzt
+   und limitiert IP-/Key-basiert. Wenn 429-Fehler bei euch häufig auftreten,
+   ist das KEIN Bug in eurem Code, sondern eine Kapazitätsgrenze des
+   kostenlosen Shared-Servers. Backoff mildert das Problem (weniger Last,
+   schnellere Erholung), löst es aber nicht dauerhaft. Für produktiven
+   Betrieb empfehlen wir:
+     1) einen eigenen kostenlosen PeerJS-Server-Account mit eigenem API-Key
+        unter https://peerjs.com/peerserver registrieren (eigenes Kontingent,
+        nicht mit fremden Apps geteilt), oder
+     2) einen eigenen PeerServer selbst hosten (npm-Paket "peer"), dann
+        host/port/path unten entsprechend anpassen.
    ========================================================================== */
 
 const ASRealtime = (window.ASRealtime = {
-  peer: null, conns: {}, knownProfiles: {}, pendingSearch: null, activeChatUid: null, lastGeo: null, airSelected: new Set(),
-  _reconnectTimer: null, _pendingRequests: {},
-  sessionHostUid: null, sessionMembers: [], sessionId: null,
+  peer: null,
+  conns: {},
+  knownProfiles: {},
+  pendingSearch: null,
+  activeChatUid: null,
+  lastGeo: null,
+  airSelected: new Set(),
+
+  // Freundes-Reconnect-Intervall (verbindet zu Freunden, NICHT zum Server)
+  _friendReconnectTimer: null,
+  _pendingRequests: {},
+
+  // Session-State
+  sessionHostUid: null,
+  sessionMembers: [],
+  sessionId: null,
   sessionInviteCooldowns: {},
-  _serverOverloaded: false,
-  _manualRetryTimer: null,
+
+  // --- Reconnect-State-Machine für die Verbindung zum Signalisierungsserver ---
+  _reconnectHandle: null,     // einziger aktiver Reconnect-Timer
+  _backoffMs: 2000,           // Start-Backoff
+  _minBackoffMs: 2000,
+  _maxBackoffMs: 60000,       // Deckel bei 60s
+  _fatalError: false,         // z.B. unavailable-id: kein Auto-Retry mehr
+  _intentionalDisconnect: false, // true nach explizitem ASRealtime.disconnect()
 });
 
 function myData() { return AS.currentData; }
@@ -27,6 +85,8 @@ const ICE_CONFIG = {
 
 // HIER DEINEN EIGENEN PEERJS-API-KEY EINTRAGEN
 // Kostenlos erhältlich unter: https://peerjs.com/peerserver
+// WICHTIG: der Default-Key 'peerjs' auf 0.peerjs.com wird von vielen fremden
+// Apps gleichzeitig genutzt und ist die häufigste Ursache für 429-Fehler.
 const PEERJS_KEY = 'peerjs'; // z.B. 'dein-eigener-key'
 
 const PEERJS_OPTIONS = {
@@ -39,29 +99,116 @@ const PEERJS_OPTIONS = {
   config: ICE_CONFIG
 };
 
+/* ======================================================================
+   INIT / DISCONNECT
+   ====================================================================== */
 ASRealtime.init = function (uid) {
   if (this.peer && !this.peer.destroyed) return;
-  this._serverOverloaded = false;
+  this._intentionalDisconnect = false;
+  this._fatalError = false;
+  this._backoffMs = this._minBackoffMs;
+  this._clearReconnectTimer();
   this._createPeer(uid);
-  if (this._reconnectTimer) clearInterval(this._reconnectTimer);
-  this._reconnectTimer = setInterval(() => {
-    if (!this._serverOverloaded) this._reconnectAllFriends();
+
+  if (this._friendReconnectTimer) clearInterval(this._friendReconnectTimer);
+  this._friendReconnectTimer = setInterval(() => {
+    // Nur Freunde erneut verbinden, wenn der eigene Peer tatsächlich
+    // beim Signalisierungsserver online ist — sonst bringt es nichts und
+    // erzeugt nur unnötige Last / Konsolenfehler.
+    if (this.peer && this.peer.open && !this._fatalError) this._reconnectAllFriends();
   }, 15000);
 };
 
+ASRealtime.disconnect = function () {
+  console.log('[PeerJS] Trenne alle Verbindungen (beabsichtigt).');
+  this._intentionalDisconnect = true;
+  this._clearReconnectTimer();
+  if (this._friendReconnectTimer) clearInterval(this._friendReconnectTimer);
+  this._friendReconnectTimer = null;
+  Object.values(this.conns).forEach(c => { try { c.close(); } catch (e) {} });
+  this.conns = {};
+  if (this.peer) { try { this.peer.destroy(); } catch (e) {} }
+  this.peer = null;
+};
+
+ASRealtime._clearReconnectTimer = function () {
+  if (this._reconnectHandle) {
+    clearTimeout(this._reconnectHandle);
+    this._reconnectHandle = null;
+  }
+};
+
+/* ======================================================================
+   RECONNECT-STATE-MACHINE (genau EIN Pfad, mit Exponential-Backoff)
+   ====================================================================== */
+ASRealtime._scheduleReconnect = function (reason) {
+  if (this._intentionalDisconnect || this._fatalError) return;
+  if (this._reconnectHandle) return; // schon ein Versuch geplant → nicht duplizieren
+
+  const jitter = Math.floor(Math.random() * 1000);
+  const delay = this._backoffMs + jitter;
+  console.warn(`[PeerJS] Verbindung verloren (${reason}). Neuer Versuch in ${Math.round(delay / 1000)}s.`);
+
+  if (this._backoffMs >= 15000) {
+    // Erst ab spürbaren Wartezeiten den Nutzer informieren, um bei kurzen
+    // Netz-Hakern nicht unnötig Toasts zu zeigen.
+    AS.toast('Echtzeit-Verbindung unterbrochen — versuche automatisch erneut zu verbinden…');
+  }
+
+  this._reconnectHandle = setTimeout(() => {
+    this._reconnectHandle = null;
+    if (this._intentionalDisconnect || this._fatalError) return;
+    if (!AS.currentUser) return;
+
+    // Backoff für den NÄCHSTEN Fehlversuch erhöhen (verdoppeln, gedeckelt).
+    this._backoffMs = Math.min(this._backoffMs * 2, this._maxBackoffMs);
+
+    if (this.peer && !this.peer.destroyed && this.peer.disconnected) {
+      // Peer-Objekt existiert noch und ist nur vom Server getrennt (nicht
+      // zerstört) — leichtgewichtiger reconnect() statt komplettem Neuaufbau.
+      try {
+        this.peer.reconnect();
+      } catch (e) {
+        console.error('[PeerJS] reconnect() fehlgeschlagen, baue Peer neu auf:', e);
+        this._createPeer(AS.currentUser.uniqueId);
+      }
+    } else {
+      // Peer wurde zerstört (z.B. nach 'close') → komplett neu aufbauen.
+      this._createPeer(AS.currentUser.uniqueId);
+    }
+  }, delay);
+};
+
+ASRealtime._resetBackoff = function () {
+  this._backoffMs = this._minBackoffMs;
+  this._clearReconnectTimer();
+};
+
+/* ======================================================================
+   PEER-AUFBAU
+   ====================================================================== */
 ASRealtime._createPeer = function (uid) {
   console.log('[PeerJS] Erstelle Peer mit ID:', uid);
+
+  // Falls noch ein altes Peer-Objekt existiert, sauber entsorgen, bevor ein
+  // neues erstellt wird (verhindert doppelte offene Sockets).
+  if (this.peer && !this.peer.destroyed) {
+    try { this.peer.destroy(); } catch (e) {}
+  }
+
   try {
     this.peer = new Peer(uid, PEERJS_OPTIONS);
   } catch (e) {
     console.error('[PeerJS] Konnte Peer nicht erstellen:', e);
     AS.toast('Echtzeit-Verbindung konnte nicht gestartet werden.');
+    this._scheduleReconnect('createPeer-exception');
     return;
   }
 
   this.peer.on('open', () => {
     console.log('[PeerJS] Verbunden mit Signalisierungsserver.');
-    this._serverOverloaded = false;
+    this._resetBackoff();
+    this._fatalError = false;
     this._reconnectAllFriends();
     this._retryPendingRequests();
   });
@@ -69,67 +216,67 @@ ASRealtime._createPeer = function (uid) {
   this.peer.on('connection', (conn) => this.handleIncomingConnection(conn));
 
   this.peer.on('disconnected', () => {
-    console.warn('[PeerJS] Verbindung zum Server verloren.');
-    if (!this._serverOverloaded && this.peer && !this.peer.destroyed) {
-      try { this.peer.reconnect(); } catch (e) {}
-    }
+    console.warn('[PeerJS] Verbindung zum Server verloren (disconnected).');
+    if (this._intentionalDisconnect || this._fatalError) return;
+    // NICHT sofort peer.reconnect() aufrufen (das hat den Reconnect-Sturm
+    // verursacht) — stattdessen über die Backoff-State-Machine planen.
+    this._scheduleReconnect('disconnected');
   });
 
   this.peer.on('close', () => {
     console.log('[PeerJS] Peer geschlossen.');
-    if (!this._serverOverloaded) {
-      setTimeout(() => {
-        if (AS.currentUser) this._createPeer(AS.currentUser.uniqueId);
-      }, 2000);
-    }
+    if (this._intentionalDisconnect || this._fatalError) return;
+    this._scheduleReconnect('close');
   });
 
   this.peer.on('error', (err) => {
-    const msg = String(err);
-    console.error('[PeerJS] Fehler:', msg);
-    if (msg.includes('429')) {
-      // Server überlastet – automatische Wiederverbindung stoppen
-      this._serverOverloaded = true;
-      if (this._reconnectTimer) clearInterval(this._reconnectTimer);
-      if (this._manualRetryTimer) clearTimeout(this._manualRetryTimer);
-      AS.toast('Der Peer-Server ist gerade überlastet. Bitte warte einen Moment.');
-      // Einmaliger manueller Versuch nach 60 Sekunden
-      this._manualRetryTimer = setTimeout(() => {
-        this._serverOverloaded = false;
-        if (AS.currentUser && (!this.peer || this.peer.destroyed)) {
-          this._createPeer(AS.currentUser.uniqueId);
-        }
-      }, 60000);
+    const msg = String((err && err.message) || err);
+    const type = err && err.type;
+    console.error('[PeerJS] Fehler:', type || '(unbekannter Typ)', msg);
+
+    if (type === 'unavailable-id') {
+      // Nicht automatisch behebbar (ID ist woanders aktiv) — kein Retry-Loop.
+      this._fatalError = true;
+      this._clearReconnectTimer();
+      AS.toast('Dein Account ist bereits in einem anderen Tab/Fenster geöffnet.');
       return;
     }
-    if (msg.includes('unavailable-id')) {
-      AS.toast('Dein Account ist bereits in einem anderen Tab geöffnet.');
+
+    if (type === 'peer-unavailable') {
+      // Betrifft nur den Versuch, EINEN bestimmten Peer zu erreichen —
+      // hat nichts mit der Serververbindung selbst zu tun, kein Reconnect nötig.
       return;
     }
-    if (msg.includes('peer-unavailable')) return;
-    setTimeout(() => {
-      if (AS.currentUser && (!this.peer || this.peer.destroyed)) this._createPeer(AS.currentUser.uniqueId);
-    }, 3000);
+
+    if (type === 'browser-incompatible' || type === 'invalid-id' || type === 'invalid-key') {
+      // Konfigurationsfehler, durch Warten nicht lösbar.
+      this._fatalError = true;
+      this._clearReconnectTimer();
+      AS.toast('Echtzeit-Verbindung: Konfigurationsfehler. Bitte Seite neu laden.');
+      return;
+    }
+
+    // Alle übrigen Fehlertypen (network, server-error, socket-error,
+    // socket-closed, webrtc, disconnected, "Lost connection to server" etc.)
+    // werden als vorübergehend behandelt und laufen über den Backoff.
+    // PeerJS feuert nach den meisten dieser Fehler ohnehin zusätzlich
+    // 'disconnected' oder 'close' — _scheduleReconnect ist selbst dagegen
+    // abgesichert, mehrfach parallel geplant zu werden.
+    this._scheduleReconnect('error:' + (type || 'unknown'));
   });
 };
 
 ASRealtime._reconnectAllFriends = function () {
-  if (this._serverOverloaded || !AS.currentData) return;
+  if (this._fatalError || !AS.currentData) return;
   myData().friends.forEach(fid => {
     if (myData().blocked.includes(fid)) return;
     if (!(this.conns[fid] && this.conns[fid].open)) this.connectToPeer(fid, true);
   });
 };
 
-ASRealtime.disconnect = function () {
-  console.log('[PeerJS] Trenne alle Verbindungen.');
-  if (this._reconnectTimer) clearInterval(this._reconnectTimer);
-  if (this._manualRetryTimer) clearTimeout(this._manualRetryTimer);
-  Object.values(this.conns).forEach(c => { try { c.close(); } catch (e) {} });
-  this.conns = {};
-  if (this.peer) { try { this.peer.destroy(); } catch (e) {} }
-};
-
+/* ======================================================================
+   VERBINDUNGEN ZU ANDEREN PEERS (Freunde, Chat-Partner, ...)
+   ====================================================================== */
 ASRealtime.connectToPeer = function (uid, silent) {
   return new Promise((resolve) => {
     if (myData().blocked.includes(uid)) { resolve(null); return; }
@@ -140,9 +287,17 @@ ASRealtime.connectToPeer = function (uid, silent) {
       delete this.conns[uid];
     }
 
-    if (!this.peer || this.peer.destroyed) {
-      console.warn('[PeerJS] Peer nicht bereit, versuche in 1s erneut...');
-      setTimeout(() => resolve(this.connectToPeer(uid, silent)), 1000);
+    if (this._fatalError) { resolve(null); return; }
+
+    if (!this.peer || this.peer.destroyed || this.peer.disconnected) {
+      // Peer ist gerade nicht mit dem Server verbunden — nicht sofort erneut
+      // versuchen (das würde die Backoff-Logik umgehen), sondern kurz warten
+      // und nur EINMAL erneut prüfen, statt einer eigenen Retry-Schleife.
+      console.warn('[PeerJS] Peer nicht bereit, warte auf Reconnect…');
+      setTimeout(() => {
+        if (this.peer && this.peer.open) resolve(this.connectToPeer(uid, silent));
+        else resolve(null);
+      }, Math.min(this._backoffMs, 5000));
       return;
     }
 
