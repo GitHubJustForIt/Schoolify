@@ -341,7 +341,14 @@
         <div id="airFriendsOnline" class="row wrap" style="margin-top:12px;gap:14px;"></div>
         <div id="airSendBox" class="hidden" style="margin-top:14px;border-top:1.5px dashed var(--border);padding-top:14px;">
           <div class="field"><label>Nachricht (optional)</label><input type="text" id="airQuickText" maxlength="100" placeholder="z. B. Hausaufgaben-Foto 📸"></div>
-          <div class="field"><label>Datei anhängen (optional)</label><input type="file" id="airQuickFile" accept="image/*,.pdf,.doc,.docx"></div>
+          <div class="field">
+            <label>Datei anhängen (optional)</label>
+            <div class="row" style="gap:8px;">
+              <button class="btn btn-sm btn-outline" id="airCustomFileBtn">📎 Datei auswählen</button>
+              <span class="tiny" id="airFileName" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Keine Datei gewählt</span>
+            </div>
+            <input type="file" id="airQuickFile" accept="image/*,.pdf,.doc,.docx" class="hidden">
+          </div>
           <button class="btn btn-sm" id="airQuickSendBtn">✦ An <span id="airSelCount">0</span> Freunde senden</button>
         </div>
       </div>
@@ -364,7 +371,7 @@
         <div class="card" style="text-align:center;">
           <div class="spinner-sm" style="margin:0 auto 10px;"></div>
           <p id="sessionWaitingText">Warte auf Freigabe…</p>
-          <button class="btn btn-ghost btn-sm" id="leaveSessionBtn" style="margin-top:10px;">Session verlassen</button>
+          <button class="btn btn-ghost btn-sm" id="leaveSessionBtnWait" style="margin-top:10px;">Session verlassen</button>
         </div>
       </div>
       <div id="sessionActiveArea" class="hidden">
@@ -374,7 +381,7 @@
             <div id="sessionQrWrap" style="display:flex;justify-content:center;margin:16px 0;"></div>
             <p class="pill" id="sessionIdDisplay"></p>
             <p class="tiny">Aus Sicherheitsgründen nur per QR-Code beitreten.</p>
-            <button class="btn btn-ghost btn-sm" id="leaveSessionBtn" style="margin-top:10px;">Session verlassen</button>
+            <button class="btn btn-ghost btn-sm" id="leaveSessionBtnActive" style="margin-top:10px;">Session verlassen</button>
           </div>
           <div class="card">
             <h3>Mitglieder</h3>
