@@ -1,5 +1,14 @@
 /* ==========================================================================
-   Schoolify — session.js (v7 FINAL, korrigiert)
+   Schoolify — session.js (v8, abgestimmt auf realtime.js v10)
+   ==========================================================================
+   Funktional inhaltlich unverändert zur v7 — angepasst wurden nur Stellen,
+   die mit der neuen Reconnect-Logik in realtime.js zusammenspielen:
+   - connectToPeer() kann jetzt etwas länger brauchen, wenn der eigene Peer
+     gerade im Backoff hängt (kein Dauerspam mehr) — das ist hier bereits
+     korrekt per await abgefangen, keine Änderung nötig.
+   - Kleine Robustheit: renderSessionMembers/renderInviteList greifen defensiv
+     auf ASRealtime.sessionMembers zu (Array-Fallback), falls ASRealtime noch
+     nicht vollständig initialisiert ist.
    ========================================================================== */
 
 async function handleSessionJoin() {
@@ -22,7 +31,7 @@ async function handleSessionJoin() {
 
 RENDERERS.session = function () {
   const isHost = AS.currentData.session && AS.currentData.session.hostUid === AS.currentUser.uniqueId;
-  const isMember = ASRealtime.sessionMembers.includes(AS.currentUser.uniqueId) || isHost;
+  const isMember = (ASRealtime.sessionMembers || []).includes(AS.currentUser.uniqueId) || isHost;
   const session = AS.currentData.session;
 
   document.getElementById('sessionStartArea').classList.toggle('hidden', isHost || isMember);
@@ -75,13 +84,14 @@ function renderInviteList() {
   const friends = AS.currentData.friends || [];
   const online = ASRealtime.onlineFriends();
   const now = Date.now();
+  const members = ASRealtime.sessionMembers || [];
   inviteBox.innerHTML = '<strong class="tiny">Freunde einladen</strong>';
   if (!friends.length) {
     inviteBox.innerHTML += '<p class="tiny muted">Keine Freunde vorhanden.</p>';
     return;
   }
   friends.forEach(uid => {
-    if (ASRealtime.sessionMembers.includes(uid)) return;
+    if (members.includes(uid)) return;
     const cooldownEnd = ASRealtime.sessionInviteCooldowns[uid] || 0;
     const remaining = Math.ceil((cooldownEnd - now) / 1000);
     const profile = friendProfile(uid) || { firstName: uid };
@@ -155,7 +165,9 @@ function handleSessionInviteResponse(fromUid, msg) {
 
 function renderSessionMembers(isHost) {
   const list = document.getElementById('sessionMembersList');
-  const members = ASRealtime.sessionMembers.length ? ASRealtime.sessionMembers : (AS.currentData.session?.members || []);
+  const members = (ASRealtime.sessionMembers && ASRealtime.sessionMembers.length)
+    ? ASRealtime.sessionMembers
+    : (AS.currentData.session?.members || []);
   list.innerHTML = members.map(uid => {
     const p = friendProfile(uid) || { firstName: uid, lastName: '', username: '' };
     const isLeader = uid === ASRealtime.sessionHostUid;
@@ -194,7 +206,7 @@ function renderSessionMembers(isHost) {
 }
 
 function broadcastSessionMembers() {
-  const members = ASRealtime.sessionMembers;
+  const members = ASRealtime.sessionMembers || [];
   members.forEach(uid => {
     if (uid !== AS.currentUser.uniqueId) {
       ASRealtime.sendTo(uid, { type: 'session_members', members });
@@ -204,7 +216,7 @@ function broadcastSessionMembers() {
 
 function leaveSession() {
   if (ASRealtime.sessionHostUid === AS.currentUser.uniqueId) {
-    const members = [...ASRealtime.sessionMembers];
+    const members = [...(ASRealtime.sessionMembers || [])];
     members.forEach(uid => {
       if (uid !== AS.currentUser.uniqueId) {
         ASRealtime.sendTo(uid, { type: 'session_kick', reason: 'Die Session wurde beendet.' });
@@ -225,7 +237,7 @@ function leaveSession() {
 /* Eingehende Session-Nachrichten */
 function handleSessionJoinRequest(fromUid, msg) {
   if (msg.leaving) {
-    ASRealtime.sessionMembers = ASRealtime.sessionMembers.filter(u => u !== fromUid);
+    ASRealtime.sessionMembers = (ASRealtime.sessionMembers || []).filter(u => u !== fromUid);
     broadcastSessionMembers();
     RENDERERS.session();
     return;
@@ -234,6 +246,7 @@ function handleSessionJoinRequest(fromUid, msg) {
     ASRealtime.sendTo(fromUid, { type: 'session_kick', reason: 'Session nicht gefunden.' });
     return;
   }
+  if (!ASRealtime.sessionMembers) ASRealtime.sessionMembers = [];
   if (ASRealtime.sessionMembers.includes(fromUid)) {
     ASRealtime.sendTo(fromUid, { type: 'session_welcome', members: ASRealtime.sessionMembers, hostUid: AS.currentUser.uniqueId });
     return;
@@ -283,7 +296,7 @@ function handleSessionLeaderChange(msg) {
 window.addEventListener('schoolify:dataChanged', (e) => {
   if (!AS.currentData.session || AS.currentData.session.hostUid !== AS.currentUser.uniqueId) return;
   const { collection } = e.detail;
-  const members = ASRealtime.sessionMembers.filter(u => u !== AS.currentUser.uniqueId);
+  const members = (ASRealtime.sessionMembers || []).filter(u => u !== AS.currentUser.uniqueId);
   members.forEach(uid => {
     if (collection === 'notes') {
       ASRealtime.sendTo(uid, { type: 'session_sync_notes', folders: AS.currentData.noteFolders, pages: AS.currentData.notePages });
