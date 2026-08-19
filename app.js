@@ -1,9 +1,32 @@
 /* ==========================================================================
-   Schoolify — app.js (v12.0, final)
-   - Exakte Speicherberechnung über localStorage
-   - Blob-Speicherung als reiner Text (kein JSON-String)
-   - Sprache umschaltbar (DE/EN) für alle wichtigen UI-Texte
-   - Dark Mode vollständig
+   Schoolify — app.js (v13.0, korrekte Speicherplatz-Trennung Lokal/Cloud)
+   ==========================================================================
+   WICHTIGSTE ÄNDERUNG GEGENÜBER v12:
+   Bisher wurden Blobs (Bilder/Dateien) IMMER vollständig im echten Browser-
+   localStorage gecacht — unabhängig davon, ob Online-Speicherung aktiv war.
+   Der App-interne "Cloud-Limit" von 12 MB war damit nur ein Software-Wert;
+   der physische Browser-Speicher (meist nur ~5–10 MB pro Origin) lief real
+   trotzdem voll, sobald man im Cloud-Modus mehr als ~5 MB hochlud. Schreib-
+   fehler wurden dabei größtenteils lautlos verschluckt (leeres catch).
+   Außerdem gab es beim Umschalten von Cloud → Lokal KEINE Prüfung, ob die
+   vorhandene Datenmenge überhaupt in die 5-MB-Lokal-Grenze passt.
+
+   Diese Version:
+   - berechnet die Speichernutzung im Cloud-Modus anhand der TATSÄCHLICH in
+     der Cloud liegenden Blob-Größen (AS._blobSizes) + Hauptdatensatz, NICHT
+     anhand dessen, was zufällig lokal gecacht ist,
+   - berechnet die Nutzung im Lokal-Modus weiterhin über den echten
+     localStorage (das ist dort korrekt, weil dort alles physisch liegen
+     MUSS),
+   - begrenzt den lokalen Blob-Cache im Cloud-Modus per LRU-Eviction auf
+     einen sicheren Wert (4 MB), damit der echte Browser-Speicher nicht an
+     seine harte Grenze stößt — ausgelagerte Blobs werden bei Bedarf einfach
+     erneut aus der Cloud nachgeladen,
+   - prüft beim Wechsel Cloud → Lokal VOR dem Umschalten, ob die Gesamt-
+     datenmenge in die 5-MB-Grenze passt. Passt es nicht: Wechsel wird
+     abgelehnt, mit klarer Meldung. Passt es: fehlende Blobs werden zuerst
+     vollständig aus der Cloud nachgeladen, bevor umgeschaltet wird, damit
+     nichts verloren geht.
    ========================================================================== */
 
 const AS = (window.AS = {});
@@ -15,6 +38,11 @@ const CONSENT_KEY = 'as_consent';
 AS.getConsent = () => localStorage.getItem(CONSENT_KEY);
 AS.setConsent = (v) => localStorage.setItem(CONSENT_KEY, v);
 AS.cloudEnabled = () => AS.getConsent() === 'cloud';
+
+/* Speicher-Limits — zwei getrennte, unabhängige Grenzen */
+const LOCAL_LIMIT_BYTES = 5 * 1024 * 1024;   // echte physische localStorage-Grenze
+const CLOUD_LIMIT_BYTES = 12 * 1024 * 1024;  // Kontingent in der Cloud
+const LOCAL_BLOB_CACHE_CAP_BYTES = 4 * 1024 * 1024; // max. Blob-Cache lokal, wenn Cloud aktiv (Sicherheitsabstand zur echten Browser-Grenze)
 
 async function cloudPut(key, value, useKeepalive = false) {
   try {
@@ -99,35 +127,78 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('beforeunload', flushPendingCloudWrites);
 
-/* Storage mit Blob-Größenverwaltung (für Cloud-Quota) */
-AS._blobSizes = {};
+/* ======================================================================
+   BLOB-GRÖSSEN & LOKALER CACHE (LRU) — Kern der Reparatur
+   ====================================================================== */
+AS._blobSizes = {};       // blobId -> Bytegröße (repräsentiert die TATSÄCHLICHE Cloud-Nutzung)
+AS._blobCacheAccess = {}; // blobId -> Timestamp letzter Zugriff, nur relevant für lokale Cache-Eviction
+
+function blobSizesKey(uid) { return `as_blob_sizes_${uid}`; }
+function blobAccessKey(uid) { return `as_blob_access_${uid}`; }
 
 async function loadBlobSizes(uid) {
-  const localKey = `as_blob_sizes_${uid}`;
   try {
-    const local = localStorage.getItem(localKey);
-    if (local) { AS._blobSizes = JSON.parse(local); return; }
+    const local = localStorage.getItem(blobSizesKey(uid));
+    if (local) AS._blobSizes = JSON.parse(local);
   } catch (e) {}
   if (AS.cloudEnabled()) {
-    const remote = await cloudGet(localKey);
-    if (remote && typeof remote === 'object') AS._blobSizes = remote;
+    const remote = await cloudGet(blobSizesKey(uid));
+    if (remote && typeof remote === 'object') AS._blobSizes = { ...AS._blobSizes, ...remote };
   }
+  try {
+    const localAccess = localStorage.getItem(blobAccessKey(uid));
+    if (localAccess) AS._blobCacheAccess = JSON.parse(localAccess);
+  } catch (e) {}
 }
 
 function saveBlobSize(uid, blobId, size) {
   AS._blobSizes[blobId] = size;
-  const localKey = `as_blob_sizes_${uid}`;
-  try { localStorage.setItem(localKey, JSON.stringify(AS._blobSizes)); } catch (e) {}
-  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 10000);
+  try { localStorage.setItem(blobSizesKey(uid), JSON.stringify(AS._blobSizes)); } catch (e) {}
+  if (AS.cloudEnabled()) cloudPutDebounced(blobSizesKey(uid), AS._blobSizes, 10000);
 }
 
 function removeBlobSize(uid, blobId) {
   delete AS._blobSizes[blobId];
-  const localKey = `as_blob_sizes_${uid}`;
-  try { localStorage.setItem(localKey, JSON.stringify(AS._blobSizes)); } catch (e) {}
-  if (AS.cloudEnabled()) cloudPutDebounced(localKey, AS._blobSizes, 10000);
+  delete AS._blobCacheAccess[blobId];
+  try { localStorage.setItem(blobSizesKey(uid), JSON.stringify(AS._blobSizes)); } catch (e) {}
+  try { localStorage.setItem(blobAccessKey(uid), JSON.stringify(AS._blobCacheAccess)); } catch (e) {}
+  if (AS.cloudEnabled()) cloudPutDebounced(blobSizesKey(uid), AS._blobSizes, 10000);
 }
 
+function touchBlobCacheAccess(uid, blobId) {
+  AS._blobCacheAccess[blobId] = Date.now();
+  try { localStorage.setItem(blobAccessKey(uid), JSON.stringify(AS._blobCacheAccess)); } catch (e) {}
+}
+
+/**
+ * Hält den lokalen Blob-Cache im Cloud-Modus unter LOCAL_BLOB_CACHE_CAP_BYTES.
+ * Die Cloud bleibt dabei immer vollständig — es werden nur lokale KOPIEN
+ * entfernt (älteste zuerst), die bei Bedarf einfach erneut aus der Cloud
+ * nachgeladen werden. Im Lokal-Modus wird NIE evictet, da dort die lokale
+ * Kopie die einzige Quelle ist.
+ */
+function evictLocalBlobCacheIfNeeded(uid) {
+  if (!AS.cloudEnabled()) return;
+  let cachedBytes = 0;
+  const entries = [];
+  Object.keys(AS._blobSizes).forEach(id => {
+    const cached = AS.getBlobCached(id);
+    if (cached !== null) {
+      const size = AS._blobSizes[id] || new Blob([cached]).size;
+      cachedBytes += size;
+      entries.push({ id, size, ts: AS._blobCacheAccess[id] || 0 });
+    }
+  });
+  if (cachedBytes <= LOCAL_BLOB_CACHE_CAP_BYTES) return;
+  entries.sort((a, b) => a.ts - b.ts); // älteste zuerst raus
+  for (const entry of entries) {
+    if (cachedBytes <= LOCAL_BLOB_CACHE_CAP_BYTES) break;
+    try { localStorage.removeItem(BLOB_CACHE_PREFIX + entry.id); } catch (e) {}
+    cachedBytes -= entry.size;
+  }
+}
+
+/* Storage mit Blob-Größenverwaltung (für Cloud-Quota) */
 AS.storage = {
   get(key, fallback) {
     try {
@@ -137,13 +208,16 @@ AS.storage = {
   },
   set(key, value, opts) {
     const serialized = JSON.stringify(value);
+    let localOk = true;
     try { localStorage.setItem(key, serialized); } catch (e) {
+      localOk = false;
       if (!AS.cloudEnabled()) {
         if (isOverLimit(new Blob([serialized]).size)) {
           AS.toast('Lokaler Speicher (5 MB) voll – bitte alte Dateien/Notizen löschen oder Online-Speicherung aktivieren.');
           return false;
         }
       }
+      // Im Cloud-Modus: lokaler Schreibfehler ist unkritisch, Cloud ist Quelle der Wahrheit.
     }
     if (AS.cloudEnabled()) {
       if (opts && opts.immediate) {
@@ -152,7 +226,7 @@ AS.storage = {
         cloudPutDebounced(key, value, CLOUD_DEBOUNCE_MS);
       }
     }
-    return true;
+    return localOk || AS.cloudEnabled();
   },
   setLocalOnly(key, value) {
     try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
@@ -185,10 +259,15 @@ AS.saveBlob = async function (id, dataUrl) {
 
   try { localStorage.setItem(BLOB_CACHE_PREFIX + id, dataUrl); } catch (e) {
     console.warn('Lokales Speichern des Blobs fehlgeschlagen', e);
-    return { ok: false, cloudOk: false };
+    if (!AS.cloudEnabled()) return { ok: false, cloudOk: false };
+    // Im Cloud-Modus reicht es, wenn die Cloud-Kopie da ist — kein Abbruch nötig.
   }
 
-  if (AS.currentUser) saveBlobSize(AS.currentUser.uniqueId, id, size);
+  if (AS.currentUser) {
+    saveBlobSize(AS.currentUser.uniqueId, id, size);
+    touchBlobCacheAccess(AS.currentUser.uniqueId, id);
+    evictLocalBlobCacheIfNeeded(AS.currentUser.uniqueId);
+  }
   renderStorageBar();
   return { ok: true, cloudOk };
 };
@@ -199,11 +278,18 @@ AS.getBlobCached = function (id) {
 
 AS.getBlob = async function (id) {
   const cached = AS.getBlobCached(id);
-  if (cached !== null) return cached;
+  if (cached !== null) {
+    if (AS.currentUser) touchBlobCacheAccess(AS.currentUser.uniqueId, id);
+    return cached;
+  }
   if (AS.cloudEnabled()) {
     const remote = await cloudGet(blobKey(id));
     if (remote !== undefined && remote !== null) {
       try { localStorage.setItem(BLOB_CACHE_PREFIX + id, remote); } catch (e) {}
+      if (AS.currentUser) {
+        touchBlobCacheAccess(AS.currentUser.uniqueId, id);
+        evictLocalBlobCacheIfNeeded(AS.currentUser.uniqueId);
+      }
       return remote;
     }
   }
@@ -514,17 +600,32 @@ function limitsFor(kind) {
 }
 window.limitsFor = limitsFor;
 
-/* Speicher-Limits & Anzeige */
+/* ======================================================================
+   SPEICHER-LIMITS & ANZEIGE — jetzt korrekt getrennt Lokal/Cloud
+   ====================================================================== */
 function usageLimitBytes() {
-  return AS.cloudEnabled() ? 12 * 1024 * 1024 : 5 * 1024 * 1024;
+  return AS.cloudEnabled() ? CLOUD_LIMIT_BYTES : LOCAL_LIMIT_BYTES;
 }
 window.usageLimitBytes = usageLimitBytes;
 
 /**
- * Exakte Berechnung des belegten Speichers.
- * Summiert alle localStorage-Einträge, die zu Schoolify gehören.
+ * Im LOKAL-Modus: exakte Summe aller Schoolify-localStorage-Einträge —
+ * das ist hier korrekt, denn im Lokal-Modus MUSS ohnehin alles physisch
+ * im Browser liegen, es gibt keine andere Quelle.
+ *
+ * Im CLOUD-Modus: Summe der TATSÄCHLICH in der Cloud abgelegten Blob-
+ * Größen (AS._blobSizes) + Größe des Hauptdatensatzes. Das spiegelt die
+ * echte Cloud-Nutzung wider — unabhängig davon, wie viel davon gerade
+ * zufällig lokal gecacht ist (der lokale Cache wird ja per LRU begrenzt
+ * und ist nur ein Beschleuniger, keine vollständige Kopie).
  */
 function usageBytes() {
+  if (AS.cloudEnabled()) {
+    let total = 0;
+    Object.values(AS._blobSizes).forEach(sz => { total += (sz || 0); });
+    if (AS.currentData) total += new Blob([JSON.stringify(AS.currentData)]).size;
+    return total;
+  }
   let total = 0;
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
@@ -580,6 +681,57 @@ function renderStorageBar() {
   }
 }
 window.renderStorageBar = renderStorageBar;
+
+/* ======================================================================
+   SICHERER MODUSWECHSEL LOKAL <-> CLOUD
+   ====================================================================== */
+/**
+ * Versucht, von Cloud- auf Lokal-Speicherung umzuschalten.
+ * Prüft VORHER, ob die aktuelle Datenmenge überhaupt in die 5-MB-Grenze
+ * passt. Falls ja, werden zunächst alle fehlenden Blobs aus der Cloud
+ * nachgeladen, damit beim Wechsel nichts verloren geht.
+ * Gibt true zurück, wenn der Wechsel erfolgreich war, sonst false.
+ */
+async function trySwitchToLocalOnly() {
+  const required = usageBytes(); // während wir noch im Cloud-Modus sind: echte Cloud-Nutzung
+  if (required > LOCAL_LIMIT_BYTES) {
+    AS.toast(`⚠️ Du nutzt aktuell ${formatBytes(required)} — lokale Speicherung erlaubt aber nur ${formatBytes(LOCAL_LIMIT_BYTES)}. Bitte lösche zuerst Dateien oder Notizen, bevor du zur lokalen Speicherung wechselst.`);
+    return false;
+  }
+
+  const missing = Object.keys(AS._blobSizes).filter(id => AS.getBlobCached(id) === null);
+  if (missing.length) {
+    AS.toast('Synchronisiere Daten für lokale Speicherung …');
+    for (const id of missing) {
+      const data = await cloudGet(blobKey(id));
+      if (data !== undefined && data !== null) {
+        try {
+          localStorage.setItem(BLOB_CACHE_PREFIX + id, data);
+        } catch (e) {
+          AS.toast('⚠️ Nicht genug freier Speicherplatz im Browser, um vollständig zu wechseln. Abgebrochen — es wurde nichts verändert.');
+          return false;
+        }
+      }
+    }
+  }
+
+  AS.setConsent('local');
+  renderStorageBar();
+  AS.toast('Lokale Speicherung aktiviert — alle Daten sind jetzt vollständig lokal verfügbar.');
+  return true;
+}
+window.trySwitchToLocalOnly = trySwitchToLocalOnly;
+
+function switchToCloud() {
+  AS.setConsent('cloud');
+  if (AS.currentUser) {
+    cloudPut(KEY_USERS, AS.getUsers());
+    cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData);
+  }
+  renderStorageBar();
+  AS.toast('Online-Speicherung aktiviert — deine Daten werden jetzt hochgeladen.');
+}
+window.switchToCloud = switchToCloud;
 
 function notifyDataChange(collection) {
   window.dispatchEvent(new CustomEvent('schoolify:dataChanged', { detail: { collection } }));
@@ -2182,6 +2334,8 @@ function initAppEvents() {
   });
 
   on('authStorageToggle', 'change', (e) => {
+    // Vor dem Login gibt es noch keine Nutzdaten, daher hier keine
+    // Größenprüfung nötig — dieser Toggle setzt nur die künftige Präferenz.
     AS.setConsent(e.target.checked ? 'cloud' : 'local');
     updateAuthStorageToggle();
     renderStorageBar();
@@ -2245,16 +2399,23 @@ function initAppEvents() {
     a.click();
   });
 
-  on('cloudSyncToggle', 'change', (e) => {
-    AS.setConsent(e.target.checked ? 'cloud' : 'local');
-    if (e.target.checked) {
-      cloudPut(KEY_USERS, AS.getUsers());
-      cloudPut(dataKey(AS.currentUser.uniqueId), AS.currentData);
-      AS.toast('Online-Speicherung aktiviert — bereits vorhandene Daten werden jetzt hochgeladen.');
-    } else {
-      AS.toast('Online-Speicherung deaktiviert — es wird nur noch lokal gespeichert.');
+  // Hier steckt die eigentliche Reparatur: der Wechsel Cloud <-> Lokal läuft
+  // jetzt über die geprüften Helferfunktionen trySwitchToLocalOnly() /
+  // switchToCloud(), statt den Consent-Wert einfach ungeprüft umzuschreiben.
+  on('cloudSyncToggle', 'change', async (e) => {
+    const wantsCloud = e.target.checked;
+    e.target.disabled = true;
+    try {
+      if (!wantsCloud) {
+        const ok = await trySwitchToLocalOnly();
+        if (!ok) { e.target.checked = true; return; }
+      } else {
+        switchToCloud();
+      }
+    } finally {
+      e.target.disabled = false;
+      renderStorageBar();
     }
-    renderStorageBar();
   });
 
   on('saveProfileBtn', 'click', async () => {
