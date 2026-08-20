@@ -1,10 +1,18 @@
 /* ==========================================================================
-   Schoolify — ai-chat.js (KI-Chat-Widget)
+   Schoolify — ai-chat.js (KI-Chat-Widget mit Multi-Chat-Support)
    ==========================================================================
    Diese Datei ist bewusst komplett eigenständig und verändert app.js/
    style.css nicht. Sie hängt sich nur an bereits global verfügbare
-   Objekte/Funktionen aus app.js (AS, persist, escapeHtml) und baut Button +
-   Chat-Fenster selbst per JavaScript in die Seite ein.
+   Objekte/Funktionen aus app.js (AS, persist, escapeHtml, confirmModal)
+   und baut Button + Chat-Fenster selbst per JavaScript in die Seite ein.
+
+   NEUE FEATURES:
+   - KI-Button mit kariertem Muster (hellgrau)
+   - Fullscreen-Modal (zentriert) mit Animation
+   - Mehrere Chat-Threads, Erstellen & Löschen
+   - Chat-Verlauf wird bei jedem Request als "history" mitgesendet
+   - History kostet keine Credits, nur die neue User-Nachricht zählt
+   - Speicherung der Chats in AS.currentData (lokal/online wie gewohnt)
 
    WICHTIG, bevor es läuft:
    1. Starte ai_server.py irgendwo, wo Python läuft (z.B. Render.com,
@@ -13,12 +21,14 @@
    2. Setze dort die Umgebungsvariable OPENROUTER_API_KEY.
    3. Trage unten bei AI_BACKEND_URL die öffentliche URL deines Servers ein
       (z.B. "https://schoolify-ai.onrender.com/ask").
+   4. Das Backend muss den neuen Parameter "history" akzeptieren.
    ========================================================================== */
 
 const AI_BACKEND_URL = 'https://schoolifyyy.onrender.com/ask'; // TODO: anpassen!
 const AI_DAILY_CREDITS = 30;
 const AI_MAX_PROMPT_CHARS = 50;
 const AI_CREDIT_CHAR_UNIT = 12; // 1 Credit pro angefangene 12 Zeichen
+const AI_MAX_HISTORY_MESSAGES = 20; // Anzahl der letzten Nachrichten, die als Kontext gesendet werden
 
 let aiSending = false;
 
@@ -94,7 +104,80 @@ document.addEventListener('click', (e) => {
   }
 });
 
-/* ---------- Chat-Fenster: Aufbau ---------- */
+/* ---------- Chat-Verwaltung ---------- */
+
+function getAiChats() {
+  if (!AS.currentData) return [];
+  if (!AS.currentData.aiChats) AS.currentData.aiChats = [];
+  return AS.currentData.aiChats;
+}
+
+function saveAiChats() {
+  if (window.persist) persist();
+}
+
+function getActiveChatId() {
+  if (!AS.currentData) return null;
+  return AS.currentData.aiActiveChatId || null;
+}
+
+function setActiveChatId(id) {
+  AS.currentData.aiActiveChatId = id;
+  saveAiChats();
+}
+
+function createNewChat() {
+  const chat = {
+    id: 'aic_' + Date.now() + Math.random().toString(36).slice(2, 6),
+    title: '',
+    messages: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  getAiChats().unshift(chat);
+  setActiveChatId(chat.id);
+  saveAiChats();
+  return chat;
+}
+
+function getActiveChat() {
+  const chats = getAiChats();
+  const id = getActiveChatId();
+  return chats.find(c => c.id === id) || null;
+}
+
+function ensureActiveChat() {
+  if (!getActiveChat()) {
+    createNewChat();
+  }
+  return getActiveChat();
+}
+
+function updateChatTitle(chat) {
+  if (!chat.title && chat.messages.length > 0) {
+    const firstUserMsg = chat.messages.find(m => m.role === 'user');
+    if (firstUserMsg) {
+      chat.title = firstUserMsg.text.slice(0, 30) + (firstUserMsg.text.length > 30 ? '…' : '');
+    }
+  }
+  chat.updatedAt = Date.now();
+}
+
+function deleteChat(chatId) {
+  const chats = getAiChats();
+  const idx = chats.findIndex(c => c.id === chatId);
+  if (idx !== -1) {
+    chats.splice(idx, 1);
+    if (getActiveChatId() === chatId) {
+      setActiveChatId(chats.length ? chats[0].id : null);
+    }
+    saveAiChats();
+    renderAiChatList();
+    renderActiveChat();
+  }
+}
+
+/* ---------- UI-Aufbau ---------- */
 
 function buildAiWidgetDom() {
   if (document.getElementById('aiFab')) return;
@@ -102,83 +185,164 @@ function buildAiWidgetDom() {
   const wrap = document.createElement('div');
   wrap.innerHTML = `
     <div id="aiFab" class="ai-fab" title="Schoolify KI öffnen">✨</div>
-    <div id="aiPanel" class="ai-panel hidden">
-      <div class="ai-panel-header">
-        <div class="ai-panel-title"><span class="ai-panel-badge">✨</span> Schoolify KI</div>
-        <div class="ai-panel-credits" id="aiPanelCredits">${AI_DAILY_CREDITS}/${AI_DAILY_CREDITS} Credits</div>
-        <div class="ai-panel-close" id="aiPanelClose">✕</div>
-      </div>
-      <div class="ai-panel-messages" id="aiPanelMessages">
-        <div class="ai-msg ai-msg-bot">
-          <div class="ai-msg-sender">Schoolify KI</div>
-          <div class="ai-bubble">Hey! Frag mich kurz (max. ${AI_MAX_PROMPT_CHARS} Zeichen) — ich helfe dir gern bei der Schule. ✦</div>
+    <div id="aiOverlay" class="ai-overlay hidden">
+      <div id="aiPanel" class="ai-panel">
+        <div class="ai-panel-header">
+          <div class="ai-panel-title"><span class="ai-panel-badge">✨</span> Schoolify KI</div>
+          <div class="ai-panel-credits" id="aiPanelCredits">${AI_DAILY_CREDITS}/${AI_DAILY_CREDITS} Credits</div>
+          <div class="ai-panel-close" id="aiPanelClose">✕</div>
         </div>
-      </div>
-      <div class="ai-panel-inputbar">
-        <input type="text" id="aiPanelInput" maxlength="${AI_MAX_PROMPT_CHARS}" placeholder="Kurze Frage stellen…">
-        <button class="btn btn-sm" id="aiPanelSendBtn">➤</button>
-      </div>
-      <div class="ai-panel-footer">
-        <span id="aiPanelCharCount">0/${AI_MAX_PROMPT_CHARS}</span>
-        <span id="aiPanelCostHint"></span>
+        <div class="ai-panel-body">
+          <div class="ai-chat-sidebar">
+            <div class="ai-chat-sidebar-header">
+              <span>Chats</span>
+              <button class="btn btn-sm btn-outline" id="aiNewChatBtn">+ Neu</button>
+            </div>
+            <div id="aiChatList" class="ai-chat-list"></div>
+          </div>
+          <div class="ai-chat-main">
+            <div id="aiMessages" class="ai-messages"></div>
+            <div class="ai-panel-inputbar">
+              <input type="text" id="aiPanelInput" maxlength="${AI_MAX_PROMPT_CHARS}" placeholder="Kurze Frage stellen…" autocomplete="off">
+              <button class="btn btn-sm" id="aiPanelSendBtn">➤</button>
+            </div>
+            <div class="ai-panel-footer">
+              <span id="aiPanelCharCount">0/${AI_MAX_PROMPT_CHARS}</span>
+              <span id="aiPanelCostHint"></span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>`;
   while (wrap.firstElementChild) document.body.appendChild(wrap.firstElementChild);
 
-  document.getElementById('aiFab').addEventListener('click', openAiPanel);
-  document.getElementById('aiPanelClose').addEventListener('click', closeAiPanel);
+  // Event-Listener
+  document.getElementById('aiFab').addEventListener('click', openAiOverlay);
+  document.getElementById('aiPanelClose').addEventListener('click', closeAiOverlay);
   document.getElementById('aiPanelSendBtn').addEventListener('click', sendAiPrompt);
+  document.getElementById('aiNewChatBtn').addEventListener('click', () => {
+    createNewChat();
+    renderAiChatList();
+    renderActiveChat();
+    document.getElementById('aiPanelInput').focus();
+  });
 
   const input = document.getElementById('aiPanelInput');
   input.addEventListener('input', updateAiCharCount);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAiPrompt(); });
+
+  // Klick auf Overlay-Hintergrund schließt
+  document.getElementById('aiOverlay').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('aiOverlay')) closeAiOverlay();
+  });
+
+  // Initialen Zustand herstellen
+  ensureActiveChat();
+  renderAiChatList();
+  renderActiveChat();
+  renderAiCreditsBadge();
 }
 
-function openAiPanel() {
-  document.getElementById('aiPanel').classList.remove('hidden');
+function openAiOverlay() {
+  const overlay = document.getElementById('aiOverlay');
+  overlay.classList.remove('hidden');
   document.getElementById('aiFab').classList.add('hidden');
   renderAiCreditsBadge();
+  renderAiChatList();
+  renderActiveChat();
   document.getElementById('aiPanelInput').focus();
 }
-function closeAiPanel() {
-  const panel = document.getElementById('aiPanel');
-  if (!panel) return;
-  panel.classList.add('hidden');
+
+function closeAiOverlay() {
+  const overlay = document.getElementById('aiOverlay');
+  if (!overlay) return;
+  overlay.classList.add('hidden');
   document.getElementById('aiFab').classList.remove('hidden');
 }
 
+// ESC schließt Overlay
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  const panel = document.getElementById('aiPanel');
-  if (panel && !panel.classList.contains('hidden')) closeAiPanel();
+  const overlay = document.getElementById('aiOverlay');
+  if (overlay && !overlay.classList.contains('hidden')) closeAiOverlay();
 });
 
-/* ---------- Chat-Fenster: Nachrichten ---------- */
+/* ---------- Rendering ---------- */
 
-function appendAiBubble(role, text) {
-  const box = document.getElementById('aiPanelMessages');
-  if (!box) return;
-  const row = document.createElement('div');
-  row.className = 'ai-msg ' + (role === 'user' ? 'ai-msg-user' : 'ai-msg-bot');
-  const sender = role === 'user' ? (AS.currentUser ? AS.currentUser.firstName : 'Du') : 'Schoolify KI';
-  row.innerHTML = `<div class="ai-msg-sender">${escapeHtml(sender)}</div><div class="ai-bubble">${escapeHtml(text)}</div>`;
-  box.appendChild(row);
-  box.scrollTop = box.scrollHeight;
+function renderAiChatList() {
+  const listEl = document.getElementById('aiChatList');
+  if (!listEl) return;
+  const chats = getAiChats();
+  const activeId = getActiveChatId();
+  if (!chats.length) {
+    listEl.innerHTML = '<div class="ai-chat-empty">Noch keine Chats.<br>Erstelle einen neuen ✦</div>';
+    return;
+  }
+  listEl.innerHTML = chats.map(chat => `
+    <div class="ai-chat-item ${chat.id === activeId ? 'active' : ''}" data-chat-id="${chat.id}">
+      <div class="ai-chat-item-info">
+        <div class="ai-chat-item-title">${escapeHtml(chat.title || 'Neuer Chat')}</div>
+        <div class="ai-chat-item-time">${new Date(chat.updatedAt || chat.createdAt).toLocaleDateString()}</div>
+      </div>
+      <button class="ai-chat-item-delete" data-delete-chat="${chat.id}" title="Chat löschen">🗑️</button>
+    </div>
+  `).join('');
+
+  // Klick auf Chat wechselt aktiven Chat
+  listEl.querySelectorAll('.ai-chat-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-delete-chat]')) return;
+      const chatId = el.dataset.chatId;
+      setActiveChatId(chatId);
+      renderAiChatList();
+      renderActiveChat();
+    });
+  });
+
+  // Löschen-Buttons
+  listEl.querySelectorAll('[data-delete-chat]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const chatId = btn.dataset.deleteChat;
+      const chat = getAiChats().find(c => c.id === chatId);
+      if (!chat) return;
+      const chatTitle = chat.title || 'diesen Chat';
+      confirmModal('Chat löschen?', `Möchtest du "${chatTitle}" wirklich löschen?`, () => {
+        deleteChat(chatId);
+      });
+    });
+  });
 }
 
-function appendAiTyping() {
-  const box = document.getElementById('aiPanelMessages');
-  if (!box) return;
-  const row = document.createElement('div');
-  row.className = 'ai-msg ai-msg-bot';
-  row.id = 'aiTypingRow';
-  row.innerHTML = `<div class="ai-msg-sender">Schoolify KI</div><div class="ai-bubble ai-typing"><span></span><span></span><span></span></div>`;
-  box.appendChild(row);
-  box.scrollTop = box.scrollHeight;
+function renderActiveChat() {
+  const messagesEl = document.getElementById('aiMessages');
+  if (!messagesEl) return;
+  const chat = getActiveChat();
+  if (!chat) {
+    messagesEl.innerHTML = '<div class="ai-empty-state">Wähle einen Chat oder erstelle einen neuen.</div>';
+    return;
+  }
+  if (!chat.messages.length) {
+    messagesEl.innerHTML = `<div class="ai-msg ai-msg-bot">
+      <div class="ai-msg-sender">Schoolify KI</div>
+      <div class="ai-bubble">Hey! Frag mich kurz (max. ${AI_MAX_PROMPT_CHARS} Zeichen) — ich helfe dir gern bei der Schule. ✦</div>
+    </div>`;
+    return;
+  }
+  messagesEl.innerHTML = chat.messages.map(msg => {
+    const isUser = msg.role === 'user';
+    return `<div class="ai-msg ${isUser ? 'ai-msg-user' : 'ai-msg-bot'}">
+      <div class="ai-msg-sender">${isUser ? escapeHtml(AS.currentUser?.firstName || 'Du') : 'Schoolify KI'}</div>
+      <div class="ai-bubble">${escapeHtml(msg.text)}</div>
+    </div>`;
+  }).join('');
+  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
-function removeAiTyping() {
-  const row = document.getElementById('aiTypingRow');
-  if (row) row.remove();
+
+function renderAiCreditsBadge() {
+  const el = document.getElementById('aiPanelCredits');
+  if (!el || !AS.currentData) return;
+  el.textContent = `${aiCreditsRemaining()}/${AI_DAILY_CREDITS} Credits`;
 }
 
 function updateAiCharCount() {
@@ -195,13 +359,7 @@ function updateAiCharCount() {
   }
 }
 
-function renderAiCreditsBadge() {
-  const el = document.getElementById('aiPanelCredits');
-  if (!el || !AS.currentData) return;
-  el.textContent = `${aiCreditsRemaining()}/${AI_DAILY_CREDITS} Credits`;
-}
-
-/* ---------- Chat-Fenster: Senden ---------- */
+/* ---------- Senden ---------- */
 
 async function sendAiPrompt() {
   if (aiSending) return;
@@ -222,42 +380,81 @@ async function sendAiPrompt() {
     return;
   }
 
+  // Sicherstellen, dass ein aktiver Chat existiert
+  const chat = ensureActiveChat();
+
   aiSending = true;
   input.value = '';
   updateAiCharCount();
   const sendBtn = document.getElementById('aiPanelSendBtn');
   if (sendBtn) sendBtn.disabled = true;
 
-  appendAiBubble('user', text);
+  // User-Nachricht anhängen und speichern
+  chat.messages.push({ role: 'user', text });
+  updateChatTitle(chat);
+  saveAiChats();
+
+  // UI aktualisieren
+  renderActiveChat();
+  // Typing-Indikator anfügen
   appendAiTyping();
+
+  // History aufbereiten (letzte N Nachrichten, inkl. der neuen)
+  const history = chat.messages.slice(-AI_MAX_HISTORY_MESSAGES).map(m => ({ role: m.role, text: m.text }));
 
   try {
     const res = await fetch(AI_BACKEND_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: text })
+      body: JSON.stringify({ prompt: text, history })
     });
     const data = await res.json().catch(() => ({}));
     removeAiTyping();
 
     if (!res.ok || data.error) {
-      appendAiBubble('bot', '⚠️ ' + (data.error || 'Da ist etwas schiefgelaufen. Versuch es später nochmal.'));
+      const errorText = '⚠️ ' + (data.error || 'Da ist etwas schiefgelaufen. Versuch es später nochmal.');
+      chat.messages.push({ role: 'assistant', text: errorText });
+      saveAiChats();
+      renderActiveChat();
     } else {
-      appendAiBubble('bot', data.reply || '⚠️ Keine Antwort erhalten.');
-      // Credits werden erst bei ERFOLGREICHER Antwort abgezogen — schlägt
-      // die Anfrage fehl, verliert der Nutzer nichts.
+      const reply = data.reply || '⚠️ Keine Antwort erhalten.';
+      chat.messages.push({ role: 'assistant', text: reply });
+      updateChatTitle(chat);
+      // Credits abziehen
       AS.currentData.ai.creditsUsed = (AS.currentData.ai.creditsUsed || 0) + cost;
-      if (window.persist) persist();
+      saveAiChats(); // speichert auch Credits
       renderAiCreditsBadge();
       renderAiCreditsCard();
+      renderActiveChat();
     }
   } catch (err) {
     removeAiTyping();
-    appendAiBubble('bot', '⚠️ Verbindung zur KI fehlgeschlagen. Prüfe deine Internetverbindung.');
+    const errorText = '⚠️ Verbindung zur KI fehlgeschlagen. Prüfe deine Internetverbindung.';
+    chat.messages.push({ role: 'assistant', text: errorText });
+    saveAiChats();
+    renderActiveChat();
   } finally {
     aiSending = false;
     if (sendBtn) sendBtn.disabled = false;
+    renderAiChatList(); // aktualisiert Zeit und Titel
   }
+}
+
+// Typing-Indikator (als temporäre Nachricht)
+function appendAiTyping() {
+  const messagesEl = document.getElementById('aiMessages');
+  if (!messagesEl) return;
+  const typingRow = document.createElement('div');
+  typingRow.className = 'ai-msg ai-msg-bot';
+  typingRow.id = 'aiTypingRow';
+  typingRow.innerHTML = `<div class="ai-msg-sender">Schoolify KI</div><div class="ai-bubble ai-typing"><span></span><span></span><span></span></div>`;
+  messagesEl.appendChild(typingRow);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function removeAiTyping() {
+  const row = document.getElementById('aiTypingRow');
+  if (row) row.remove();
 }
 
 /* ---------- Start, sobald eingeloggt ---------- */
@@ -268,6 +465,11 @@ function initAiWidgetWhenReady() {
     if (window.AS && AS.currentUser && AS.currentData && appEl && !appEl.classList.contains('hidden')) {
       clearInterval(iv);
       ensureAiCreditsFresh();
+      // Initialisiere aiChats, falls nicht vorhanden
+      if (!AS.currentData.aiChats) AS.currentData.aiChats = [];
+      if (!AS.currentData.aiActiveChatId && AS.currentData.aiChats.length > 0) {
+        AS.currentData.aiActiveChatId = AS.currentData.aiChats[0].id;
+      }
       buildAiWidgetDom();
       renderAiCreditsBadge();
     }
