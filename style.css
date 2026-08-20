@@ -555,7 +555,7 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   inset:0;
   background:rgba(60,67,64,.35);
   backdrop-filter:blur(2px);
-  z-index:50;
+  z-index:150; /* Erhöht, damit es über dem KI-Overlay liegt */
   display:flex;
   align-items:center;
   justify-content:center;
@@ -1711,7 +1711,7 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 }
 
 /* ==========================================================================
-   Schoolify — KI-Chat-Widget (Multi-Chat, Fullscreen-Modal)
+   Schoolify — KI-Chat-Widget (Multi-Chat, Fullscreen-Modal, höher)
    ========================================================================== */
 
 #aiFab {
@@ -1765,7 +1765,7 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 
 #aiPanel {
   width: min(900px, 100%);
-  max-height: 90vh;
+  height: min(85vh, 800px); /* Deutlich höher */
   background: var(--white);
   border: 1.5px solid var(--border);
   border-radius: 16px;
@@ -2055,8 +2055,8 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   }
   #aiPanel {
     width: 100%;
-    max-height: 100vh;
     height: 100vh;
+    max-height: 100vh;
     border-radius: 0;
     border: none;
   }
