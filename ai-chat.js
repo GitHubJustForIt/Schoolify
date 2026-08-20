@@ -9,34 +9,32 @@
    NEUE FEATURES:
    - KI-Button mit kariertem Muster (hellgrau)
    - Fullscreen-Modal (zentriert) mit Animation, deutlich höher
-   - Mehrere Chat-Threads, Erstellen & Löschen
+   - Mehrere Chat-Threads (max. 4 Chats)
    - KOMPLETTER Chatverlauf wird bei jedem Request als "history" mitgesendet
-     (alle vorherigen User-Nachrichten UND KI-Antworten)
    - History kostet keine Credits, nur die neue User-Nachricht zählt
    - Chat-Titel werden automatisch aus der ersten User-Nachricht erstellt
-   - Lösch-Dialog erscheint ÜBER dem KI-Fenster (z-index fix)
+   - Speicheranzeige wird bei Chat-Änderungen aktualisiert
+   - Credits-Animation wenn Credits knapp werden
 
    WICHTIG, bevor es läuft:
-   1. Starte ai_server.py irgendwo, wo Python läuft (z.B. Render.com,
-      Railway.app, eigener vServer — NICHT Cloudflare Workers, die können
-      kein Flask ausführen).
-   2. Setze dort die Umgebungsvariable OPENROUTER_API_KEY.
+   1. Starte ai_server.py irgendwo, wo Python läuft
+   2. Setze dort die Umgebungsvariable OPENROUTER_API_KEY
    3. Trage unten bei AI_BACKEND_URL die öffentliche URL deines Servers ein
-      (z.B. "https://schoolify-ai.onrender.com/ask").
-   4. Das Backend muss den Parameter "history" akzeptieren und in den
-      Prompt an OpenRouter einbauen.
+   4. Das Backend muss den Parameter "history" akzeptieren
    ========================================================================== */
 
-const AI_BACKEND_URL = 'https://schoolifyyy.onrender.com/ask'; // TODO: anpassen!
+const AI_BACKEND_URL = 'https://schoolifyyy.onrender.com/ask';
 const AI_DAILY_CREDITS = 30;
 const AI_MAX_PROMPT_CHARS = 50;
-const AI_CREDIT_CHAR_UNIT = 12; // 1 Credit pro angefangene 12 Zeichen
-const AI_MAX_HISTORY_MESSAGES = 50; // Erhöht: mehr Kontext für die KI
-const AI_TITLE_MAX_CHARS = 25; // Maximale Länge des automatischen Chat-Titels
+const AI_CREDIT_CHAR_UNIT = 12;
+const AI_MAX_HISTORY_MESSAGES = 50;
+const AI_TITLE_MAX_CHARS = 25;
+const AI_MAX_CHATS = 4; // Maximum an gleichzeitigen Chats
 
 let aiSending = false;
+let aiCreditsWarnShown = false;
 
-/* ---------- Datum & Credits (echter lokaler Tageswechsel um 0 Uhr) ---------- */
+/* ---------- Datum & Credits ---------- */
 
 function aiLocalDateStr() {
   const d = new Date();
@@ -66,6 +64,34 @@ function aiCreditsRemaining() {
   ensureAiCreditsFresh();
   const used = (AS.currentData.ai && AS.currentData.ai.creditsUsed) || 0;
   return Math.max(0, AI_DAILY_CREDITS - used);
+}
+
+/* ---------- Credits-Animation bei niedrigem Stand ---------- */
+
+function checkCreditsWarning() {
+  const remaining = aiCreditsRemaining();
+  const badge = document.getElementById('aiPanelCredits');
+  
+  if (remaining <= 8 && !aiCreditsWarnShown) {
+    aiCreditsWarnShown = true;
+    
+    // Badge animieren
+    if (badge) {
+      badge.classList.add('ai-credits-warn');
+      badge.style.animation = 'none';
+      setTimeout(() => {
+        badge.style.animation = 'aiCreditsPulse 1.5s ease-in-out 3';
+      }, 10);
+      setTimeout(() => {
+        badge.classList.remove('ai-credits-warn');
+      }, 5000);
+    }
+    
+    // Toast anzeigen
+    AS.toast(`⚡ Nur noch ${remaining} KI-Credits übrig!`);
+  } else if (remaining > 8) {
+    aiCreditsWarnShown = false;
+  }
 }
 
 /* ---------- Sicherheits-Ansicht: Credits-Karte ---------- */
@@ -118,6 +144,7 @@ function getAiChats() {
 
 function saveAiChats() {
   if (window.persist) persist();
+  if (window.renderStorageBar) renderStorageBar(); // Speicheranzeige aktualisieren
 }
 
 function getActiveChatId() {
@@ -131,6 +158,14 @@ function setActiveChatId(id) {
 }
 
 function createNewChat() {
+  const chats = getAiChats();
+  
+  // Prüfen ob Maximum erreicht ist
+  if (chats.length >= AI_MAX_CHATS) {
+    AS.toast(`⚠️ Du kannst maximal ${AI_MAX_CHATS} Chats erstellen. Lösche zuerst einen alten Chat.`);
+    return null;
+  }
+  
   const chat = {
     id: 'aic_' + Date.now() + Math.random().toString(36).slice(2, 6),
     title: '',
@@ -138,7 +173,7 @@ function createNewChat() {
     createdAt: Date.now(),
     updatedAt: Date.now()
   };
-  getAiChats().unshift(chat);
+  chats.unshift(chat);
   setActiveChatId(chat.id);
   saveAiChats();
   return chat;
@@ -152,7 +187,7 @@ function getActiveChat() {
 
 function ensureActiveChat() {
   if (!getActiveChat()) {
-    createNewChat();
+    return createNewChat();
   }
   return getActiveChat();
 }
@@ -184,6 +219,7 @@ function deleteChat(chatId) {
     renderAiChatList();
     renderActiveChat();
     renderAiCreditsBadge();
+    checkCreditsWarning();
   }
 }
 
@@ -205,7 +241,7 @@ function buildAiWidgetDom() {
         <div class="ai-panel-body">
           <div class="ai-chat-sidebar">
             <div class="ai-chat-sidebar-header">
-              <span>Chats</span>
+              <span>Chats (${getAiChats().length}/${AI_MAX_CHATS})</span>
               <button class="btn btn-sm btn-outline" id="aiNewChatBtn">+ Neu</button>
             </div>
             <div id="aiChatList" class="ai-chat-list"></div>
@@ -231,10 +267,12 @@ function buildAiWidgetDom() {
   document.getElementById('aiPanelClose').addEventListener('click', closeAiOverlay);
   document.getElementById('aiPanelSendBtn').addEventListener('click', sendAiPrompt);
   document.getElementById('aiNewChatBtn').addEventListener('click', () => {
-    createNewChat();
-    renderAiChatList();
-    renderActiveChat();
-    document.getElementById('aiPanelInput').focus();
+    const newChat = createNewChat();
+    if (newChat) {
+      renderAiChatList();
+      renderActiveChat();
+      document.getElementById('aiPanelInput').focus();
+    }
   });
 
   const input = document.getElementById('aiPanelInput');
@@ -251,6 +289,7 @@ function buildAiWidgetDom() {
   renderAiChatList();
   renderActiveChat();
   renderAiCreditsBadge();
+  checkCreditsWarning();
 }
 
 function openAiOverlay() {
@@ -260,6 +299,7 @@ function openAiOverlay() {
   renderAiCreditsBadge();
   renderAiChatList();
   renderActiveChat();
+  checkCreditsWarning();
   document.getElementById('aiPanelInput').focus();
 }
 
@@ -281,7 +321,14 @@ document.addEventListener('keydown', (e) => {
 
 function renderAiChatList() {
   const listEl = document.getElementById('aiChatList');
+  const headerEl = document.querySelector('.ai-chat-sidebar-header span');
   if (!listEl) return;
+  
+  // Header mit Anzahl aktualisieren
+  if (headerEl) {
+    headerEl.textContent = `Chats (${getAiChats().length}/${AI_MAX_CHATS})`;
+  }
+  
   const chats = getAiChats();
   const activeId = getActiveChatId();
   if (!chats.length) {
@@ -317,8 +364,6 @@ function renderAiChatList() {
       const chat = getAiChats().find(c => c.id === chatId);
       if (!chat) return;
       const chatTitle = chat.title || 'diesen Chat';
-      // WICHTIG: confirmModal wird direkt aufgerufen und erscheint
-      // über dem KI-Overlay, da .modal-backdrop z-index:150 hat
       confirmModal('Chat löschen?', `Möchtest du "${chatTitle}" wirklich löschen?`, () => {
         deleteChat(chatId);
       });
@@ -355,6 +400,22 @@ function renderAiCreditsBadge() {
   const el = document.getElementById('aiPanelCredits');
   if (!el || !AS.currentData) return;
   el.textContent = `${aiCreditsRemaining()}/${AI_DAILY_CREDITS} Credits`;
+  
+  // Farbe basierend auf verbleibenden Credits
+  const remaining = aiCreditsRemaining();
+  if (remaining === 0) {
+    el.style.background = 'var(--danger-bg)';
+    el.style.color = 'var(--danger)';
+    el.style.borderColor = 'var(--danger)';
+  } else if (remaining <= 8) {
+    el.style.background = 'var(--butter-2)';
+    el.style.color = 'var(--ink)';
+    el.style.borderColor = 'var(--butter)';
+  } else {
+    el.style.background = 'var(--white)';
+    el.style.color = 'var(--ink-soft)';
+    el.style.borderColor = 'var(--border)';
+  }
 }
 
 function updateAiCharCount() {
@@ -389,11 +450,12 @@ async function sendAiPrompt() {
   const remaining = aiCreditsRemaining();
   if (remaining < cost) {
     AS.toast(`Nicht genug Credits (brauchst ${cost}, du hast noch ${remaining}). Um 0 Uhr gibt's neue ✦`);
+    checkCreditsWarning();
     return;
   }
 
-  // Sicherstellen, dass ein aktiver Chat existiert
   const chat = ensureActiveChat();
+  if (!chat) return;
 
   aiSending = true;
   input.value = '';
@@ -409,17 +471,11 @@ async function sendAiPrompt() {
   // UI aktualisieren
   renderActiveChat();
   renderAiChatList();
-  // Typing-Indikator anfügen
   appendAiTyping();
 
-  // ======================================================================
-  // WICHTIG: KOMPLETTER Chatverlauf wird als History mitgesendet.
-  // Das umfasst ALLE vorherigen User-Nachrichten UND KI-Antworten.
-  // So bleibt die KI beim Thema und der Chat wirkt natürlich.
-  // Die History kostet KEINE Credits – nur die neue User-Nachricht zählt.
-  // ======================================================================
+  // Kompletter Chatverlauf als History
   const history = chat.messages
-    .slice(-AI_MAX_HISTORY_MESSAGES) // Letzte N Nachrichten (User + Assistant)
+    .slice(-AI_MAX_HISTORY_MESSAGES)
     .map(m => ({ role: m.role, text: m.text }));
 
   try {
@@ -440,12 +496,12 @@ async function sendAiPrompt() {
       const reply = data.reply || '⚠️ Keine Antwort erhalten.';
       chat.messages.push({ role: 'assistant', text: reply });
       updateChatTitle(chat);
-      // Credits abziehen
       AS.currentData.ai.creditsUsed = (AS.currentData.ai.creditsUsed || 0) + cost;
-      saveAiChats(); // speichert auch Credits
+      saveAiChats();
       renderAiCreditsBadge();
       renderAiCreditsCard();
       renderActiveChat();
+      checkCreditsWarning();
     }
   } catch (err) {
     removeAiTyping();
@@ -456,11 +512,12 @@ async function sendAiPrompt() {
   } finally {
     aiSending = false;
     if (sendBtn) sendBtn.disabled = false;
-    renderAiChatList(); // aktualisiert Zeit und Titel
+    renderAiChatList();
   }
 }
 
-// Typing-Indikator (als temporäre Nachricht)
+/* ---------- Typing-Indikator ---------- */
+
 function appendAiTyping() {
   const messagesEl = document.getElementById('aiMessages');
   if (!messagesEl) return;
@@ -477,7 +534,7 @@ function removeAiTyping() {
   if (row) row.remove();
 }
 
-/* ---------- Start, sobald eingeloggt ---------- */
+/* ---------- Start ---------- */
 
 function initAiWidgetWhenReady() {
   const iv = setInterval(() => {
@@ -485,13 +542,13 @@ function initAiWidgetWhenReady() {
     if (window.AS && AS.currentUser && AS.currentData && appEl && !appEl.classList.contains('hidden')) {
       clearInterval(iv);
       ensureAiCreditsFresh();
-      // Initialisiere aiChats, falls nicht vorhanden
       if (!AS.currentData.aiChats) AS.currentData.aiChats = [];
       if (!AS.currentData.aiActiveChatId && AS.currentData.aiChats.length > 0) {
         AS.currentData.aiActiveChatId = AS.currentData.aiChats[0].id;
       }
       buildAiWidgetDom();
       renderAiCreditsBadge();
+      checkCreditsWarning();
     }
   }, 250);
 }
