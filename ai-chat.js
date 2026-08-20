@@ -15,7 +15,7 @@
       (z.B. "https://schoolify-ai.onrender.com/ask").
    ========================================================================== */
 
-const AI_BACKEND_URL = 'https://DEINE-AI-BACKEND-URL/ask'; // TODO: anpassen!
+const AI_BACKEND_URL = 'https://schoolifyyy.onrender.com/ask'; // TODO: anpassen!
 const AI_DAILY_CREDITS = 30;
 const AI_MAX_PROMPT_CHARS = 50;
 const AI_CREDIT_CHAR_UNIT = 12; // 1 Credit pro angefangene 12 Zeichen
