@@ -1709,3 +1709,275 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   background: var(--ink);
   color: var(--cream);
 }
+
+/* ==========================================================================
+   Schoolify — KI-Chat-Widget (integriert, rechts unten)
+   ========================================================================== */
+
+#aiFab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 90;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--mint), var(--sky));
+  border: 2px solid var(--white);
+  box-shadow: 0 8px 24px rgba(60, 67, 64, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  user-select: none;
+}
+#aiFab:hover {
+  transform: scale(1.08) rotate(5deg);
+  box-shadow: 0 12px 28px rgba(60, 67, 64, 0.25);
+}
+#aiFab:active { transform: scale(0.95); }
+#aiFab.hidden { display: none; }
+
+#aiPanel {
+  position: fixed;
+  right: 24px;
+  bottom: 92px; /* über dem FAB */
+  z-index: 95;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(560px, calc(100vh - 120px));
+  background: var(--white);
+  border: 1.5px solid var(--border);
+  border-radius: 16px 6px 6px 16px; /* Collegeblock-Kante rechts */
+  box-shadow: var(--shadow-2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: aiPanelIn 0.25s cubic-bezier(0.2, 0.9, 0.3, 1);
+  position: relative;
+}
+#aiPanel::before {
+  content: "";
+  position: absolute;
+  right: 24px;
+  top: 14px;
+  bottom: 14px;
+  width: 1.5px;
+  background: var(--margin-red);
+  opacity: 0.5;
+  pointer-events: none;
+}
+#aiPanel::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background-image: radial-gradient(var(--cream-2) 3px, transparent 3.4px);
+  background-size: 6px 26px;
+  background-position: 0 14px;
+  pointer-events: none;
+}
+#aiPanel.hidden { display: none; }
+
+@keyframes aiPanelIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ai-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 44px 14px 18px; /* Platz für Margin-Linie rechts */
+  background: var(--cream-2);
+  border-bottom: 1.5px solid var(--border);
+}
+.ai-panel-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+.ai-panel-badge { font-size: 1.2rem; }
+.ai-panel-credits {
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: var(--ink-soft);
+  background: var(--white);
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.ai-panel-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.ai-panel-close:hover { background: var(--cream); color: var(--ink); }
+
+.ai-panel-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 44px 16px 18px; /* rechts Platz für Lochmuster */
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--cream);
+  min-height: 200px;
+}
+
+.ai-msg {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+}
+.ai-msg-user { align-self: flex-end; align-items: flex-end; }
+.ai-msg-bot { align-self: flex-start; align-items: flex-start; }
+
+.ai-msg-sender {
+  font-size: 0.68rem;
+  font-weight: 800;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+  letter-spacing: 0.02em;
+}
+
+.ai-bubble {
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  word-break: break-word;
+  box-shadow: var(--shadow-1);
+}
+.ai-msg-bot .ai-bubble {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 4px 16px 16px 16px;
+}
+.ai-msg-user .ai-bubble {
+  background: var(--accent-2);
+  border: 1px solid var(--accent);
+  border-radius: 16px 4px 16px 16px;
+  color: var(--ink);
+}
+
+.ai-typing {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 12px 16px;
+}
+.ai-typing span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  animation: aiTyping 1.2s infinite ease-in-out;
+}
+.ai-typing span:nth-child(2) { animation-delay: 0.15s; }
+.ai-typing span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes aiTyping {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-6px); opacity: 1; }
+}
+
+.ai-panel-inputbar {
+  display: flex;
+  gap: 8px;
+  padding: 12px 44px 12px 18px;
+  background: var(--white);
+  border-top: 1px solid var(--border);
+  align-items: center;
+}
+.ai-panel-inputbar input {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: var(--radius-pill);
+  border: 1.5px solid var(--border);
+  background: var(--cream);
+  font-family: var(--font-body);
+  font-size: 0.88rem;
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.ai-panel-inputbar input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-2);
+}
+.ai-panel-inputbar .btn {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.1rem;
+  background: var(--accent);
+  color: var(--ink);
+  border: none;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+}
+.ai-panel-inputbar .btn:hover {
+  box-shadow: var(--shadow-2);
+  transform: translateY(-1px);
+}
+.ai-panel-inputbar .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ai-panel-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 44px 10px 18px;
+  background: var(--white);
+  border-top: 1px dashed var(--border);
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+}
+#aiPanelCostHint {
+  font-weight: 800;
+  color: var(--ink-soft);
+}
+
+/* Responsive Anpassungen für das KI-Panel */
+@media (max-width: 700px) {
+  #aiFab {
+    right: 16px;
+    bottom: 16px;
+    width: 50px;
+    height: 50px;
+    font-size: 22px;
+  }
+  #aiPanel {
+    right: 16px;
+    bottom: 76px;
+    width: calc(100vw - 32px);
+    max-height: calc(100vh - 110px);
+  }
+  .ai-panel-header,
+  .ai-panel-messages,
+  .ai-panel-inputbar,
+  .ai-panel-footer {
+    padding-right: 36px; /* etwas weniger Platz auf kleinen Screens */
+  }
+}
