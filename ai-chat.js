@@ -8,11 +8,13 @@
 
    NEUE FEATURES:
    - KI-Button mit kariertem Muster (hellgrau)
-   - Fullscreen-Modal (zentriert) mit Animation
+   - Fullscreen-Modal (zentriert) mit Animation, deutlich höher
    - Mehrere Chat-Threads, Erstellen & Löschen
-   - Chat-Verlauf wird bei jedem Request als "history" mitgesendet
+   - KOMPLETTER Chatverlauf wird bei jedem Request als "history" mitgesendet
+     (alle vorherigen User-Nachrichten UND KI-Antworten)
    - History kostet keine Credits, nur die neue User-Nachricht zählt
-   - Speicherung der Chats in AS.currentData (lokal/online wie gewohnt)
+   - Chat-Titel werden automatisch aus der ersten User-Nachricht erstellt
+   - Lösch-Dialog erscheint ÜBER dem KI-Fenster (z-index fix)
 
    WICHTIG, bevor es läuft:
    1. Starte ai_server.py irgendwo, wo Python läuft (z.B. Render.com,
@@ -21,14 +23,16 @@
    2. Setze dort die Umgebungsvariable OPENROUTER_API_KEY.
    3. Trage unten bei AI_BACKEND_URL die öffentliche URL deines Servers ein
       (z.B. "https://schoolify-ai.onrender.com/ask").
-   4. Das Backend muss den neuen Parameter "history" akzeptieren.
+   4. Das Backend muss den Parameter "history" akzeptieren und in den
+      Prompt an OpenRouter einbauen.
    ========================================================================== */
 
 const AI_BACKEND_URL = 'https://schoolifyyy.onrender.com/ask'; // TODO: anpassen!
 const AI_DAILY_CREDITS = 30;
 const AI_MAX_PROMPT_CHARS = 50;
 const AI_CREDIT_CHAR_UNIT = 12; // 1 Credit pro angefangene 12 Zeichen
-const AI_MAX_HISTORY_MESSAGES = 20; // Anzahl der letzten Nachrichten, die als Kontext gesendet werden
+const AI_MAX_HISTORY_MESSAGES = 50; // Erhöht: mehr Kontext für die KI
+const AI_TITLE_MAX_CHARS = 25; // Maximale Länge des automatischen Chat-Titels
 
 let aiSending = false;
 
@@ -157,7 +161,12 @@ function updateChatTitle(chat) {
   if (!chat.title && chat.messages.length > 0) {
     const firstUserMsg = chat.messages.find(m => m.role === 'user');
     if (firstUserMsg) {
-      chat.title = firstUserMsg.text.slice(0, 30) + (firstUserMsg.text.length > 30 ? '…' : '');
+      const text = firstUserMsg.text.trim();
+      if (text.length > AI_TITLE_MAX_CHARS) {
+        chat.title = text.slice(0, AI_TITLE_MAX_CHARS) + '…';
+      } else {
+        chat.title = text;
+      }
     }
   }
   chat.updatedAt = Date.now();
@@ -174,6 +183,7 @@ function deleteChat(chatId) {
     saveAiChats();
     renderAiChatList();
     renderActiveChat();
+    renderAiCreditsBadge();
   }
 }
 
@@ -307,6 +317,8 @@ function renderAiChatList() {
       const chat = getAiChats().find(c => c.id === chatId);
       if (!chat) return;
       const chatTitle = chat.title || 'diesen Chat';
+      // WICHTIG: confirmModal wird direkt aufgerufen und erscheint
+      // über dem KI-Overlay, da .modal-backdrop z-index:150 hat
       confirmModal('Chat löschen?', `Möchtest du "${chatTitle}" wirklich löschen?`, () => {
         deleteChat(chatId);
       });
@@ -396,11 +408,19 @@ async function sendAiPrompt() {
 
   // UI aktualisieren
   renderActiveChat();
+  renderAiChatList();
   // Typing-Indikator anfügen
   appendAiTyping();
 
-  // History aufbereiten (letzte N Nachrichten, inkl. der neuen)
-  const history = chat.messages.slice(-AI_MAX_HISTORY_MESSAGES).map(m => ({ role: m.role, text: m.text }));
+  // ======================================================================
+  // WICHTIG: KOMPLETTER Chatverlauf wird als History mitgesendet.
+  // Das umfasst ALLE vorherigen User-Nachrichten UND KI-Antworten.
+  // So bleibt die KI beim Thema und der Chat wirkt natürlich.
+  // Die History kostet KEINE Credits – nur die neue User-Nachricht zählt.
+  // ======================================================================
+  const history = chat.messages
+    .slice(-AI_MAX_HISTORY_MESSAGES) // Letzte N Nachrichten (User + Assistant)
+    .map(m => ({ role: m.role, text: m.text }));
 
   try {
     const res = await fetch(AI_BACKEND_URL, {
