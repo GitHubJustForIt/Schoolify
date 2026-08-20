@@ -9,7 +9,7 @@ CORS(app)  # Erlaubt Anfragen vom Browser (löst das Verbindungsproblem)
 
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-def ask_ai(user_prompt: str):
+def ask_ai(user_prompt: str, history: list = None):
     if not API_KEY:
         return "Fehler: Kein API_KEY auf Render gesetzt."
 
@@ -18,13 +18,30 @@ def ask_ai(user_prompt: str):
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
+    
+    # Nachrichten für OpenRouter zusammenbauen
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT}
+    ]
+    
+    # Chatverlauf einfügen (falls vorhanden)
+    if history and isinstance(history, list):
+        for msg in history:
+            if isinstance(msg, dict) and "role" in msg and "text" in msg:
+                role = msg["role"]
+                text = msg["text"]
+                # Nur gültige Rollen zulassen
+                if role in ["user", "assistant"]:
+                    messages.append({"role": role, "content": text})
+    
+    # Aktuelle User-Nachricht anhängen
+    messages.append({"role": "user", "content": user_prompt})
+    
     payload = {
         "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt}
-        ]
+        "messages": messages
     }
+    
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
         if response.status_code == 200:
@@ -40,8 +57,13 @@ def ask():
     data = request.get_json()
     if not data or "prompt" not in data:
         return jsonify({"error": "Kein Prompt übermittelt"}), 400
+    
     user_prompt = data["prompt"]
-    reply = ask_ai(user_prompt)
+    
+    # History aus dem Request lesen (optional)
+    history = data.get("history", [])
+    
+    reply = ask_ai(user_prompt, history)
     return jsonify({"reply": reply})
 
 if __name__ == "__main__":
