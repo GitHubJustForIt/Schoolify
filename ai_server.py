@@ -1,14 +1,18 @@
 import os
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import requests
 from config import SYSTEM_PROMPT, MODEL_NAME
 
 app = Flask(__name__)
+CORS(app)  # Erlaubt Anfragen vom Browser (löst das Verbindungsproblem)
 
-# WICHTIG: API-Key NICHT im Code, sondern als Umgebungsvariable auf Render setzen!
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 def ask_ai(user_prompt: str):
+    if not API_KEY:
+        return "Fehler: Kein API_KEY auf Render gesetzt."
+
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {API_KEY}",
@@ -22,7 +26,7 @@ def ask_ai(user_prompt: str):
         ]
     }
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
         if response.status_code == 200:
             data = response.json()
             return data["choices"][0]["message"]["content"]
