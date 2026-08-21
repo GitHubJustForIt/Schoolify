@@ -34,9 +34,9 @@ def ask_ai(user_prompt: str, history: list = None):
 
     client = Groq(api_key=API_KEY)
     
-    # Wechsel auf llama-3.3-70b-versatile
+    # Auf llama-3.1-8b-instant wechseln (auf allen Groq-Accounts verfügbar + 30.000 TPM Limit)
     completion = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="llama-3.1-8b-instant",
         messages=messages,
         temperature=0.7,
         max_completion_tokens=600,
