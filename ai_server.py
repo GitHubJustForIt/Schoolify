@@ -18,31 +18,33 @@ def ask_ai(user_prompt: str, history: list = None):
         log_error("Kein GROQ_API_KEY auf Render gesetzt.")
         raise Exception("Kein GROQ_API_KEY auf Render gesetzt.")
 
-    # System-Prompt absichern
-    safe_system_prompt = SYSTEM_PROMPT[:1500] if SYSTEM_PROMPT else "Du bist ein Schul-Assistent."
-    messages = [{"role": "system", "content": safe_system_prompt}]
+    # 1. System-Prompt VOLLSTÄNDIG übergeben und mit einer strengen Schlussanweisung verstärken
+    reinforced_system_prompt = (
+        f"{SYSTEM_PROMPT}\n\n"
+        "WICHTIGE INSTRUKTION: Du MUSST dich ohne Ausnahme an die oben definierte Rolle, "
+        "den Sprachstil und die Persönlichkeit halten! Weiche in keiner Antwort davon ab."
+    )
+    messages = [{"role": "system", "content": reinforced_system_prompt}]
 
-    # Genau die letzten 8 Nachrichten nehmen (= 4 Frage-Antwort-Paare)
+    # 2. Verlauf auf max. 8 Nachrichten (4 Frage-Antwort-Paare) begrenzen
     if history and isinstance(history, list):
         recent_history = history[-8:]
         for msg in recent_history:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
-                # Nachrichten im Verlauf moderat begrenzen, damit 8 Nachrichten sicher reinpassen
-                text = str(msg["text"])[:600]
+                text = str(msg["text"])[:500]
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
-    # Aktuelle Frage anhängen
-    safe_user_prompt = str(user_prompt)[:1200]
-    messages.append({"role": "user", "content": safe_user_prompt})
+    # 3. Aktuellen Prompt anhängen
+    messages.append({"role": "user", "content": str(user_prompt)[:1000]})
 
     try:
         client = Groq(api_key=API_KEY)
         completion = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=messages,
-            temperature=0.7,
+            temperature=0.5,  # Niedriger = hält sich viel strenger an Instruktionen
             max_completion_tokens=800,
             top_p=1,
             reasoning_effort="low",
