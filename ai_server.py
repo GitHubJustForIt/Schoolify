@@ -18,23 +18,23 @@ def ask_ai(user_prompt: str, history: list = None):
         log_error("Kein GROQ_API_KEY auf Render gesetzt.")
         raise Exception("Kein GROQ_API_KEY auf Render gesetzt.")
 
-    # 1. NOTBREMSE: System-Prompt auf max. 2000 Zeichen kürzen
-    safe_system_prompt = SYSTEM_PROMPT[:2000] if SYSTEM_PROMPT else "Du bist ein Schul-Assistent."
+    # System-Prompt absichern
+    safe_system_prompt = SYSTEM_PROMPT[:1500] if SYSTEM_PROMPT else "Du bist ein Schul-Assistent."
     messages = [{"role": "system", "content": safe_system_prompt}]
 
-    # 2. NOTBREMSE: Verlauf auf 2 Nachrichten beschränken & jede Nachricht auf 400 Zeichen kappen
+    # Genau die letzten 8 Nachrichten nehmen (= 4 Frage-Antwort-Paare)
     if history and isinstance(history, list):
-        recent_history = history[-2:]
+        recent_history = history[-8:]
         for msg in recent_history:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
-                # Text hart abschneiden, falls er zu lang ist
-                text = str(msg["text"])[:400]
+                # Nachrichten im Verlauf moderat begrenzen, damit 8 Nachrichten sicher reinpassen
+                text = str(msg["text"])[:600]
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
-    # 3. NOTBREMSE: User-Prompt auf max. 1000 Zeichen kürzen
-    safe_user_prompt = str(user_prompt)[:1000]
+    # Aktuelle Frage anhängen
+    safe_user_prompt = str(user_prompt)[:1200]
     messages.append({"role": "user", "content": safe_user_prompt})
 
     try:
@@ -43,8 +43,9 @@ def ask_ai(user_prompt: str, history: list = None):
             model="openai/gpt-oss-20b",
             messages=messages,
             temperature=0.7,
-            max_completion_tokens=600,  # Reduziert, spart Tokens!
+            max_completion_tokens=800,
             top_p=1,
+            reasoning_effort="low",
             stream=False
         )
         return completion.choices[0].message.content
