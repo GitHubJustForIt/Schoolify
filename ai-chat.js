@@ -15,10 +15,13 @@
    - Chat-Titel werden automatisch aus der ersten User-Nachricht erstellt
    - Speicheranzeige wird bei Chat-Änderungen aktualisiert
    - Credits-Animation wenn Credits knapp werden
-   - Fehlermeldungen (z.B. 429) werden als spezielle KI-Nachricht mit
-     Retry-Button im Chat gespeichert. Credits werden bei Fehlern NICHT
-     abgezogen. Beim Retry wird die Fehlernachricht entfernt und die
-     letzte User-Nachricht erneut gesendet.
+   - Fehlermeldungen werden robust erkannt:
+       * HTTP-Fehlerstatus (z.B. 429) ODER
+       * Antworttext, der mit "Fehler" beginnt (z.B. "Fehler 429: ...")
+     In beiden Fällen wird eine spezielle KI-Nachricht mit Retry-Button
+     gespeichert. Credits werden bei Fehlern NICHT abgezogen.
+     Beim Retry wird die Fehlernachricht entfernt und die letzte
+     User-Nachricht erneut gesendet.
    ========================================================================== */
 
 const AI_BACKEND_URL = 'https://schoolifyyy.onrender.com/ask';
@@ -425,6 +428,21 @@ function updateAiCharCount() {
   }
 }
 
+/* ---------- Fehlererkennung ---------- */
+
+/**
+ * Prüft, ob ein Antworttext auf einen Fehler hindeutet.
+ * Wir erkennen:
+ * - HTTP-Fehlerstatus (wird über res.ok abgedeckt)
+ * - Antworttext, der mit "Fehler" beginnt (z.B. "Fehler 429: ...")
+ * - Antworttext, der mit "⚠️" beginnt und das Wort "Fehler" enthält
+ */
+function isErrorReply(text) {
+  if (typeof text !== 'string') return false;
+  const t = text.trim();
+  return t.startsWith('Fehler') || (t.startsWith('⚠️') && t.includes('Fehler'));
+}
+
 /* ---------- Senden (Kernlogik) ---------- */
 
 async function executeAiPrompt(text, isRetry = false) {
@@ -478,7 +496,8 @@ async function executeAiPrompt(text, isRetry = false) {
     const data = await res.json().catch(() => ({}));
     removeAiTyping();
 
-    if (!res.ok || data.error) {
+    // Fehlerprüfung: HTTP-Status ODER data.error ODER Fehlertext in reply
+    if (!res.ok || data.error || isErrorReply(data.reply)) {
       // Fehlerfall: spezielle Fehlernachricht als permanente KI-Nachricht speichern
       chat.messages.push({
         role: 'assistant',
