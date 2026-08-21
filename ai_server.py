@@ -8,44 +8,39 @@ from config import SYSTEM_PROMPT
 app = Flask(__name__)
 CORS(app)
 
-# Liest den Groq API-Key aus den Render Environment Variables
 API_KEY = os.environ.get("GROQ_API_KEY")
 
 def log_error(msg):
     print(f"[Schoolify KI] FEHLER: {msg}", file=sys.stderr)
 
 def ask_ai(user_prompt: str, history: list = None):
-    """
-    Sendet eine Anfrage an Groq und gibt die Antwort zurück.
-    Behält den Chatverlauf (history) bei.
-    """
     if not API_KEY:
         log_error("Kein GROQ_API_KEY auf Render gesetzt.")
         raise Exception("Kein GROQ_API_KEY auf Render gesetzt.")
 
-    # 1. System Prompt als erste Nachricht setzen
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    # 2. Verlauf (history) anhängen
+    # Verlauf strikt auf die letzten 4 Nachrichten kürzen
     if history and isinstance(history, list):
-        for msg in history:
+        recent_history = history[-4:]
+        for msg in recent_history:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
                 text = msg["text"]
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
-    # 3. Aktuellen Prompt des Nutzers anhängen
     messages.append({"role": "user", "content": user_prompt})
 
     try:
         client = Groq(api_key=API_KEY)
         completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model="openai/gpt-oss-20b",
             messages=messages,
             temperature=0.7,
             max_completion_tokens=1024,
             top_p=1,
+            reasoning_effort="low",  # Hält den Token-Verbrauch im Rahmen
             stream=False
         )
         return completion.choices[0].message.content
