@@ -11,7 +11,6 @@ CORS(app)
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 def log_error(msg):
-    """Schreibt Fehler in die Server-Konsole."""
     print(f"[Schoolify KI] FEHLER: {msg}", file=sys.stderr)
 
 def ask_ai(user_prompt: str, history: list = None):
@@ -52,16 +51,25 @@ def ask_ai(user_prompt: str, history: list = None):
             data = response.json()
             return data["choices"][0]["message"]["content"]
         else:
-            # Detaillierte Fehlermeldung mit Statuscode und Text
             error_text = response.text
-            log_error(f"HTTP {response.status_code}: {error_text}")
-            raise Exception(f"HTTP {response.status_code}: {error_text}")
+            log_error(f"OpenRouter HTTP {response.status_code}: {error_text}")
+
+            # Wir unterscheiden jetzt zwischen Rate-Limit und anderen Fehlern
+            if response.status_code == 429:
+                raise RateLimitError(f"Rate limit überschritten: {error_text}")
+            else:
+                raise Exception(f"HTTP {response.status_code}: {error_text}")
     except requests.exceptions.Timeout:
         log_error("Timeout bei der Anfrage an OpenRouter.")
         raise Exception("Zeitüberschreitung bei der Anfrage an OpenRouter.")
-    except Exception as e:
-        # Falls schon eine Exception geworfen wurde, weiterreichen
+    except RateLimitError as e:
+        # Spezielle Behandlung, damit der Client 429 bekommt
         raise e
+    except Exception as e:
+        raise e
+
+class RateLimitError(Exception):
+    pass
 
 @app.route("/ask", methods=["POST"])
 def ask():
@@ -76,10 +84,12 @@ def ask():
     try:
         reply = ask_ai(user_prompt, history)
         return jsonify({"reply": reply})
+    except RateLimitError as e:
+        log_error(f"Rate-Limit-Fehler: {e}")
+        # 429 an das Frontend durchreichen, damit es weiß, dass es später erneut versuchen soll
+        return jsonify({"error": str(e), "code": 429}), 429
     except Exception as e:
         log_error(f"Fehler in /ask: {e}")
-        # Wir geben einen echten HTTP-Fehlerstatus mit JSON-Fehlermeldung zurück.
-        # Das Frontend erkennt nun zuverlässig, dass ein Fehler aufgetreten ist.
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
