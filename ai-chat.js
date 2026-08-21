@@ -15,6 +15,10 @@
    - Chat-Titel werden automatisch aus der ersten User-Nachricht erstellt
    - Speicheranzeige wird bei Chat-Änderungen aktualisiert
    - Credits-Animation wenn Credits knapp werden
+   - Bei KI-Fehlern (z.B. 429) wird eine spezielle Fehlermeldung mit
+     Retry-Button angezeigt – die ursprüngliche Fehlermeldung wird nicht
+     als normale Nachricht gespeichert. Credits werden bei Fehlern NICHT
+     abgezogen.
 
    WICHTIG, bevor es läuft:
    1. Starte ai_server.py irgendwo, wo Python läuft
@@ -432,8 +436,96 @@ function updateAiCharCount() {
   }
 }
 
-/* ---------- Senden ---------- */
+/* ---------- Senden (Kernlogik) ---------- */
 
+/**
+ * Führt einen KI-Request aus.
+ * @param {string} text - Der Prompt, der gesendet werden soll.
+ * @param {boolean} isRetry - Ob es sich um einen Wiederholungsversuch handelt.
+ */
+async function executeAiPrompt(text, isRetry = false) {
+  const chat = ensureActiveChat();
+  if (!chat) return;
+
+  aiSending = true;
+  const sendBtn = document.getElementById('aiPanelSendBtn');
+  if (sendBtn) sendBtn.disabled = true;
+
+  // Wenn kein Retry: User-Nachricht anhängen und speichern
+  if (!isRetry) {
+    chat.messages.push({ role: 'user', text });
+    updateChatTitle(chat);
+    saveAiChats();
+    renderActiveChat();
+    renderAiChatList();
+  } else {
+    // Bei Retry: keine neue User-Nachricht anhängen, nur UI aktualisieren
+    renderAiChatList(); // Zeitanzeige aktualisieren
+  }
+
+  // Typing-Indikator anfügen
+  appendAiTyping();
+
+  // History aufbereiten (kompletter Verlauf, ggf. ohne die letzte User-Nachricht bei Retry)
+  let history;
+  if (isRetry) {
+    // Alle Nachrichten außer der letzten User-Nachricht
+    history = chat.messages
+      .slice(0, -1) // letzte User-Nachricht entfernen (sie ist bereits im prompt enthalten)
+      .slice(-AI_MAX_HISTORY_MESSAGES)
+      .map(m => ({ role: m.role, text: m.text }));
+  } else {
+    history = chat.messages
+      .slice(-AI_MAX_HISTORY_MESSAGES)
+      .map(m => ({ role: m.role, text: m.text }));
+  }
+
+  try {
+    const res = await fetch(AI_BACKEND_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: text, history })
+    });
+    const data = await res.json().catch(() => ({}));
+    removeAiTyping();
+
+    if (!res.ok || data.error) {
+      // Fehlerfall: KEINE Credits abziehen, spezielle Fehlermeldung mit Retry anzeigen
+      appendAiErrorWithRetry();
+      saveAiChats();
+      renderActiveChat();
+      renderAiCreditsBadge();
+      return;
+    }
+
+    // Erfolg: Antwort anhängen und Credits abziehen
+    const reply = data.reply || '⚠️ Keine Antwort erhalten.';
+    chat.messages.push({ role: 'assistant', text: reply });
+    updateChatTitle(chat);
+    AS.currentData.ai.creditsUsed = (AS.currentData.ai.creditsUsed || 0) + aiCreditCost(text);
+    saveAiChats();
+    renderAiCreditsBadge();
+    renderAiCreditsCard();
+    renderActiveChat();
+    checkCreditsWarning();
+
+  } catch (err) {
+    // Netzwerkfehler o.ä.: ebenfalls Retry anzeigen, keine Credits abziehen
+    removeAiTyping();
+    appendAiErrorWithRetry();
+    saveAiChats();
+    renderActiveChat();
+    renderAiCreditsBadge();
+  } finally {
+    aiSending = false;
+    if (sendBtn) sendBtn.disabled = false;
+    renderAiChatList();
+  }
+}
+
+/**
+ * Sendet eine Nachricht aus dem Eingabefeld.
+ */
 async function sendAiPrompt() {
   if (aiSending) return;
   const input = document.getElementById('aiPanelInput');
@@ -454,65 +546,71 @@ async function sendAiPrompt() {
     return;
   }
 
-  const chat = ensureActiveChat();
-  if (!chat) return;
-
-  aiSending = true;
+  // Eingabefeld leeren und Char-Counter zurücksetzen
   input.value = '';
   updateAiCharCount();
-  const sendBtn = document.getElementById('aiPanelSendBtn');
-  if (sendBtn) sendBtn.disabled = true;
 
-  // User-Nachricht anhängen und speichern
-  chat.messages.push({ role: 'user', text });
-  updateChatTitle(chat);
-  saveAiChats();
+  // Prompt ausführen
+  await executeAiPrompt(text, false);
+}
 
-  // UI aktualisieren
-  renderActiveChat();
-  renderAiChatList();
-  appendAiTyping();
+/**
+ * Wiederholt den letzten fehlgeschlagenen Prompt.
+ * Findet die letzte User-Nachricht im aktiven Chat und sendet sie erneut.
+ */
+async function retryLastPrompt() {
+  if (aiSending) return;
+  const chat = getActiveChat();
+  if (!chat) return;
 
-  // Kompletter Chatverlauf als History
-  const history = chat.messages
-    .slice(-AI_MAX_HISTORY_MESSAGES)
-    .map(m => ({ role: m.role, text: m.text }));
+  // Letzte User-Nachricht finden
+  const lastUserMsg = [...chat.messages].reverse().find(m => m.role === 'user');
+  if (!lastUserMsg) {
+    AS.toast('Keine Nachricht zum Wiederholen gefunden.');
+    return;
+  }
 
-  try {
-    const res = await fetch(AI_BACKEND_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: text, history })
+  // Credits prüfen (es könnten inzwischen weniger sein)
+  ensureAiCreditsFresh();
+  const cost = aiCreditCost(lastUserMsg.text);
+  const remaining = aiCreditsRemaining();
+  if (remaining < cost) {
+    AS.toast(`Nicht genug Credits für einen erneuten Versuch (brauchst ${cost}, du hast noch ${remaining}). Um 0 Uhr gibt's neue ✦`);
+    checkCreditsWarning();
+    return;
+  }
+
+  // Retry ausführen – isRetry = true, damit keine doppelte User-Nachricht angehängt wird
+  await executeAiPrompt(lastUserMsg.text, true);
+}
+
+/* ---------- Fehleranzeige mit Retry-Button ---------- */
+
+function appendAiErrorWithRetry() {
+  const box = document.getElementById('aiMessages');
+  if (!box) return;
+
+  const row = document.createElement('div');
+  row.className = 'ai-msg ai-msg-bot';
+  row.id = 'aiErrorRow'; // Kann später entfernt werden, falls nötig
+  row.innerHTML = `
+    <div class="ai-msg-sender">Schoolify KI</div>
+    <div class="ai-bubble ai-error-bubble">
+      <div class="ai-error-text">Schoolify KI hat einen Fehler in der Nachricht gemacht. Probiere es später erneut!</div>
+      <button class="ai-retry-btn" id="aiRetryBtn">↻ Erneut versuchen</button>
+    </div>
+  `;
+  box.appendChild(row);
+  box.scrollTop = box.scrollHeight;
+
+  // Event-Listener für den Retry-Button
+  const retryBtn = document.getElementById('aiRetryBtn');
+  if (retryBtn) {
+    retryBtn.addEventListener('click', () => {
+      // Entferne die Fehlermeldung, damit der Chat sauber bleibt
+      row.remove();
+      retryLastPrompt();
     });
-    const data = await res.json().catch(() => ({}));
-    removeAiTyping();
-
-    if (!res.ok || data.error) {
-      const errorText = '⚠️ ' + (data.error || 'Da ist etwas schiefgelaufen. Versuch es später nochmal.');
-      chat.messages.push({ role: 'assistant', text: errorText });
-      saveAiChats();
-      renderActiveChat();
-    } else {
-      const reply = data.reply || '⚠️ Keine Antwort erhalten.';
-      chat.messages.push({ role: 'assistant', text: reply });
-      updateChatTitle(chat);
-      AS.currentData.ai.creditsUsed = (AS.currentData.ai.creditsUsed || 0) + cost;
-      saveAiChats();
-      renderAiCreditsBadge();
-      renderAiCreditsCard();
-      renderActiveChat();
-      checkCreditsWarning();
-    }
-  } catch (err) {
-    removeAiTyping();
-    const errorText = '⚠️ Verbindung zur KI fehlgeschlagen. Prüfe deine Internetverbindung.';
-    chat.messages.push({ role: 'assistant', text: errorText });
-    saveAiChats();
-    renderActiveChat();
-  } finally {
-    aiSending = false;
-    if (sendBtn) sendBtn.disabled = false;
-    renderAiChatList();
   }
 }
 
