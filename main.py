@@ -2,7 +2,7 @@ import requests
 from config import SYSTEM_PROMPT, MODEL_NAME
 
 # Dein OpenRouter API-Key
-API_KEY = "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"
+API_KEY = "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"
 
 def ask_ai(user_prompt: str):
     url = "https://openrouter.ai/api/v1/chat/completions"
