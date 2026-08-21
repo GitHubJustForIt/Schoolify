@@ -18,33 +18,30 @@ def ask_ai(user_prompt: str, history: list = None):
         log_error("Kein GROQ_API_KEY auf Render gesetzt.")
         raise Exception("Kein GROQ_API_KEY auf Render gesetzt.")
 
-    # 1. System-Prompt verstärken & auf max. 2500 Zeichen deckeln
-    reinforced_system = (
-        f"{SYSTEM_PROMPT}\n\n"
-        "WICHTIG: Halte dich ausnahmslos an deine Rolle, deine Persönlichkeit und deinen Sprachstil!"
-    )
-    messages = [{"role": "system", "content": reinforced_system[:2500]}]
+    # 1. System-Prompt UNVERÄNDERT & VOLLSTÄNDIG laden
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    # 2. Letzte 6 Nachrichten einbinden (max. 350 Zeichen pro Nachricht)
+    # 2. Verlauf extrem token-sparend einbinden (letzte 4 Nachrichten, hart gekürzt)
     if history and isinstance(history, list):
-        recent_history = history[-6:]
+        recent_history = history[-4:]
         for msg in recent_history:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
-                text = str(msg["text"])[:350]
+                # Nur 핵심-Kontext behalten: 200 Zeichen max per Verlaufsnachricht
+                text = str(msg["text"])[:200]
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
-    # 3. Aktuelle Anfrage (max. 700 Zeichen)
-    messages.append({"role": "user", "content": str(user_prompt)[:700]})
+    # 3. Aktueller User-Prompt (max. 500 Zeichen)
+    messages.append({"role": "user", "content": str(user_prompt)[:500]})
 
     try:
         client = Groq(api_key=API_KEY)
         completion = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=messages,
-            temperature=0.5,
-            max_completion_tokens=500,  # Schützt das Minuten-Limit (TPM) vor Überlastung
+            temperature=0.3,  # Niedrig = Hält sich strikt an deinen System-Prompt
+            max_completion_tokens=400,  # Spart massiv Tokens beim Antwort-Ausstoß!
             top_p=1,
             reasoning_effort="low",
             stream=False
@@ -71,7 +68,7 @@ def ask():
         reply = ask_ai(user_prompt, history)
         return jsonify({"reply": reply})
     except RateLimitError as e:
-        return jsonify({"error": "Zu viele Anfragen in einer Minute. Bitte 20 Sekunden warten.", "code": 429}), 429
+        return jsonify({"error": "Zu viele Anfragen auf einmal. Bitte 15 Sekunden warten.", "code": 429}), 429
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
