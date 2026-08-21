@@ -19,7 +19,8 @@
      Retry-Button im Chat gespeichert. Credits werden bei Fehlern NICHT
      abgezogen. Beim Retry wird die Fehlernachricht entfernt und die
      letzte User-Nachricht erneut gesendet.
-   - JEDER Fehler wird in der Browser-Konsole protokolliert.
+   - JEDER Fehler wird in der Browser-Konsole protokolliert – jetzt mit
+     echtem HTTP-Statuscode und Serverantwort für eine klare Diagnose.
 
    WICHTIG, bevor es läuft:
    1. Starte ai_server.py irgendwo, wo Python läuft
@@ -40,8 +41,8 @@ let aiSending = false;
 let aiCreditsWarnShown = false;
 
 /* ---------- Logging-Hilfe ---------- */
-function logAiError(where, details) {
-  console.error(`[Schoolify KI] Fehler in ${where}:`, details);
+function logAiError(where, ...details) {
+  console.error(`[Schoolify KI] Fehler in ${where}:`, ...details);
 }
 
 /* ---------- Datum & Credits ---------- */
@@ -437,44 +438,44 @@ function updateAiCharCount() {
   }
 }
 
-/* ---------- Verbesserte Fehlererkennung ---------- */
+/* ---------- Verbesserte Fehlererkennung (mit echtem HTTP-Status) ---------- */
 
 /**
  * Prüft, ob die KI-Antwort als Fehler gewertet werden soll.
- * Wir schauen uns die Antwortstruktur und den HTTP-Status genau an.
+ * Erhält das komplette Response-Objekt und die geparsten Daten.
  *
- * @param {boolean} resOk        - Ob der HTTP-Status ok ist (200-299)
- * @param {object}  data         - Das geparste JSON (falls vorhanden)
+ * @param {Response} res  - Die Fetch-Response
+ * @param {object}   data - Das geparste JSON (falls vorhanden)
  * @returns {boolean}
  */
-function isAiError(resOk, data) {
+function isAiError(res, data) {
   // 1. HTTP-Fehlerstatus
-  if (!resOk) {
-    logAiError('HTTP-Status', { status: !resOk });
+  if (!res.ok) {
+    console.error(
+      `[Schoolify KI] HTTP-Fehler: ${res.status} ${res.statusText}`,
+      '\nAntwort:', data
+    );
     return true;
   }
 
   // 2. data.error ist explizit gesetzt
   if (data && data.error) {
-    logAiError('data.error', data.error);
+    console.error('[Schoolify KI] Backend-Fehler:', data.error);
     return true;
   }
 
-  // 3. data.reply enthält ein Fehlerartefakt (Backward-Kompatibilität)
+  // 3. data.reply enthält ein Fehlerartefakt (nur falls Backend noch Textfehler liefert)
   if (data && typeof data.reply === 'string') {
     const reply = data.reply.trim();
-    // Strengere Heuristik: Nur wenn der Text eindeutig auf einen Fehler hindeutet.
-    // "Fehler" am Anfang oder "⚠️" mit "Fehler" darin.
     if (reply.startsWith('Fehler') || (reply.startsWith('⚠️') && reply.includes('Fehler'))) {
-      logAiError('reply-Fehlertext', reply);
+      console.error('[Schoolify KI] Fehler im Antworttext:', reply);
       return true;
     }
   }
 
-  // 4. data.reply fehlt und data.error fehlt, aber auch kein normaler Text?
+  // 4. Unerwartete leere Antwort
   if (data && !data.reply && !data.error) {
-    // Unerwartete leere Antwort
-    logAiError('Leere Antwort', data);
+    console.error('[Schoolify KI] Leere Antwort erhalten:', data);
     return true;
   }
 
@@ -537,14 +538,14 @@ async function executeAiPrompt(text, isRetry = false) {
     try {
       data = await res.json();
     } catch (jsonErr) {
-      // JSON konnte nicht geparst werden – das ist auch ein Fehler
-      logAiError('JSON-Parse', jsonErr);
+      // JSON konnte nicht geparst werden – auch ein Fehler
+      console.error('[Schoolify KI] Antwort ist kein gültiges JSON:', jsonErr);
       data = { error: 'Ungültige Antwort vom Server' };
     }
     removeAiTyping();
 
-    // Fehlerprüfung mit erweiterter Logik
-    if (isAiError(res.ok, data)) {
+    // Fehlerprüfung mit echtem HTTP-Status
+    if (isAiError(res, data)) {
       // Fehlerfall: spezielle Fehlernachricht als permanente KI-Nachricht speichern
       chat.messages.push({
         role: 'assistant',
@@ -570,7 +571,7 @@ async function executeAiPrompt(text, isRetry = false) {
 
   } catch (err) {
     // Netzwerk- oder anderer Fehler
-    logAiError('fetch/executeAiPrompt', err);
+    console.error('[Schoolify KI] fetch/executeAiPrompt Fehler:', err);
     removeAiTyping();
     chat.messages.push({
       role: 'assistant',
