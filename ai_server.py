@@ -2,74 +2,61 @@ import os
 import sys
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import requests
-from config import SYSTEM_PROMPT, MODEL_NAME
+from groq import Groq, RateLimitError
+from config import SYSTEM_PROMPT
 
 app = Flask(__name__)
 CORS(app)
 
-API_KEY = os.environ.get("OPENROUTER_API_KEY")
+# Liest den Groq API-Key aus den Render Environment Variables
+API_KEY = os.environ.get("GROQ_API_KEY")
 
 def log_error(msg):
     print(f"[Schoolify KI] FEHLER: {msg}", file=sys.stderr)
 
 def ask_ai(user_prompt: str, history: list = None):
     """
-    Sendet eine Anfrage an OpenRouter und gibt die Antwort zurück.
-    Wirft bei Fehlern eine Exception, die von der Route behandelt wird.
+    Sendet eine Anfrage an Groq und gibt die Antwort zurück.
+    Behält den Chatverlauf (history) bei.
     """
     if not API_KEY:
-        log_error("Kein API_KEY auf Render gesetzt.")
-        raise Exception("Kein API_KEY auf Render gesetzt.")
+        log_error("Kein GROQ_API_KEY auf Render gesetzt.")
+        raise Exception("Kein GROQ_API_KEY auf Render gesetzt.")
 
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
-    }
-
+    # 1. System Prompt als erste Nachricht setzen
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
+    # 2. Verlauf (history) anhängen
     if history and isinstance(history, list):
         for msg in history:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
                 text = msg["text"]
+                # Groq nutzt 'assistant' statt 'bot'
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
+    # 3. Aktuellen Prompt des Nutzers anhängen
     messages.append({"role": "user", "content": user_prompt})
 
-    payload = {
-        "model": MODEL_NAME,
-        "messages": messages
-    }
-
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        if response.status_code == 200:
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-        else:
-            error_text = response.text
-            log_error(f"OpenRouter HTTP {response.status_code}: {error_text}")
+        client = Groq(api_key=API_KEY)
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",  # Sehr schnelles & starkes Gratis-Modell
+            messages=messages,
+            temperature=0.7,
+            max_completion_tokens=1024,
+            top_p=1,
+            stream=False
+        )
+        return completion.choices[0].message.content
 
-            # Wir unterscheiden jetzt zwischen Rate-Limit und anderen Fehlern
-            if response.status_code == 429:
-                raise RateLimitError(f"Rate limit überschritten: {error_text}")
-            else:
-                raise Exception(f"HTTP {response.status_code}: {error_text}")
-    except requests.exceptions.Timeout:
-        log_error("Timeout bei der Anfrage an OpenRouter.")
-        raise Exception("Zeitüberschreitung bei der Anfrage an OpenRouter.")
     except RateLimitError as e:
-        # Spezielle Behandlung, damit der Client 429 bekommt
+        log_error(f"Groq Rate Limit überschritten: {e}")
         raise e
     except Exception as e:
-        raise e
-
-class RateLimitError(Exception):
-    pass
+        log_error(f"Groq API Fehler: {e}")
+        raise Exception(f"Fehler bei der Groq-Anfrage: {e}")
 
 @app.route("/ask", methods=["POST"])
 def ask():
@@ -86,8 +73,7 @@ def ask():
         return jsonify({"reply": reply})
     except RateLimitError as e:
         log_error(f"Rate-Limit-Fehler: {e}")
-        # 429 an das Frontend durchreichen, damit es weiß, dass es später erneut versuchen soll
-        return jsonify({"error": str(e), "code": 429}), 429
+        return jsonify({"error": "Zu viele Anfragen auf einmal. Bitte kurz warten.", "code": 429}), 429
     except Exception as e:
         log_error(f"Fehler in /ask: {e}")
         return jsonify({"error": str(e)}), 500
