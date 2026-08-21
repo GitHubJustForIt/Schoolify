@@ -32,17 +32,16 @@ def ask_ai(user_prompt: str, history: list = None):
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
                 text = msg["text"]
-                # Groq nutzt 'assistant' statt 'bot'
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
     # 3. Aktuellen Prompt des Nutzers anhängen
     messages.append({"role": "user", "content": user_prompt})
 
-   try:
+    try:
         client = Groq(api_key=API_KEY)
         completion = client.chat.completions.create(
-            model="llama-3.1-70b-versatile",  # Korrigierter Modellname
+            model="openai/gpt-oss-120b",
             messages=messages,
             temperature=0.7,
             max_completion_tokens=1024,
