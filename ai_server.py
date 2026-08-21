@@ -18,34 +18,33 @@ def ask_ai(user_prompt: str, history: list = None):
         log_error("Kein GROQ_API_KEY auf Render gesetzt.")
         raise Exception("Kein GROQ_API_KEY auf Render gesetzt.")
 
-    # 1. System-Prompt VOLLSTÄNDIG übergeben und mit einer strengen Schlussanweisung verstärken
-    reinforced_system_prompt = (
+    # 1. System-Prompt verstärken & auf max. 2500 Zeichen deckeln
+    reinforced_system = (
         f"{SYSTEM_PROMPT}\n\n"
-        "WICHTIGE INSTRUKTION: Du MUSST dich ohne Ausnahme an die oben definierte Rolle, "
-        "den Sprachstil und die Persönlichkeit halten! Weiche in keiner Antwort davon ab."
+        "WICHTIG: Halte dich ausnahmslos an deine Rolle, deine Persönlichkeit und deinen Sprachstil!"
     )
-    messages = [{"role": "system", "content": reinforced_system_prompt}]
+    messages = [{"role": "system", "content": reinforced_system[:2500]}]
 
-    # 2. Verlauf auf max. 8 Nachrichten (4 Frage-Antwort-Paare) begrenzen
+    # 2. Letzte 6 Nachrichten einbinden (max. 350 Zeichen pro Nachricht)
     if history and isinstance(history, list):
-        recent_history = history[-8:]
+        recent_history = history[-6:]
         for msg in recent_history:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
-                text = str(msg["text"])[:500]
+                text = str(msg["text"])[:350]
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
-    # 3. Aktuellen Prompt anhängen
-    messages.append({"role": "user", "content": str(user_prompt)[:1000]})
+    # 3. Aktuelle Anfrage (max. 700 Zeichen)
+    messages.append({"role": "user", "content": str(user_prompt)[:700]})
 
     try:
         client = Groq(api_key=API_KEY)
         completion = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=messages,
-            temperature=0.5,  # Niedriger = hält sich viel strenger an Instruktionen
-            max_completion_tokens=800,
+            temperature=0.5,
+            max_completion_tokens=500,  # Schützt das Minuten-Limit (TPM) vor Überlastung
             top_p=1,
             reasoning_effort="low",
             stream=False
@@ -72,7 +71,7 @@ def ask():
         reply = ask_ai(user_prompt, history)
         return jsonify({"reply": reply})
     except RateLimitError as e:
-        return jsonify({"error": "Zu viele Anfragen auf einmal. Bitte kurz warten.", "code": 429}), 429
+        return jsonify({"error": "Zu viele Anfragen in einer Minute. Bitte 20 Sekunden warten.", "code": 429}), 429
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
