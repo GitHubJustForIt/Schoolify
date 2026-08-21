@@ -15,13 +15,17 @@
    - Chat-Titel werden automatisch aus der ersten User-Nachricht erstellt
    - Speicheranzeige wird bei Chat-Änderungen aktualisiert
    - Credits-Animation wenn Credits knapp werden
-   - Fehlermeldungen werden robust erkannt:
-       * HTTP-Fehlerstatus (z.B. 429) ODER
-       * Antworttext, der mit "Fehler" beginnt (z.B. "Fehler 429: ...")
-     In beiden Fällen wird eine spezielle KI-Nachricht mit Retry-Button
-     gespeichert. Credits werden bei Fehlern NICHT abgezogen.
-     Beim Retry wird die Fehlernachricht entfernt und die letzte
-     User-Nachricht erneut gesendet.
+   - Fehlermeldungen (z.B. 429) werden als spezielle KI-Nachricht mit
+     Retry-Button im Chat gespeichert. Credits werden bei Fehlern NICHT
+     abgezogen. Beim Retry wird die Fehlernachricht entfernt und die
+     letzte User-Nachricht erneut gesendet.
+   - JEDER Fehler wird in der Browser-Konsole protokolliert.
+
+   WICHTIG, bevor es läuft:
+   1. Starte ai_server.py irgendwo, wo Python läuft
+   2. Setze dort die Umgebungsvariable OPENROUTER_API_KEY
+   3. Trage unten bei AI_BACKEND_URL die öffentliche URL deines Servers ein
+   4. Das Backend muss den Parameter "history" akzeptieren
    ========================================================================== */
 
 const AI_BACKEND_URL = 'https://schoolifyyy.onrender.com/ask';
@@ -34,6 +38,11 @@ const AI_MAX_CHATS = 4;
 
 let aiSending = false;
 let aiCreditsWarnShown = false;
+
+/* ---------- Logging-Hilfe ---------- */
+function logAiError(where, details) {
+  console.error(`[Schoolify KI] Fehler in ${where}:`, details);
+}
 
 /* ---------- Datum & Credits ---------- */
 
@@ -428,19 +437,49 @@ function updateAiCharCount() {
   }
 }
 
-/* ---------- Fehlererkennung ---------- */
+/* ---------- Verbesserte Fehlererkennung ---------- */
 
 /**
- * Prüft, ob ein Antworttext auf einen Fehler hindeutet.
- * Wir erkennen:
- * - HTTP-Fehlerstatus (wird über res.ok abgedeckt)
- * - Antworttext, der mit "Fehler" beginnt (z.B. "Fehler 429: ...")
- * - Antworttext, der mit "⚠️" beginnt und das Wort "Fehler" enthält
+ * Prüft, ob die KI-Antwort als Fehler gewertet werden soll.
+ * Wir schauen uns die Antwortstruktur und den HTTP-Status genau an.
+ *
+ * @param {boolean} resOk        - Ob der HTTP-Status ok ist (200-299)
+ * @param {object}  data         - Das geparste JSON (falls vorhanden)
+ * @returns {boolean}
  */
-function isErrorReply(text) {
-  if (typeof text !== 'string') return false;
-  const t = text.trim();
-  return t.startsWith('Fehler') || (t.startsWith('⚠️') && t.includes('Fehler'));
+function isAiError(resOk, data) {
+  // 1. HTTP-Fehlerstatus
+  if (!resOk) {
+    logAiError('HTTP-Status', { status: !resOk });
+    return true;
+  }
+
+  // 2. data.error ist explizit gesetzt
+  if (data && data.error) {
+    logAiError('data.error', data.error);
+    return true;
+  }
+
+  // 3. data.reply enthält ein Fehlerartefakt (Backward-Kompatibilität)
+  if (data && typeof data.reply === 'string') {
+    const reply = data.reply.trim();
+    // Strengere Heuristik: Nur wenn der Text eindeutig auf einen Fehler hindeutet.
+    // "Fehler" am Anfang oder "⚠️" mit "Fehler" darin.
+    if (reply.startsWith('Fehler') || (reply.startsWith('⚠️') && reply.includes('Fehler'))) {
+      logAiError('reply-Fehlertext', reply);
+      return true;
+    }
+  }
+
+  // 4. data.reply fehlt und data.error fehlt, aber auch kein normaler Text?
+  if (data && !data.reply && !data.error) {
+    // Unerwartete leere Antwort
+    logAiError('Leere Antwort', data);
+    return true;
+  }
+
+  // Kein Fehler erkannt
+  return false;
 }
 
 /* ---------- Senden (Kernlogik) ---------- */
@@ -476,7 +515,7 @@ async function executeAiPrompt(text, isRetry = false) {
   // History aufbereiten
   let history;
   if (isRetry) {
-    // Bei Retry alle Nachrichten außer der letzten User-Nachricht (die wird erneut als prompt gesendet)
+    // Bei Retry alle Nachrichten außer der letzten User-Nachricht
     history = chat.messages
       .slice(0, -1)
       .slice(-AI_MAX_HISTORY_MESSAGES)
@@ -493,11 +532,19 @@ async function executeAiPrompt(text, isRetry = false) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: text, history })
     });
-    const data = await res.json().catch(() => ({}));
+
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (jsonErr) {
+      // JSON konnte nicht geparst werden – das ist auch ein Fehler
+      logAiError('JSON-Parse', jsonErr);
+      data = { error: 'Ungültige Antwort vom Server' };
+    }
     removeAiTyping();
 
-    // Fehlerprüfung: HTTP-Status ODER data.error ODER Fehlertext in reply
-    if (!res.ok || data.error || isErrorReply(data.reply)) {
+    // Fehlerprüfung mit erweiterter Logik
+    if (isAiError(res.ok, data)) {
       // Fehlerfall: spezielle Fehlernachricht als permanente KI-Nachricht speichern
       chat.messages.push({
         role: 'assistant',
@@ -522,7 +569,8 @@ async function executeAiPrompt(text, isRetry = false) {
     checkCreditsWarning();
 
   } catch (err) {
-    // Netzwerkfehler o.ä.
+    // Netzwerk- oder anderer Fehler
+    logAiError('fetch/executeAiPrompt', err);
     removeAiTyping();
     chat.messages.push({
       role: 'assistant',
