@@ -18,19 +18,24 @@ def ask_ai(user_prompt: str, history: list = None):
         log_error("Kein GROQ_API_KEY auf Render gesetzt.")
         raise Exception("Kein GROQ_API_KEY auf Render gesetzt.")
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # 1. NOTBREMSE: System-Prompt auf max. 2000 Zeichen kürzen
+    safe_system_prompt = SYSTEM_PROMPT[:2000] if SYSTEM_PROMPT else "Du bist ein Schul-Assistent."
+    messages = [{"role": "system", "content": safe_system_prompt}]
 
-    # Verlauf strikt auf die letzten 4 Nachrichten kürzen
+    # 2. NOTBREMSE: Verlauf auf 2 Nachrichten beschränken & jede Nachricht auf 400 Zeichen kappen
     if history and isinstance(history, list):
-        recent_history = history[-4:]
+        recent_history = history[-2:]
         for msg in recent_history:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
-                text = msg["text"]
+                # Text hart abschneiden, falls er zu lang ist
+                text = str(msg["text"])[:400]
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
-    messages.append({"role": "user", "content": user_prompt})
+    # 3. NOTBREMSE: User-Prompt auf max. 1000 Zeichen kürzen
+    safe_user_prompt = str(user_prompt)[:1000]
+    messages.append({"role": "user", "content": safe_user_prompt})
 
     try:
         client = Groq(api_key=API_KEY)
@@ -38,9 +43,8 @@ def ask_ai(user_prompt: str, history: list = None):
             model="openai/gpt-oss-20b",
             messages=messages,
             temperature=0.7,
-            max_completion_tokens=1024,
+            max_completion_tokens=600,  # Reduziert, spart Tokens!
             top_p=1,
-            reasoning_effort="low",  # Hält den Token-Verbrauch im Rahmen
             stream=False
         )
         return completion.choices[0].message.content
@@ -56,7 +60,6 @@ def ask_ai(user_prompt: str, history: list = None):
 def ask():
     data = request.get_json()
     if not data or "prompt" not in data:
-        log_error("Kein Prompt übermittelt.")
         return jsonify({"error": "Kein Prompt übermittelt"}), 400
 
     user_prompt = data["prompt"]
@@ -66,10 +69,8 @@ def ask():
         reply = ask_ai(user_prompt, history)
         return jsonify({"reply": reply})
     except RateLimitError as e:
-        log_error(f"Rate-Limit-Fehler: {e}")
         return jsonify({"error": "Zu viele Anfragen auf einmal. Bitte kurz warten.", "code": 429}), 429
     except Exception as e:
-        log_error(f"Fehler in /ask: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
