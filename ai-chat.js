@@ -15,16 +15,10 @@
    - Chat-Titel werden automatisch aus der ersten User-Nachricht erstellt
    - Speicheranzeige wird bei Chat-Änderungen aktualisiert
    - Credits-Animation wenn Credits knapp werden
-   - Bei KI-Fehlern (z.B. 429) wird eine spezielle Fehlermeldung mit
-     Retry-Button angezeigt – die ursprüngliche Fehlermeldung wird nicht
-     als normale Nachricht gespeichert. Credits werden bei Fehlern NICHT
-     abgezogen.
-
-   WICHTIG, bevor es läuft:
-   1. Starte ai_server.py irgendwo, wo Python läuft
-   2. Setze dort die Umgebungsvariable OPENROUTER_API_KEY
-   3. Trage unten bei AI_BACKEND_URL die öffentliche URL deines Servers ein
-   4. Das Backend muss den Parameter "history" akzeptieren
+   - Fehlermeldungen (z.B. 429) werden als spezielle KI-Nachricht mit
+     Retry-Button im Chat gespeichert. Credits werden bei Fehlern NICHT
+     abgezogen. Beim Retry wird die Fehlernachricht entfernt und die
+     letzte User-Nachricht erneut gesendet.
    ========================================================================== */
 
 const AI_BACKEND_URL = 'https://schoolifyyy.onrender.com/ask';
@@ -33,7 +27,7 @@ const AI_MAX_PROMPT_CHARS = 50;
 const AI_CREDIT_CHAR_UNIT = 12;
 const AI_MAX_HISTORY_MESSAGES = 50;
 const AI_TITLE_MAX_CHARS = 25;
-const AI_MAX_CHATS = 4; // Maximum an gleichzeitigen Chats
+const AI_MAX_CHATS = 4;
 
 let aiSending = false;
 let aiCreditsWarnShown = false;
@@ -78,8 +72,6 @@ function checkCreditsWarning() {
   
   if (remaining <= 8 && !aiCreditsWarnShown) {
     aiCreditsWarnShown = true;
-    
-    // Badge animieren
     if (badge) {
       badge.classList.add('ai-credits-warn');
       badge.style.animation = 'none';
@@ -90,8 +82,6 @@ function checkCreditsWarning() {
         badge.classList.remove('ai-credits-warn');
       }, 5000);
     }
-    
-    // Toast anzeigen
     AS.toast(`⚡ Nur noch ${remaining} KI-Credits übrig!`);
   } else if (remaining > 8) {
     aiCreditsWarnShown = false;
@@ -148,7 +138,7 @@ function getAiChats() {
 
 function saveAiChats() {
   if (window.persist) persist();
-  if (window.renderStorageBar) renderStorageBar(); // Speicheranzeige aktualisieren
+  if (window.renderStorageBar) renderStorageBar();
 }
 
 function getActiveChatId() {
@@ -163,13 +153,10 @@ function setActiveChatId(id) {
 
 function createNewChat() {
   const chats = getAiChats();
-  
-  // Prüfen ob Maximum erreicht ist
   if (chats.length >= AI_MAX_CHATS) {
     AS.toast(`⚠️ Du kannst maximal ${AI_MAX_CHATS} Chats erstellen. Lösche zuerst einen alten Chat.`);
     return null;
   }
-  
   const chat = {
     id: 'aic_' + Date.now() + Math.random().toString(36).slice(2, 6),
     title: '',
@@ -201,11 +188,7 @@ function updateChatTitle(chat) {
     const firstUserMsg = chat.messages.find(m => m.role === 'user');
     if (firstUserMsg) {
       const text = firstUserMsg.text.trim();
-      if (text.length > AI_TITLE_MAX_CHARS) {
-        chat.title = text.slice(0, AI_TITLE_MAX_CHARS) + '…';
-      } else {
-        chat.title = text;
-      }
+      chat.title = text.length > AI_TITLE_MAX_CHARS ? text.slice(0, AI_TITLE_MAX_CHARS) + '…' : text;
     }
   }
   chat.updatedAt = Date.now();
@@ -266,7 +249,6 @@ function buildAiWidgetDom() {
     </div>`;
   while (wrap.firstElementChild) document.body.appendChild(wrap.firstElementChild);
 
-  // Event-Listener
   document.getElementById('aiFab').addEventListener('click', openAiOverlay);
   document.getElementById('aiPanelClose').addEventListener('click', closeAiOverlay);
   document.getElementById('aiPanelSendBtn').addEventListener('click', sendAiPrompt);
@@ -283,12 +265,18 @@ function buildAiWidgetDom() {
   input.addEventListener('input', updateAiCharCount);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAiPrompt(); });
 
-  // Klick auf Overlay-Hintergrund schließt
   document.getElementById('aiOverlay').addEventListener('click', (e) => {
     if (e.target === document.getElementById('aiOverlay')) closeAiOverlay();
   });
 
-  // Initialen Zustand herstellen
+  // Event-Delegation für Retry-Buttons im Chat
+  document.getElementById('aiMessages').addEventListener('click', (e) => {
+    const retryBtn = e.target.closest('.ai-retry-btn');
+    if (retryBtn) {
+      handleRetryClick();
+    }
+  });
+
   ensureActiveChat();
   renderAiChatList();
   renderActiveChat();
@@ -314,7 +302,6 @@ function closeAiOverlay() {
   document.getElementById('aiFab').classList.remove('hidden');
 }
 
-// ESC schließt Overlay
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const overlay = document.getElementById('aiOverlay');
@@ -327,11 +314,7 @@ function renderAiChatList() {
   const listEl = document.getElementById('aiChatList');
   const headerEl = document.querySelector('.ai-chat-sidebar-header span');
   if (!listEl) return;
-  
-  // Header mit Anzahl aktualisieren
-  if (headerEl) {
-    headerEl.textContent = `Chats (${getAiChats().length}/${AI_MAX_CHATS})`;
-  }
+  if (headerEl) headerEl.textContent = `Chats (${getAiChats().length}/${AI_MAX_CHATS})`;
   
   const chats = getAiChats();
   const activeId = getActiveChatId();
@@ -349,18 +332,15 @@ function renderAiChatList() {
     </div>
   `).join('');
 
-  // Klick auf Chat wechselt aktiven Chat
   listEl.querySelectorAll('.ai-chat-item').forEach(el => {
     el.addEventListener('click', (e) => {
       if (e.target.closest('[data-delete-chat]')) return;
-      const chatId = el.dataset.chatId;
-      setActiveChatId(chatId);
+      setActiveChatId(el.dataset.chatId);
       renderAiChatList();
       renderActiveChat();
     });
   });
 
-  // Löschen-Buttons
   listEl.querySelectorAll('[data-delete-chat]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -392,6 +372,16 @@ function renderActiveChat() {
   }
   messagesEl.innerHTML = chat.messages.map(msg => {
     const isUser = msg.role === 'user';
+    const isError = msg.isError === true;
+    if (isError) {
+      return `<div class="ai-msg ai-msg-bot">
+        <div class="ai-msg-sender">Schoolify KI</div>
+        <div class="ai-bubble ai-error-bubble">
+          <div class="ai-error-text">${escapeHtml(msg.text)}</div>
+          <button class="ai-retry-btn">↻ Erneut versuchen</button>
+        </div>
+      </div>`;
+    }
     return `<div class="ai-msg ${isUser ? 'ai-msg-user' : 'ai-msg-bot'}">
       <div class="ai-msg-sender">${isUser ? escapeHtml(AS.currentUser?.firstName || 'Du') : 'Schoolify KI'}</div>
       <div class="ai-bubble">${escapeHtml(msg.text)}</div>
@@ -405,7 +395,6 @@ function renderAiCreditsBadge() {
   if (!el || !AS.currentData) return;
   el.textContent = `${aiCreditsRemaining()}/${AI_DAILY_CREDITS} Credits`;
   
-  // Farbe basierend auf verbleibenden Credits
   const remaining = aiCreditsRemaining();
   if (remaining === 0) {
     el.style.background = 'var(--danger-bg)';
@@ -438,11 +427,6 @@ function updateAiCharCount() {
 
 /* ---------- Senden (Kernlogik) ---------- */
 
-/**
- * Führt einen KI-Request aus.
- * @param {string} text - Der Prompt, der gesendet werden soll.
- * @param {boolean} isRetry - Ob es sich um einen Wiederholungsversuch handelt.
- */
 async function executeAiPrompt(text, isRetry = false) {
   const chat = ensureActiveChat();
   if (!chat) return;
@@ -451,27 +435,32 @@ async function executeAiPrompt(text, isRetry = false) {
   const sendBtn = document.getElementById('aiPanelSendBtn');
   if (sendBtn) sendBtn.disabled = true;
 
-  // Wenn kein Retry: User-Nachricht anhängen und speichern
   if (!isRetry) {
+    // Normale neue Nachricht
     chat.messages.push({ role: 'user', text });
     updateChatTitle(chat);
     saveAiChats();
     renderActiveChat();
     renderAiChatList();
   } else {
-    // Bei Retry: keine neue User-Nachricht anhängen, nur UI aktualisieren
-    renderAiChatList(); // Zeitanzeige aktualisieren
+    // Retry: letzte Fehlernachricht entfernen (falls vorhanden)
+    const lastMsg = chat.messages[chat.messages.length - 1];
+    if (lastMsg && lastMsg.isError) {
+      chat.messages.pop();
+    }
+    saveAiChats();
+    renderActiveChat();
+    renderAiChatList();
   }
 
-  // Typing-Indikator anfügen
   appendAiTyping();
 
-  // History aufbereiten (kompletter Verlauf, ggf. ohne die letzte User-Nachricht bei Retry)
+  // History aufbereiten
   let history;
   if (isRetry) {
-    // Alle Nachrichten außer der letzten User-Nachricht
+    // Bei Retry alle Nachrichten außer der letzten User-Nachricht (die wird erneut als prompt gesendet)
     history = chat.messages
-      .slice(0, -1) // letzte User-Nachricht entfernen (sie ist bereits im prompt enthalten)
+      .slice(0, -1)
       .slice(-AI_MAX_HISTORY_MESSAGES)
       .map(m => ({ role: m.role, text: m.text }));
   } else {
@@ -490,8 +479,12 @@ async function executeAiPrompt(text, isRetry = false) {
     removeAiTyping();
 
     if (!res.ok || data.error) {
-      // Fehlerfall: KEINE Credits abziehen, spezielle Fehlermeldung mit Retry anzeigen
-      appendAiErrorWithRetry();
+      // Fehlerfall: spezielle Fehlernachricht als permanente KI-Nachricht speichern
+      chat.messages.push({
+        role: 'assistant',
+        text: 'Schoolify KI hat einen Fehler in der Nachricht gemacht. Probiere es später erneut!',
+        isError: true
+      });
       saveAiChats();
       renderActiveChat();
       renderAiCreditsBadge();
@@ -510,9 +503,13 @@ async function executeAiPrompt(text, isRetry = false) {
     checkCreditsWarning();
 
   } catch (err) {
-    // Netzwerkfehler o.ä.: ebenfalls Retry anzeigen, keine Credits abziehen
+    // Netzwerkfehler o.ä.
     removeAiTyping();
-    appendAiErrorWithRetry();
+    chat.messages.push({
+      role: 'assistant',
+      text: 'Schoolify KI hat einen Fehler in der Nachricht gemacht. Probiere es später erneut!',
+      isError: true
+    });
     saveAiChats();
     renderActiveChat();
     renderAiCreditsBadge();
@@ -523,9 +520,6 @@ async function executeAiPrompt(text, isRetry = false) {
   }
 }
 
-/**
- * Sendet eine Nachricht aus dem Eingabefeld.
- */
 async function sendAiPrompt() {
   if (aiSending) return;
   const input = document.getElementById('aiPanelInput');
@@ -546,31 +540,25 @@ async function sendAiPrompt() {
     return;
   }
 
-  // Eingabefeld leeren und Char-Counter zurücksetzen
   input.value = '';
   updateAiCharCount();
-
-  // Prompt ausführen
   await executeAiPrompt(text, false);
 }
 
-/**
- * Wiederholt den letzten fehlgeschlagenen Prompt.
- * Findet die letzte User-Nachricht im aktiven Chat und sendet sie erneut.
- */
-async function retryLastPrompt() {
+/* Retry-Handler: wird aufgerufen, wenn der Retry-Button geklickt wird */
+function handleRetryClick() {
   if (aiSending) return;
   const chat = getActiveChat();
   if (!chat) return;
 
-  // Letzte User-Nachricht finden
-  const lastUserMsg = [...chat.messages].reverse().find(m => m.role === 'user');
+  // Letzte User-Nachricht finden (vor der Fehlernachricht)
+  const userMessages = chat.messages.filter(m => m.role === 'user');
+  const lastUserMsg = userMessages[userMessages.length - 1];
   if (!lastUserMsg) {
     AS.toast('Keine Nachricht zum Wiederholen gefunden.');
     return;
   }
 
-  // Credits prüfen (es könnten inzwischen weniger sein)
   ensureAiCreditsFresh();
   const cost = aiCreditCost(lastUserMsg.text);
   const remaining = aiCreditsRemaining();
@@ -580,38 +568,8 @@ async function retryLastPrompt() {
     return;
   }
 
-  // Retry ausführen – isRetry = true, damit keine doppelte User-Nachricht angehängt wird
-  await executeAiPrompt(lastUserMsg.text, true);
-}
-
-/* ---------- Fehleranzeige mit Retry-Button ---------- */
-
-function appendAiErrorWithRetry() {
-  const box = document.getElementById('aiMessages');
-  if (!box) return;
-
-  const row = document.createElement('div');
-  row.className = 'ai-msg ai-msg-bot';
-  row.id = 'aiErrorRow'; // Kann später entfernt werden, falls nötig
-  row.innerHTML = `
-    <div class="ai-msg-sender">Schoolify KI</div>
-    <div class="ai-bubble ai-error-bubble">
-      <div class="ai-error-text">Schoolify KI hat einen Fehler in der Nachricht gemacht. Probiere es später erneut!</div>
-      <button class="ai-retry-btn" id="aiRetryBtn">↻ Erneut versuchen</button>
-    </div>
-  `;
-  box.appendChild(row);
-  box.scrollTop = box.scrollHeight;
-
-  // Event-Listener für den Retry-Button
-  const retryBtn = document.getElementById('aiRetryBtn');
-  if (retryBtn) {
-    retryBtn.addEventListener('click', () => {
-      // Entferne die Fehlermeldung, damit der Chat sauber bleibt
-      row.remove();
-      retryLastPrompt();
-    });
-  }
+  // Fehlernachricht wird in executeAiPrompt(isRetry=true) entfernt
+  executeAiPrompt(lastUserMsg.text, true);
 }
 
 /* ---------- Typing-Indikator ---------- */
