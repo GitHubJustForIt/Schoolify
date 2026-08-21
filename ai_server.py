@@ -15,31 +15,32 @@ def log_error(msg):
 
 def ask_ai(user_prompt: str, history: list = None):
     if not API_KEY:
-        raise ValueError("Kein GROQ_API_KEY auf Render gesetzt.")
+        raise ValueError("Kein GROQ_API_KEY in den Environment Variables gesetzt.")
 
-    # Entfernt mehrfache Leerzeichen/Zeilenumbrüche zur Token-Ersparnis
-    clean_system = " ".join(SYSTEM_PROMPT.split())
-    messages = [{"role": "system", "content": clean_system}]
+    # 1. System-Prompt VOLLSTÄNDIG aus config.py laden
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    # Nur die allerletzten 2 Nachrichten (1 Frage + 1 Antwort, je max. 150 Zeichen)
+    # 2. Die letzten 6 Nachrichten aus der Chat-Historie anhängen
     if history and isinstance(history, list):
-        for msg in history[-2:]:
+        for msg in history[-6:]:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
-                text = str(msg["text"])[:150].strip()
+                text = str(msg["text"])[:400].strip()
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
-    # Aktueller Prompt (max. 300 Zeichen)
-    messages.append({"role": "user", "content": str(user_prompt)[:300].strip()})
+    # 3. Aktueller User-Prompt
+    messages.append({"role": "user", "content": str(user_prompt)[:1000].strip()})
 
     client = Groq(api_key=API_KEY)
+    
+    # Wechsel auf llama-3.3-70b-versatile
     completion = client.chat.completions.create(
-        model="openai/gpt-oss-20b",
+        model="llama-3.3-70b-versatile",
         messages=messages,
-        temperature=0.3,
-        max_completion_tokens=250,  # Kurze Antworten sparen extrem viele Tokens!
-        reasoning_effort="low",
+        temperature=0.7,
+        max_completion_tokens=600,
+        top_p=1,
         stream=False
     )
     return completion.choices[0].message.content
@@ -50,13 +51,16 @@ def ask():
     if not data or "prompt" not in data:
         return jsonify({"error": "Kein Prompt übermittelt"}), 400
 
+    user_prompt = data["prompt"]
+    history = data.get("history", [])
+
     try:
-        reply = ask_ai(data["prompt"], data.get("history", []))
+        reply = ask_ai(user_prompt, history)
         return jsonify({"reply": reply})
     except RateLimitError as e:
         log_error(f"Rate Limit: {e}")
         return jsonify({
-            "error": "Limit von 8.000 Tokens/Minute erreicht. Bitte 30–60 Sekunden warten.",
+            "error": "Zu viele Anfragen in kurzer Zeit. Bitte 10 Sekunden warten.",
             "code": 429
         }), 429
     except APIError as e:
