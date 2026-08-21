@@ -1294,4 +1294,4 @@ Account‑Switcher	Konto wechseln
 Schoolify ist eine komplett clientseitige, kostenlose Schulorganisations‑App, die eine beeindruckende Fülle an Funktionen in einem stimmigen Collegeblock‑Design vereint. Die Speicherung erfolgt flexibel entweder lokal (5 MB) oder online (12 MB) mit durchdachtem Blob‑Caching und Synchronisierung. Die Echtzeitkommunikation über PeerJS ermöglicht direkte Freundschaftsanfragen, Chat, AirSignal und Live‑Sessions ohne zentrale Server. Notizen, Karteikarten, Materialien und Stundenplan sind vollständig integriert und speichern automatisch. Jede Funktion ist über klar beschriftete Buttons erreichbar, und die App bietet umfangreiche Sicherheits‑ und Privatsphäreneinstellungen.
 """
 AI_MAX_PROMPT_CHARS = 50
-MODEL_NAME = "openai/gpt-oss-120b"
+MODEL_NAME = "llama-3.1-70b-versatile"
