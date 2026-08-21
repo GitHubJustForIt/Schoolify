@@ -15,31 +15,30 @@ def log_error(msg):
 
 def ask_ai(user_prompt: str, history: list = None):
     if not API_KEY:
-        log_error("Kein GROQ_API_KEY auf Render gesetzt.")
-        raise ValueError("Kein GROQ_API_KEY in den Environment Variables gesetzt.")
+        raise ValueError("Kein GROQ_API_KEY auf Render gesetzt.")
 
-    # Unnötige Umbrüche & Leerzeichen aus config.py entfernen, um Tokens zu sparen
+    # Entfernt mehrfache Leerzeichen/Zeilenumbrüche zur Token-Ersparnis
     clean_system = " ".join(SYSTEM_PROMPT.split())
     messages = [{"role": "system", "content": clean_system}]
 
-    # Max. 4 alte Nachrichten (Verlauf) mit je max. 200 Zeichen
+    # Nur die allerletzten 2 Nachrichten (1 Frage + 1 Antwort, je max. 150 Zeichen)
     if history and isinstance(history, list):
-        for msg in history[-4:]:
+        for msg in history[-2:]:
             if isinstance(msg, dict) and "role" in msg and "text" in msg:
                 role = msg["role"]
-                text = str(msg["text"])[:200].strip()
+                text = str(msg["text"])[:150].strip()
                 if role in ("user", "assistant"):
                     messages.append({"role": role, "content": text})
 
-    # Aktueller User-Prompt (max. 400 Zeichen)
-    messages.append({"role": "user", "content": str(user_prompt)[:400].strip()})
+    # Aktueller Prompt (max. 300 Zeichen)
+    messages.append({"role": "user", "content": str(user_prompt)[:300].strip()})
 
     client = Groq(api_key=API_KEY)
     completion = client.chat.completions.create(
         model="openai/gpt-oss-20b",
         messages=messages,
         temperature=0.3,
-        max_completion_tokens=300,
+        max_completion_tokens=250,  # Kurze Antworten sparen extrem viele Tokens!
         reasoning_effort="low",
         stream=False
     )
@@ -51,23 +50,20 @@ def ask():
     if not data or "prompt" not in data:
         return jsonify({"error": "Kein Prompt übermittelt"}), 400
 
-    user_prompt = data["prompt"]
-    history = data.get("history", [])
-
     try:
-        reply = ask_ai(user_prompt, history)
+        reply = ask_ai(data["prompt"], data.get("history", []))
         return jsonify({"reply": reply})
     except RateLimitError as e:
-        log_error(f"Rate-Limit / TPM überschritten: {e}")
+        log_error(f"Rate Limit: {e}")
         return jsonify({
-            "error": "Groq Token-Limit (8000 TPM) überschritten. Bitte 30 Sekunden warten.",
+            "error": "Limit von 8.000 Tokens/Minute erreicht. Bitte 30–60 Sekunden warten.",
             "code": 429
         }), 429
     except APIError as e:
-        log_error(f"Groq API Error: {e}")
+        log_error(f"Groq API Fehler: {e}")
         return jsonify({"error": f"Groq API-Fehler: {e.message}"}), 500
     except Exception as e:
-        log_error(f"Interner Server-Fehler: {e}")
+        log_error(f"Server-Fehler: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
