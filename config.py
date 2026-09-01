@@ -1295,3 +1295,4 @@ Schoolify ist eine komplett clientseitige, kostenlose Schulorganisations‑App, 
 """
 AI_MAX_PROMPT_CHARS = 50
 MODEL_NAME = "llama-3.1-8b-instant"
+RESEND_API_KEY = "re_XZU6Y73b_9z22V3Mtvnu4uAgye9BtMAJK"
