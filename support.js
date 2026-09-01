@@ -1,27 +1,34 @@
 /* ==========================================================================
    Schoolify — support.js (Support & Admin System)
    ==========================================================================
-   Dieses Skript ergänzt die bestehende app.js um vollständige
-   Support- und Admin-Funktionalität.
+   Ergänzt app.js um vollständige Support- und Admin-Funktionalität.
 
    Voraussetzungen:
-   - app.js muss zuvor geladen sein (stellt AS, cloudPut/Get, etc. bereit)
-   - Das Skript muss nach app.js in der HTML eingebunden werden:
-     <script src="app.js"></script>
-     <script src="support.js"></script>
+   - app.js muss zuvor geladen sein (stellt AS, cloudPut/Get, persist, etc. bereit)
+   - Einbindung NACH app.js: <script src="support.js"></script>
+   - Ein Python-Backend (support_email.py) muss laufen, damit E-Mails
+     tatsächlich versendet werden können. Der Endpoint wird in
+     SUPPORT_EMAIL_ENDPOINT konfiguriert.
+
+   Der Resend-API-Key befindet sich ausschließlich im Python-Backend
+   und wird niemals an den Browser übertragen.
    ========================================================================== */
 
 (function() {
-  // Support- & Admin-Konstanten (bereits in app.js definiert, hier nur Referenz)
+  // Support- & Admin-Konstanten
   const SUPPORT_KEY = 'global_support_requests';
   const MAGIC_LINK_KEY = 'magic_links';
-  const RESEND_API_KEY = 're_XZU6Y73b_9z22V3Mtvnu4uAgye9BtMAJK';
   const SUPPORT_RATE_LIMIT_MS = 10 * 60 * 1000; // 10 Minuten
 
-  // Admin-Passwort
+  // URL des Python-Endpoints für den E-Mail-Versand
+  // Lokal: http://localhost:5001/send-support-email
+  // Produktion: https://dein-server.com/send-support-email
+  const SUPPORT_EMAIL_ENDPOINT = 'http://localhost:5001/send-support-email';
+
+  // Admin-Passwort (nur für den Zugang zum Zusatzbereich)
   const ADMIN_PASSWORD = '19.08.2011';
 
-  // State
+  // Zustand für Admin-Ansicht
   let currentAdminView = 'list'; // 'list' | 'detail'
   let selectedSupportRequestId = null;
   let adminRequestsCache = [];
@@ -274,12 +281,10 @@
     const listContainer = document.getElementById('adminSupportList');
     if (!listContainer) return;
 
-    // Alle Anfragen laden (ungefiltert, älteste zuerst)
     try {
       const allRequests = await cloudGet(SUPPORT_KEY) || [];
       adminRequestsCache = allRequests;
 
-      // Sortieren: älteste zuerst (nach createdAt aufsteigend)
       const sorted = [...allRequests].sort((a, b) => a.createdAt - b.createdAt);
 
       if (sorted.length === 0) {
@@ -288,7 +293,6 @@
       }
 
       listContainer.innerHTML = sorted.map(r => {
-        const isPending = r.status === 'pending';
         return `
           <div class="admin-support-item" data-id="${r.id}">
             <div class="admin-item-header">
@@ -301,7 +305,6 @@
         `;
       }).join('');
 
-      // Klick-Event für jedes Item
       listContainer.querySelectorAll('.admin-support-item').forEach(el => {
         el.addEventListener('click', () => {
           const id = el.dataset.id;
@@ -339,12 +342,10 @@
         <div class="admin-item-detail">${escapeHtml(request.message)}</div>
     `;
 
-    // Wenn bereits beantwortet, Antwort anzeigen
     if (request.response) {
       html += `<div class="admin-item-detail" style="margin-top:8px;"><strong>Antwort (bereits gesendet):</strong><br>${escapeHtml(request.response)}</div>`;
     }
 
-    // Aktionen nur für ausstehende Anfragen
     if (request.status === 'pending') {
       html += `
         <div class="admin-item-actions">
@@ -372,7 +373,6 @@
 
     detailContainer.innerHTML = html;
 
-    // Event-Listener für Buttons
     const rejectBtn = document.getElementById('adminRejectBtn');
     const approveBtn = document.getElementById('adminApproveBtn');
     const cancelResponseBtn = document.getElementById('adminCancelResponseBtn');
@@ -380,7 +380,6 @@
 
     if (rejectBtn) rejectBtn.addEventListener('click', () => rejectRequest(requestId));
     if (approveBtn) approveBtn.addEventListener('click', () => {
-      // Zeige Formular
       document.getElementById('adminResponseForm').classList.remove('hidden');
     });
     if (cancelResponseBtn) cancelResponseBtn.addEventListener('click', () => {
@@ -398,7 +397,6 @@
       await cloudPut(SUPPORT_KEY, allRequests);
       adminRequestsCache = allRequests;
       AS.toast('Anfrage abgelehnt.');
-      // Zurück zur Liste
       showAdminList();
     } catch (e) {
       console.error('Fehler beim Ablehnen:', e);
@@ -422,17 +420,16 @@
     }
 
     try {
-      // Magic-Link generieren falls gewünscht
       let magicLink = null;
       if (magicLinkWanted) {
         magicLink = await generateMagicLink(request.userId);
       }
 
-      // E-Mail über Resend senden
+      // E-Mail über den Python-Endpoint senden
       const emailSent = await sendSupportEmail(request.userEmail, request.message, responseText, magicLink);
 
       if (!emailSent) {
-        AS.toast('E-Mail konnte nicht gesendet werden. Bitte API-Key prüfen.');
+        AS.toast('E-Mail konnte nicht gesendet werden. Bitte Python-Server prüfen.');
         return;
       }
 
@@ -448,7 +445,6 @@
       }
 
       AS.toast('Antwort gesendet ✓');
-      // Zurück zur Liste
       showAdminList();
     } catch (e) {
       console.error('Fehler beim Senden der Antwort:', e);
@@ -461,7 +457,6 @@
      ====================================================================== */
   async function generateMagicLink(uid) {
     const token = 'ml_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
-    // In Cloud speichern: token -> uid, mit Ablauf (z.B. 7 Tage)
     const magicLinks = await cloudGet(MAGIC_LINK_KEY) || {};
     magicLinks[token] = {
       uid: uid,
@@ -469,7 +464,6 @@
     };
     await cloudPut(MAGIC_LINK_KEY, magicLinks);
 
-    // Vollständige URL mit token
     const baseUrl = `${location.origin}${location.pathname}`;
     const fullUrl = `${baseUrl}?magic=${token}`;
     return fullUrl;
@@ -480,27 +474,21 @@
     const token = params.get('magic');
     if (!token) return;
 
-    // Token aus Cloud laden
     try {
       const magicLinks = await cloudGet(MAGIC_LINK_KEY) || {};
       const info = magicLinks[token];
       if (info && info.expires > Date.now()) {
-        // Gültig: Benutzer einloggen
         const users = AS.getUsers();
         const user = users[info.uid];
         if (user) {
-          // Session setzen
           const session = AS.getSession();
           session.currentUserId = info.uid;
           if (!session.accounts.includes(info.uid)) session.accounts.push(info.uid);
           AS.saveSession(session);
-          // Token löschen (einmalig verwendbar)
           delete magicLinks[token];
           await cloudPut(MAGIC_LINK_KEY, magicLinks);
-          // Seite neu laden ohne Parameter
           history.replaceState({}, '', location.pathname);
           AS.toast(`Willkommen zurück, ${user.firstName}! ✦`);
-          // App booten
           if (typeof boot === 'function') boot();
         } else {
           AS.toast('Magic-Link ungültig: Benutzer nicht gefunden.');
@@ -508,7 +496,6 @@
       } else {
         AS.toast('Magic-Link ist abgelaufen oder ungültig.');
       }
-      // Parameter entfernen
       history.replaceState({}, '', location.pathname);
     } catch (e) {
       console.error('Magic-Link Fehler:', e);
@@ -517,57 +504,23 @@
   }
 
   /* ======================================================================
-     RESEND E-MAIL VERSAND
+     E-MAIL VERSAND (über Python-Backend)
      ====================================================================== */
   async function sendSupportEmail(to, originalMessage, response, magicLink) {
     try {
-      let htmlContent = `
-        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;border:1px solid #e0e0e0;border-radius:10px;">
-          <h2 style="color:#3C4340;">Schoolify Support</h2>
-          <p>Hallo,</p>
-          <p>vielen Dank für deine Anfrage. Hier ist unsere Antwort:</p>
-          <blockquote style="background:#f9f9f9;padding:15px;border-left:4px solid #B7E4D4;margin:15px 0;">
-            ${escapeHtml(response)}
-          </blockquote>
-          <p><strong>Deine ursprüngliche Nachricht:</strong></p>
-          <p style="background:#f9f9f9;padding:10px;border-radius:5px;">${escapeHtml(originalMessage)}</p>
-      `;
-
-      if (magicLink) {
-        htmlContent += `
-          <p>Du kannst dich mit einem Klick in deinen Account einloggen:</p>
-          <p style="text-align:center;margin:20px 0;">
-            <a href="${magicLink}" style="background:#B7E4D4;color:#3C4340;padding:10px 20px;border-radius:25px;text-decoration:none;font-weight:bold;">Jetzt einloggen</a>
-          </p>
-          <p style="font-size:0.8em;color:#888;">Dieser Link ist 7 Tage gültig und funktioniert nur einmal.</p>
-        `;
-      }
-
-      htmlContent += `
-          <p style="margin-top:30px;">Liebe Grüße,<br>Dein Schoolify-Team</p>
-        </div>
-      `;
-
-      const response = await fetch('https://api.resend.com/emails', {
+      const payload = {
+        to: to,
+        original_message: originalMessage,
+        response: response,
+        magic_link: magicLink || null
+      };
+      const res = await fetch(SUPPORT_EMAIL_ENDPOINT, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${RESEND_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          from: 'Schoolify Support <support@schoolify.app>',
-          to: [to],
-          subject: 'Antwort auf deine Support-Anfrage',
-          html: htmlContent
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Resend API Fehler:', errorData);
-        return false;
-      }
-      return true;
+      const data = await res.json();
+      return data.success === true;
     } catch (e) {
       console.error('E-Mail-Versand fehlgeschlagen:', e);
       return false;
@@ -577,7 +530,6 @@
   /* ======================================================================
      INIT BEIM LADEN
      ====================================================================== */
-  // Warten, bis das DOM vollständig geladen ist
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initSupport);
   } else {
