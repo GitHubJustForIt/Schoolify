@@ -23,7 +23,7 @@
   // URL des Python-Endpoints für den E-Mail-Versand
   // Lokal: http://localhost:5001/send-support-email
   // Produktion: https://dein-server.com/send-support-email
-  const SUPPORT_EMAIL_ENDPOINT = 'http://localhost:5001/send-support-email';
+  const SUPPORT_EMAIL_ENDPOINT = 'https://resendemailtransport.akkermann-elias.workers.dev/';
 
   // Admin-Passwort (nur für den Zugang zum Zusatzbereich)
   const ADMIN_PASSWORD = '19.08.2011';
