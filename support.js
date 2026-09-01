@@ -6,11 +6,10 @@
    Voraussetzungen:
    - app.js muss zuvor geladen sein (stellt AS, cloudPut/Get, persist, etc. bereit)
    - Einbindung NACH app.js: <script src="support.js"></script>
-   - Ein Python-Backend (support_email.py) muss laufen, damit E-Mails
-     tatsächlich versendet werden können. Der Endpoint wird in
-     SUPPORT_EMAIL_ENDPOINT konfiguriert.
+   - Ein Cloudflare Worker (worker.js) muss eingerichtet sein und die
+     URL in SUPPORT_EMAIL_ENDPOINT eingetragen werden.
 
-   Der Resend-API-Key befindet sich ausschließlich im Python-Backend
+   Der Resend-API-Key befindet sich ausschließlich im Cloudflare Worker
    und wird niemals an den Browser übertragen.
    ========================================================================== */
 
@@ -20,10 +19,8 @@
   const MAGIC_LINK_KEY = 'magic_links';
   const SUPPORT_RATE_LIMIT_MS = 10 * 60 * 1000; // 10 Minuten
 
-  // URL des Python-Endpoints für den E-Mail-Versand
-  // Lokal: http://localhost:5001/send-support-email
-  // Produktion: https://dein-server.com/send-support-email
- const SUPPORT_EMAIL_ENDPOINT = 'https://resendemailtransport.akkermann-elias.workers.dev/send-support-email';
+  // URL des Cloudflare Workers (ohne /send-support-email, wird unten ergänzt)
+  const SUPPORT_EMAIL_ENDPOINT = 'https://resendemailtransport.akkermann-elias.workers.dev/send-support-email';
 
   // Admin-Passwort (nur für den Zugang zum Zusatzbereich)
   const ADMIN_PASSWORD = '19.08.2011';
@@ -425,11 +422,11 @@
         magicLink = await generateMagicLink(request.userId);
       }
 
-      // E-Mail über den Python-Endpoint senden
+      // E-Mail über Cloudflare Worker senden
       const emailSent = await sendSupportEmail(request.userEmail, request.message, responseText, magicLink);
 
       if (!emailSent) {
-        AS.toast('E-Mail konnte nicht gesendet werden. Bitte Python-Server prüfen.');
+        AS.toast('E-Mail konnte nicht gesendet werden. Bitte Worker-Status prüfen.');
         return;
       }
 
@@ -504,7 +501,7 @@
   }
 
   /* ======================================================================
-     E-MAIL VERSAND (über Python-Backend)
+     E-MAIL VERSAND (über Cloudflare Worker)
      ====================================================================== */
   async function sendSupportEmail(to, originalMessage, response, magicLink) {
     try {
@@ -520,6 +517,10 @@
         body: JSON.stringify(payload)
       });
       const data = await res.json();
+      if (!data.success) {
+        console.error('Worker-Antwort:', data);
+        AS.toast('E-Mail-Fehler: ' + (data.error || 'Unbekannt'));
+      }
       return data.success === true;
     } catch (e) {
       console.error('E-Mail-Versand fehlgeschlagen:', e);
