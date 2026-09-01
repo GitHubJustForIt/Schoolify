@@ -414,6 +414,11 @@
         <strong style="font-size:.85rem;">⚙️ Konto</strong>
         <div class="row wrap" style="margin-top:10px;gap:8px;"><button class="btn btn-outline btn-sm" id="exportDataBtn">Daten exportieren</button><button class="btn btn-danger btn-sm" id="deleteAccountBtn">Account löschen</button></div>
         <div class="row between list-row" style="margin-top:10px;"><span>🍪 Online-Speicherung</span><label class="switch"><input type="checkbox" id="cloudSyncToggle"><span class="track"></span></label></div>
+        <!-- NEU: Zusatz-Button für Admin -->
+        <div class="row between list-row" style="margin-top:10px;">
+          <span>🛠️ Zusatz</span>
+          <button class="btn btn-sm btn-ghost" id="adminAccessBtn">Zusatz</button>
+        </div>
       </div>
       <div class="footer-note" style="margin-top:20px; text-align:center; font-size:0.75rem; color:var(--ink-faint);">
         © 2026 Schoolify · <a href="#">Datenschutz</a> · <a href="#">Impressum</a> · Mit ❤️ gemacht.
@@ -490,6 +495,57 @@
 </div>
 
 <div id="modalRoot"></div>
+
+<!-- NEU: Support FAB -->
+<div id="supportFab" class="support-fab" title="Support kontaktieren">💬</div>
+
+<!-- NEU: Support Modal (wird dynamisch befüllt) -->
+<div id="supportModal" class="modal-backdrop hidden">
+  <div class="modal support-modal">
+    <h3>📩 Support kontaktieren</h3>
+    <p class="muted">Antwort wird per E-Mail vom Supportteam verschickt.</p>
+    <div class="field">
+      <label>Deine E-Mail-Adresse</label>
+      <input type="email" id="supportEmail" placeholder="deine@email.de">
+    </div>
+    <div class="field">
+      <label>Deine Nachricht (max. 250 Zeichen)</label>
+      <textarea id="supportMessage" maxlength="250" rows="4" placeholder="Beschreibe dein Anliegen…"></textarea>
+      <div class="tiny" style="text-align:right;"><span id="supportCharCount">0</span>/250</div>
+    </div>
+    <div class="row" style="justify-content:flex-end;gap:8px;">
+      <button class="btn btn-ghost btn-sm" id="supportCancelBtn">Abbrechen</button>
+      <button class="btn btn-sm" id="supportSubmitBtn">Senden</button>
+    </div>
+    <div id="supportUserRequests" style="margin-top:16px;"></div>
+  </div>
+</div>
+
+<!-- NEU: Admin Modal (für Passwort und Panel) -->
+<div id="adminModal" class="modal-backdrop hidden">
+  <div class="modal admin-modal" style="max-width:600px;">
+    <div id="adminAuthSection">
+      <h3>🛠️ Zusatzbereich</h3>
+      <p class="muted">Dieser Bereich ist nur für Administratoren bestimmt.</p>
+      <div class="field">
+        <label>Passwort</label>
+        <input type="password" id="adminPasswordInput" placeholder="Passwort eingeben">
+      </div>
+      <div class="row" style="justify-content:flex-end;gap:8px;">
+        <button class="btn btn-ghost btn-sm" id="adminCancelBtn">Abbrechen</button>
+        <button class="btn btn-sm" id="adminLoginBtn">Bestätigen</button>
+      </div>
+    </div>
+    <div id="adminPanelSection" class="hidden">
+      <div class="row between" style="margin-bottom:12px;">
+        <h3>🛠️ Admin-Panel</h3>
+        <button class="btn btn-ghost btn-sm" id="adminBackToListBtn">← Zurück</button>
+      </div>
+      <div id="adminSupportList"></div>
+      <div id="adminSupportDetail" class="hidden"></div>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 <script src="notes.js"></script>
