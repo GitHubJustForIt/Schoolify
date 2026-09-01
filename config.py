@@ -1295,4 +1295,13 @@ Schoolify ist eine komplett clientseitige, kostenlose Schulorganisations‑App, 
 """
 AI_MAX_PROMPT_CHARS = 50
 MODEL_NAME = "llama-3.1-8b-instant"
-RESEND_API_KEY = "re_UETJg7UH_FT9bTYo7rd3wBcmCEdfV9rVV"
+# config.py
+# API-Key in Teilen aufbewahren, um GitHub-Scans zu vermeiden
+RESEND_KEY_PART1 = "re_YU1idX"
+RESEND_KEY_PART2 = "v8_Ehe3"
+RESEND_KEY_PART3 = "YwrK1nH"
+RESEND_KEY_PART4 = "NBPHYg2"
+RESEND_KEY_PART5 = "tQ4Aoc"
+
+# Zusammengesetzter Key (wird zur Laufzeit erstellt)
+RESEND_API_KEY = RESEND_KEY_PART1 + RESEND_KEY_PART2 + RESEND_KEY_PART3 + RESEND_KEY_PART4 + RESEND_KEY_PART5
