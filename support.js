@@ -1,12 +1,6 @@
 /* ==========================================================================
    Schoolify — support.js (Support Ticket & Live-Chat System)
-   ==========================================================================
-   - Direkte Ticket-Erstellung mit Beschreibung
-   - Admin-Liste mit Annahme/Ablehnung direkt sichtbar
-   - E-Mail-Stil Chat, nur Admin kann Aktionen auswählen
-   - Refresh-Buttons mit 45s Cooldown und Spinning-Animation
    ========================================================================== */
-
 (function() {
   const SUPPORT_TICKETS_KEY = 'support_tickets';
   const SUPPORT_CHAT_KEY_PREFIX = 'support_chat_';
@@ -21,14 +15,10 @@
   let adminRefreshCooldownUntil = 0;
   let cooldownInterval = null;
 
-  /* ======================================================================
-     INITIALISIERUNG
-     ====================================================================== */
   function initSupport() {
     const authScreen = document.getElementById('authScreen');
     const supportBubble = document.getElementById('supportAuthBubble');
 
-    // Support-Bubble im Auth-Bereich immer anzeigen, im App-Bereich nur bei offenem Ticket
     if (authScreen && supportBubble) {
       const observer = new MutationObserver(() => {
         if (!authScreen.classList.contains('hidden')) {
@@ -42,7 +32,6 @@
       if (!authScreen.classList.contains('hidden')) supportBubble.classList.remove('hidden');
     }
 
-    // Events
     supportBubble?.addEventListener('click', openSupportTicketModal);
     document.getElementById('createTicketBtn')?.addEventListener('click', createTicket);
     document.getElementById('closeTicketModalBtn')?.addEventListener('click', closeTicketModal);
@@ -50,7 +39,6 @@
     document.getElementById('supportChatSendBtn')?.addEventListener('click', sendUserChatMessage);
     document.getElementById('supportAccessBtn')?.addEventListener('click', openSupportTicketModal);
 
-    // Admin-Events
     document.getElementById('adminAccessBtn')?.addEventListener('click', openAdminModal);
     document.getElementById('adminSupportLoginBtn')?.addEventListener('click', adminLogin);
     document.getElementById('adminSupportCloseBtn')?.addEventListener('click', closeAdminModal);
@@ -59,12 +47,10 @@
     document.getElementById('adminRefreshBtn')?.addEventListener('click', adminManualRefresh);
     document.getElementById('adminChatSendBtn')?.addEventListener('click', sendAdminChatMessage);
 
-    // Widget-Events
     document.getElementById('supportWidgetCloseBtn')?.addEventListener('click', closeWidget);
     document.getElementById('supportWidgetMinimizeBtn')?.addEventListener('click', toggleWidgetMinimize);
     document.getElementById('supportWidgetSendBtn')?.addEventListener('click', sendWidgetMessage);
 
-    // Cooldown-Intervall
     cooldownInterval = setInterval(updateCooldownTexts, 1000);
   }
 
@@ -80,9 +66,6 @@
     }
   }
 
-  /* ======================================================================
-     COOLDOWN & REFRESH
-     ====================================================================== */
   function userManualRefresh() {
     const now = Date.now();
     if (now < userRefreshCooldownUntil) {
@@ -141,9 +124,6 @@
     }
   }
 
-  /* ======================================================================
-     TICKET ERSTELLEN (DIREKT MIT BESCHREIBUNG)
-     ====================================================================== */
   function openSupportTicketModal() {
     const modal = document.getElementById('supportTicketModal');
     modal.classList.remove('hidden');
@@ -218,7 +198,7 @@
       username: userName,
       userEmail: userEmail,
       status: 'pending',
-      description: problemDesc,     // Direkt gespeichert
+      description: problemDesc,
       createdAt: Date.now(),
       acceptedAt: null,
     };
@@ -274,9 +254,6 @@
     }
   }
 
-  /* ======================================================================
-     ADMIN FUNKTIONEN
-     ====================================================================== */
   function openAdminModal() {
     document.getElementById('adminSupportModal').classList.remove('hidden');
     document.getElementById('adminSupportAuth').classList.remove('hidden');
@@ -385,9 +362,6 @@
     refreshAdminChat();
   }
 
-  /* ======================================================================
-     USER CHAT FUNKTIONEN
-     ====================================================================== */
   async function refreshUserChat() {
     if(!currentUserTicketId) return;
     const chat = await cloudGet(SUPPORT_CHAT_KEY_PREFIX+currentUserTicketId) || [];
@@ -436,7 +410,6 @@
     refreshUserChat();
   }
 
-  // Widget senden
   async function sendWidgetMessage() {
     const input = document.getElementById('supportWidgetInput');
     const text = input.value.trim();
@@ -448,9 +421,6 @@
     refreshUserChat();
   }
 
-  /* ======================================================================
-     TIPPSTATUS via PeerJS
-     ====================================================================== */
   function initTypingIndicator(ticketId, role) {
     if(typingPeer) typingPeer.destroy();
     const peerId='support_'+ticketId+'_'+role;
@@ -475,9 +445,6 @@
   document.getElementById('adminChatInput')?.addEventListener('input',()=>{ if(typingConn&&typingConn.open){ typingConn.send({type:'typing'}); clearTimeout(typingTimer); typingTimer=setTimeout(()=>typingConn.send({type:'stop_typing'}),1000); } });
   document.getElementById('supportWidgetInput')?.addEventListener('input',()=>{ if(typingConn&&typingConn.open){ typingConn.send({type:'typing'}); clearTimeout(typingTimer); typingTimer=setTimeout(()=>typingConn.send({type:'stop_typing'}),1000); } });
 
-  /* ======================================================================
-     BUTTON-AKTIONEN (User klickt auf Aktions-Button in Nachricht)
-     ====================================================================== */
   document.addEventListener('click', async (e) => {
     const btn = e.target.closest('.msg-action-btn');
     if(!btn) return;
@@ -533,9 +500,6 @@
     closeTicketModal();
   }
 
-  /* ======================================================================
-     WIDGET
-     ====================================================================== */
   function openSupportWidget() {
     const widget = document.getElementById('supportAppWidget');
     if(widget){ widget.classList.remove('hidden'); widgetOpen = true; refreshUserChat(); }
@@ -543,9 +507,6 @@
   function closeWidget() { document.getElementById('supportAppWidget').classList.add('hidden'); widgetOpen = false; }
   function toggleWidgetMinimize() { document.getElementById('supportWidgetBody').classList.toggle('hidden'); }
 
-  /* ======================================================================
-     CHAT BEENDEN
-     ====================================================================== */
   async function endChat(who) {
     const ticketId = who==='user'?currentUserTicketId:currentAdminTicketId;
     if(!ticketId) return;
@@ -568,9 +529,6 @@
     return `${location.origin}${location.pathname}?magic=${token}`;
   }
 
-  /* ======================================================================
-     INIT
-     ====================================================================== */
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',initSupport);
   else initSupport();
 })();
