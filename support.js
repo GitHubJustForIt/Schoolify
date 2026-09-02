@@ -4,6 +4,11 @@
    Ersetzt das alte E-Mail-Support-System.
    Nutzt die bestehende Cloud-Infrastruktur (cloudPut/cloudGet aus app.js).
    WebRTC (PeerJS) nur für Tippstatus.
+
+   Änderungen:
+   - Keine 4-stellige ID mehr, stattdessen wird der Benutzername angezeigt.
+   - Abgelehnte oder beendete Tickets werden aus der Cloud gelöscht.
+   - Der Benutzer muss angemeldet sein, um ein Ticket zu erstellen.
    ========================================================================== */
 
 (function() {
@@ -11,7 +16,6 @@
   const SUPPORT_TICKETS_KEY = 'support_tickets';
   const SUPPORT_CHAT_KEY_PREFIX = 'support_chat_';
   const ADMIN_PASSWORD = '19.08.2011';
-  const ANON_ID_KEY = 'anon_support_id';
 
   let currentUserTicketId = null;
   let currentAdminTicketId = null;
@@ -22,29 +26,10 @@
   let userStatusInterval = null;
 
   /* ======================================================================
-     HILFSFUNKTIONEN
-     ====================================================================== */
-  function getCurrentUserId() {
-    if (AS.currentUser && AS.currentUser.uniqueId) return AS.currentUser.uniqueId;
-    // Anonyme ID aus localStorage lesen oder neu erzeugen
-    let anonId = localStorage.getItem(ANON_ID_KEY);
-    if (!anonId) {
-      anonId = 'anon_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-      localStorage.setItem(ANON_ID_KEY, anonId);
-    }
-    return anonId;
-  }
-
-  function getCurrentUserEmail() {
-    if (AS.currentUser && AS.currentUser.email) return AS.currentUser.email;
-    return 'anonym';
-  }
-
-  /* ======================================================================
      INITIALISIERUNG
      ====================================================================== */
   function initSupport() {
-    // Support-Bubble nur im Auth-Bereich anzeigen
+    // Support-Bubble: wird im Auth-Bereich angezeigt (nur wenn die App nicht läuft)
     const authScreen = document.getElementById('authScreen');
     const supportBubble = document.getElementById('supportAuthBubble');
     if (authScreen && supportBubble) {
@@ -101,6 +86,12 @@
      TICKET ERSTELLEN (USER)
      ====================================================================== */
   function openSupportTicketModal() {
+    // Nur eingeloggte Benutzer können Support nutzen
+    if (!AS.currentUser) {
+      AS.toast('Bitte melde dich an, um den Support zu nutzen.');
+      return;
+    }
+
     const modal = document.getElementById('supportTicketModal');
     modal.classList.remove('hidden');
     document.getElementById('supportTicketCreate').classList.remove('hidden');
@@ -117,9 +108,14 @@
       AS.toast('Bitte Online-Speicherung aktivieren.');
       return;
     }
+    if (!AS.currentUser) {
+      AS.toast('Bitte melde dich an.');
+      return;
+    }
 
-    const userId = getCurrentUserId();
-    const userEmail = getCurrentUserEmail();
+    const userId = AS.currentUser.uniqueId;
+    const username = AS.currentUser.username || AS.currentUser.firstName;
+    const userEmail = AS.currentUser.email || '';
 
     // Prüfen, ob bereits ein offenes Ticket existiert
     const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
@@ -133,10 +129,11 @@
       return;
     }
 
-    const ticketId = Math.floor(1000 + Math.random() * 9000).toString();
+    // Ticket erstellen – ohne ID-Anzeige, nur für die Cloud
     const ticket = {
-      id: ticketId,
+      id: 'sr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), // interne ID
       userId: userId,
+      username: username,
       userEmail: userEmail,
       status: 'pending',
       description: '',
@@ -145,9 +142,8 @@
     };
     tickets.push(ticket);
     await cloudPut(SUPPORT_TICKETS_KEY, tickets);
-    currentUserTicketId = ticketId;
-    document.getElementById('ticketIdText').textContent = ticketId;
-    document.getElementById('ticketIdDisplay').classList.remove('hidden');
+
+    currentUserTicketId = ticket.id;
     document.getElementById('supportTicketCreate').classList.add('hidden');
     document.getElementById('supportTicketStatus').classList.remove('hidden');
     document.getElementById('ticketStatusText').textContent = 'Ticket erstellt. Warte auf Annahme durch Support.';
@@ -155,9 +151,12 @@
   }
 
   async function loadUserTicket() {
-    const userId = getCurrentUserId();
+    if (!AS.currentUser) return;
+
+    const userId = AS.currentUser.uniqueId;
     const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
     const myTicket = tickets.find(t => t.userId === userId && t.status !== 'closed');
+
     if (myTicket) {
       currentUserTicketId = myTicket.id;
       document.getElementById('supportTicketCreate').classList.add('hidden');
@@ -167,6 +166,9 @@
       currentUserTicketId = null;
       document.getElementById('supportTicketCreate').classList.remove('hidden');
       document.getElementById('supportTicketStatus').classList.add('hidden');
+      // Ticket wurde gelöscht – zurücksetzen
+      document.getElementById('ticketIdDisplay').classList.add('hidden');
+      document.getElementById('ticketStatusText').textContent = '';
     }
   }
 
@@ -174,6 +176,7 @@
     const statusText = document.getElementById('ticketStatusText');
     const descArea = document.getElementById('ticketDescriptionArea');
     const chatArea = document.getElementById('ticketChatArea');
+
     if (ticket.status === 'pending') {
       statusText.textContent = 'Status: Ausstehend – warte auf Support.';
       descArea.classList.add('hidden');
@@ -204,8 +207,12 @@
   }
 
   function copyTicketId() {
-    const id = document.getElementById('ticketIdText').textContent;
-    navigator.clipboard.writeText(id).then(() => AS.toast('ID kopiert!'));
+    // Da die ID nicht mehr angezeigt wird, ist diese Funktion unnötig,
+    // aber wir lassen sie als Platzhalter für zukünftige Verwendung.
+    const id = document.getElementById('ticketIdText')?.textContent;
+    if (id) {
+      navigator.clipboard.writeText(id).then(() => AS.toast('ID kopiert!'));
+    }
   }
 
   function closeTicketIdDisplay() {
@@ -215,6 +222,7 @@
   async function submitDescription() {
     const desc = document.getElementById('ticketDescription').value.trim();
     if (!desc) { AS.toast('Bitte Beschreibung eingeben.'); return; }
+
     const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
     const idx = tickets.findIndex(t => t.id === currentUserTicketId);
     if (idx !== -1) {
@@ -254,15 +262,22 @@
   async function showAdminTicketList() {
     document.getElementById('adminChatArea').classList.add('hidden');
     document.getElementById('adminTicketList').classList.remove('hidden');
+
     const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+    // Sortierung: aktive zuerst
     const order = { in_chat: 0, accepted: 1, described: 2, pending: 3, rejected: 4, closed: 5 };
     const sorted = tickets.sort((a, b) => (order[a.status] || 9) - (order[b.status] || 9));
+
     const listContainer = document.getElementById('adminTicketList');
+    if (!sorted.length) {
+      listContainer.innerHTML = '<p class="tiny">Keine offenen Support-Anfragen.</p>';
+      return;
+    }
+
     listContainer.innerHTML = sorted.map(t => `
       <div class="ticket-item ${t.status}" data-id="${t.id}">
         <div class="ticket-header">
-          <span class="ticket-id">#${t.id}</span>
-          <span class="tiny">${escapeHtml(t.userEmail)}</span>
+          <span class="ticket-username">${escapeHtml(t.username || t.userEmail)}</span>
           <span class="tiny">${new Date(t.createdAt).toLocaleString('de-DE')}</span>
         </div>
         <div class="tiny">Status: ${t.status}</div>
@@ -274,6 +289,7 @@
           </div>` : ''}
       </div>
     `).join('');
+
     listContainer.querySelectorAll('.accept-btn').forEach(btn => {
       btn.addEventListener('click', (e) => { e.stopPropagation(); acceptTicket(btn.dataset.id); });
     });
@@ -298,14 +314,12 @@
   }
 
   async function rejectTicket(ticketId) {
-    const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
-    const idx = tickets.findIndex(t => t.id === ticketId);
-    if (idx !== -1) {
-      tickets[idx].status = 'rejected';
-      await cloudPut(SUPPORT_TICKETS_KEY, tickets);
-      AS.toast('Ticket abgelehnt.');
-      showAdminTicketList();
-    }
+    // Ticket wird aus der Cloud gelöscht
+    let tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+    tickets = tickets.filter(t => t.id !== ticketId);
+    await cloudPut(SUPPORT_TICKETS_KEY, tickets);
+    AS.toast('Anfrage abgelehnt und gelöscht.');
+    showAdminTicketList();
   }
 
   async function openAdminTicketDetail(ticketId) {
@@ -322,6 +336,7 @@
     document.getElementById('adminTicketList').classList.add('hidden');
     document.getElementById('adminChatArea').classList.remove('hidden');
 
+    // Falls noch nicht im Chat, Status auf in_chat setzen
     if (ticket.status === 'pending' || ticket.status === 'described') {
       ticket.status = 'in_chat';
       await cloudPut(SUPPORT_TICKETS_KEY, tickets);
@@ -430,18 +445,27 @@
   /* ======================================================================
      BUTTON-FUNKTIONEN
      ====================================================================== */
-  function endChat(who) {
-    const tickets = cloudGet(SUPPORT_TICKETS_KEY).then(all => {
-      const idx = all.findIndex(t => t.id === (who === 'user' ? currentUserTicketId : currentAdminTicketId));
-      if (idx !== -1) {
-        all[idx].status = 'closed';
-        cloudPut(SUPPORT_TICKETS_KEY, all).then(() => {
-          AS.toast('Chat beendet.');
-          if (who === 'user') updateUserTicketStatus(all[idx]);
-          else showAdminTicketList();
-        });
-      }
-    });
+  async function endChat(who) {
+    // Ticket aus der Cloud löschen
+    const ticketId = who === 'user' ? currentUserTicketId : currentAdminTicketId;
+    if (!ticketId) return;
+
+    let tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+    tickets = tickets.filter(t => t.id !== ticketId);
+    await cloudPut(SUPPORT_TICKETS_KEY, tickets);
+
+    // Chat ebenfalls löschen
+    await cloudDelete(SUPPORT_CHAT_KEY_PREFIX + ticketId);
+
+    AS.toast('Chat beendet und Ticket gelöscht.');
+    if (who === 'user') {
+      currentUserTicketId = null;
+      document.getElementById('supportTicketStatus').classList.add('hidden');
+      document.getElementById('supportTicketCreate').classList.remove('hidden');
+    } else {
+      currentAdminTicketId = null;
+      showAdminTicketList();
+    }
   }
 
   async function requestLoginNoPassword() {
