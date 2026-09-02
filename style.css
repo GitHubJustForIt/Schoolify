@@ -2341,3 +2341,96 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   font-size: 0.7rem;
   font-style: italic;
 }
+
+/* ==========================================================================
+   NEU: E-Mail-Stil für Support-Chat
+   ========================================================================== */
+.support-chat-messages.email-style {
+  background: #f5f5f0;  /* dezenter E-Mail-Hintergrund */
+  border: 1px solid #d0d0c8;
+  border-radius: 3px;   /* fast eckig */
+  padding: 8px;
+}
+.support-chat-messages.email-style .chat-msg {
+  background: #ffffff;
+  border: 1px solid #d0d0c8;
+  border-radius: 2px;   /* nur minimal abgerundet */
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  box-shadow: none;
+  max-width: 90%;
+}
+.support-chat-messages.email-style .chat-msg.user {
+  background: #e8f0fe;  /* hellblau wie E-Mail-Verlauf */
+  border-color: #b8c8e0;
+}
+.support-chat-messages.email-style .chat-msg.admin {
+  background: #ffffff;
+}
+.support-chat-messages.email-style .msg-sender {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: #333;
+  margin-bottom: 4px;
+}
+.support-chat-messages.email-style .msg-time {
+  font-size: 0.68rem;
+  color: #888;
+  display: block;
+  margin-top: 4px;
+  text-align: right;
+}
+.email-action-container {
+  margin-top: 10px;
+  padding: 8px;
+  background: #fafafa;
+  border: 1px dashed #bbb;
+  border-radius: 2px;
+}
+.email-action-container p {
+  margin: 0 0 6px 0;
+  font-size: 0.8rem;
+  color: #666;
+}
+.email-action-container .btn {
+  margin: 2px;
+}
+
+/* Refresh-Button Spinning */
+.btn .spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+#manualRefreshBtn:disabled,
+#adminRefreshBtn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Support-Widget */
+.support-app-widget {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 340px;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  z-index: 80;
+}
+.support-widget-header {
+  background: #f5f5f0;
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #ccc;
+  font-weight: 700;
+}
+.support-widget-body .support-chat-messages.email-style {
+  max-height: 250px;
+}
