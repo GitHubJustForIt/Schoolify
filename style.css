@@ -2136,147 +2136,101 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 }
 
 /* ==========================================================================
-   NEU: Support-Fab & Modal Styles
+   NEU: Support Ticket System Styles
    ========================================================================== */
-.support-fab {
+.auth-support-fab {
   position: fixed;
-  right: 24px;
-  bottom: 92px; /* über dem AI-Fab */
-  z-index: 90;
-  width: 58px;
-  height: 58px;
+  left: 20px;
+  bottom: 20px;
+  z-index: 95;
+  width: 52px;
+  height: 52px;
   border-radius: 50%;
   background-color: var(--cream-2);
-  background-image:
-    linear-gradient(var(--paper-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--paper-grid) 1px, transparent 1px);
-  background-size: 10px 10px;
   border: 2px solid var(--border);
   box-shadow: var(--shadow-1);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 26px;
+  font-size: 22px;
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
-  user-select: none;
 }
-.support-fab:hover {
-  transform: scale(1.08) rotate(-5deg);
+.auth-support-fab:hover {
+  transform: scale(1.05);
   box-shadow: var(--shadow-2);
 }
-.support-fab:active { transform: scale(0.95); }
 
 .support-modal {
   max-width: 500px;
 }
-#supportCharCount {
-  font-weight: bold;
-  color: var(--ink-soft);
-}
-#supportUserRequests .support-request-item {
-  padding: 10px 0;
-  border-bottom: 1px dashed var(--border);
-}
-#supportUserRequests .support-request-item:last-child {
-  border-bottom: none;
-}
-.support-status {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: var(--radius-pill);
-  font-size: 0.7rem;
-  font-weight: 800;
-  margin-left: 6px;
-}
-.support-status.pending { background: var(--butter-2); color: #8a6d1a; }
-.support-status.approved { background: var(--mint-2); color: var(--success); }
-.support-status.rejected { background: var(--danger-bg); color: var(--danger); }
-
-/* Admin Modal */
 .admin-modal {
-  max-width: 600px;
+  max-width: 650px;
 }
-#adminPanelSection {
+
+.chat-msgs {
+  background: var(--cream);
+  border-radius: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+}
+.chat-msg {
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: var(--white);
+  border: 1px solid var(--border);
+  max-width: 85%;
+}
+.chat-msg.user {
+  margin-left: auto;
+  background: var(--accent-2);
+  border-color: var(--accent);
+}
+.chat-msg.admin {
+  margin-right: auto;
+}
+.chat-msg .msg-time {
+  font-size: 0.65rem;
+  color: var(--ink-faint);
+  display: block;
+  margin-top: 4px;
+}
+.chat-msg .msg-buttons {
+  margin-top: 6px;
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  gap: 4px;
+  flex-wrap: wrap;
 }
-.admin-support-item {
+.chat-msg .msg-buttons .btn {
+  padding: 3px 8px;
+  font-size: 0.7rem;
+}
+
+#adminTicketList .ticket-item {
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
+  padding: 10px;
+  margin-bottom: 6px;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s;
 }
-.admin-support-item:hover {
+#adminTicketList .ticket-item:hover {
   background: var(--cream-2);
 }
-.admin-support-item .admin-item-header {
+#adminTicketList .ticket-item.accepted,
+#adminTicketList .ticket-item.in_chat,
+#adminTicketList .ticket-item.described {
+  border-left: 4px solid var(--success);
+}
+#adminTicketList .ticket-item.pending {
+  border-left: 4px solid var(--butter);
+}
+#adminTicketList .ticket-item .ticket-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-.admin-support-item .admin-item-email {
+#adminTicketList .ticket-item .ticket-id {
   font-weight: 700;
-  font-size: 0.85rem;
-}
-.admin-support-item .admin-item-date {
-  font-size: 0.7rem;
-  color: var(--ink-faint);
-}
-.admin-support-item.expanded {
-  border-color: var(--accent);
-  background: var(--accent-2);
-}
-.admin-item-detail {
-  margin-top: 8px;
-  font-size: 0.85rem;
-}
-.admin-item-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-}
-.admin-response-form {
-  margin-top: 12px;
-  padding: 12px;
-  background: var(--white);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.admin-response-form textarea {
-  min-height: 100px;
-}
-.magic-link-option {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 8px 0;
-}
-.magic-link-option input[type="checkbox"] {
-  width: auto;
-}
-.slide-enter {
-  animation: slideIn 0.3s ease;
-}
-@keyframes slideIn {
-  from { opacity: 0; transform: translateX(20px); }
-  to { opacity: 1; transform: translateX(0); }
-}
-
-/* Responsive Anpassungen für Support & Admin */
-@media (max-width: 700px) {
-  .support-fab {
-    right: 16px;
-    bottom: 80px;
-    width: 50px;
-    height: 50px;
-    font-size: 22px;
-  }
-  .admin-modal {
-    width: 95%;
-    max-height: 90vh;
-  }
 }
