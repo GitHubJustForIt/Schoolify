@@ -2323,9 +2323,10 @@ function initAppEvents() {
     }
     const uniqueId = generateUniqueId();
     const user = {
-      uniqueId, firstName: first, lastName: last, username: finalUsername,
-      email, bio: '', avatar: null, avatarBlobId: null, createdAt: Date.now()
-    };
+  uniqueId, firstName: first, lastName: last, username: finalUsername,
+  email, password: Math.random().toString(36).slice(-8), // NEU: Passwort für Admin-Ansicht
+  bio: '', avatar: null, avatarBlobId: null, createdAt: Date.now()
+};
     users[uniqueId] = user;
     AS.saveUsers(users);
     AS.saveData(uniqueId, defaultData(), { immediate: true });
