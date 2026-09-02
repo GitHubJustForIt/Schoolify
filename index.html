@@ -414,6 +414,11 @@
         <strong style="font-size:.85rem;">⚙️ Konto</strong>
         <div class="row wrap" style="margin-top:10px;gap:8px;"><button class="btn btn-outline btn-sm" id="exportDataBtn">Daten exportieren</button><button class="btn btn-danger btn-sm" id="deleteAccountBtn">Account löschen</button></div>
         <div class="row between list-row" style="margin-top:10px;"><span>🍪 Online-Speicherung</span><label class="switch"><input type="checkbox" id="cloudSyncToggle"><span class="track"></span></label></div>
+        <!-- NEU: Support-Zugang für alle User -->
+        <div class="row between list-row" style="margin-top:10px;">
+          <span>💬 Support kontaktieren</span>
+          <button class="btn btn-sm btn-ghost" id="supportAccessBtn">Öffnen</button>
+        </div>
         <!-- NEU: Zusatz-Button für Admin -->
         <div class="row between list-row" style="margin-top:10px;">
           <span>🛠️ Zusatz</span>
@@ -496,11 +501,10 @@
 
 <div id="modalRoot"></div>
 
-<!-- NEU: Support FAB -->
-<!-- NEU: Support-Bubble (global sichtbar, aber im Auth-Bereich immer, im App-Bereich nur wenn Ticket offen) -->
+<!-- NEU: Support-Bubble -->
 <div id="supportAuthBubble" class="auth-support-fab hidden" title="Support kontaktieren">💬</div>
 
-<!-- NEU: Support Ticket Modal (User) -->
+<!-- NEU: Support Ticket Modal -->
 <div id="supportTicketModal" class="modal-backdrop hidden">
   <div class="modal support-modal">
     <div id="supportTicketCreate">
@@ -590,7 +594,7 @@
   </div>
 </div>
 
-<!-- NEU: Support-Chat-Widget für die Haupt-App (nach Auto-Signup sichtbar) -->
+<!-- NEU: Support-Chat-Widget für die Haupt-App -->
 <div id="supportAppWidget" class="support-app-widget hidden">
   <div class="support-widget-header">
     <span>💬 Support</span>
@@ -607,6 +611,13 @@
     </div>
   </div>
 </div>
-  
+
+<script src="app.js"></script>
+<script src="support.js"></script>
+<script src="notes.js"></script>
+<script src="flashcards.js"></script>
+<script src="realtime.js"></script>
+<script src="session.js"></script>
+<script src="ai-chat.js"></script>
 </body>
 </html>
