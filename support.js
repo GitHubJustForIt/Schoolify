@@ -11,6 +11,7 @@
   const SUPPORT_TICKETS_KEY = 'support_tickets';
   const SUPPORT_CHAT_KEY_PREFIX = 'support_chat_';
   const ADMIN_PASSWORD = '19.08.2011';
+  const ANON_ID_KEY = 'anon_support_id';
 
   let currentUserTicketId = null;
   let currentAdminTicketId = null;
@@ -19,6 +20,25 @@
   let typingTimer = null;
   let refreshInterval = null;
   let userStatusInterval = null;
+
+  /* ======================================================================
+     HILFSFUNKTIONEN
+     ====================================================================== */
+  function getCurrentUserId() {
+    if (AS.currentUser && AS.currentUser.uniqueId) return AS.currentUser.uniqueId;
+    // Anonyme ID aus localStorage lesen oder neu erzeugen
+    let anonId = localStorage.getItem(ANON_ID_KEY);
+    if (!anonId) {
+      anonId = 'anon_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      localStorage.setItem(ANON_ID_KEY, anonId);
+    }
+    return anonId;
+  }
+
+  function getCurrentUserEmail() {
+    if (AS.currentUser && AS.currentUser.email) return AS.currentUser.email;
+    return 'anonym';
+  }
 
   /* ======================================================================
      INITIALISIERUNG
@@ -73,9 +93,7 @@
 
     // Status-Live-Update für User (alle 10 Sekunden)
     userStatusInterval = setInterval(() => {
-      if (currentUserTicketId && AS.currentUser) {
-        loadUserTicket();
-      }
+      if (currentUserTicketId) loadUserTicket();
     }, 10000);
   }
 
@@ -99,9 +117,13 @@
       AS.toast('Bitte Online-Speicherung aktivieren.');
       return;
     }
+
+    const userId = getCurrentUserId();
+    const userEmail = getCurrentUserEmail();
+
     // Prüfen, ob bereits ein offenes Ticket existiert
     const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
-    const existing = tickets.find(t => t.userId === AS.currentUser.uniqueId && t.status !== 'closed');
+    const existing = tickets.find(t => t.userId === userId && t.status !== 'closed');
     if (existing) {
       AS.toast('Du hast bereits ein offenes Ticket.');
       currentUserTicketId = existing.id;
@@ -114,8 +136,8 @@
     const ticketId = Math.floor(1000 + Math.random() * 9000).toString();
     const ticket = {
       id: ticketId,
-      userId: AS.currentUser ? AS.currentUser.uniqueId : null,
-      userEmail: AS.currentUser ? AS.currentUser.email : 'unbekannt',
+      userId: userId,
+      userEmail: userEmail,
       status: 'pending',
       description: '',
       createdAt: Date.now(),
@@ -133,16 +155,15 @@
   }
 
   async function loadUserTicket() {
-    if (!AS.currentUser) return;
+    const userId = getCurrentUserId();
     const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
-    const myTicket = tickets.find(t => t.userId === AS.currentUser.uniqueId && t.status !== 'closed');
+    const myTicket = tickets.find(t => t.userId === userId && t.status !== 'closed');
     if (myTicket) {
       currentUserTicketId = myTicket.id;
       document.getElementById('supportTicketCreate').classList.add('hidden');
       document.getElementById('supportTicketStatus').classList.remove('hidden');
       updateUserTicketStatus(myTicket);
     } else {
-      // Kein offenes Ticket → Erstellungsansicht zeigen
       currentUserTicketId = null;
       document.getElementById('supportTicketCreate').classList.remove('hidden');
       document.getElementById('supportTicketStatus').classList.add('hidden');
@@ -424,7 +445,10 @@
   }
 
   async function requestLoginNoPassword() {
-    if (!AS.currentUser) return;
+    if (!AS.currentUser) {
+      AS.toast('Bitte melde dich an, um diese Funktion zu nutzen.');
+      return;
+    }
     const magicLink = await generateMagicLink(AS.currentUser.uniqueId);
     const buttons = [{ label: 'Login ohne Passwort', action: 'login_no_pw', url: magicLink }];
     await sendUserChatMessage(buttons);
