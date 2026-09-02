@@ -2147,6 +2147,10 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   height: 52px;
   border-radius: 50%;
   background-color: var(--cream-2);
+  background-image:
+    linear-gradient(var(--paper-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--paper-grid) 1px, transparent 1px);
+  background-size: 10px 10px;
   border: 2px solid var(--border);
   box-shadow: var(--shadow-1);
   display: flex;
@@ -2155,6 +2159,10 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   font-size: 22px;
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.auth-support-fab:hover {
+  transform: scale(1.05);
+  box-shadow: var(--shadow-2);
 }
 .auth-support-fab:hover {
   transform: scale(1.05);
