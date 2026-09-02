@@ -2242,3 +2242,102 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 #adminTicketList .ticket-item .ticket-id {
   font-weight: 700;
 }
+
+/* ==========================================================================
+   NEU: Überarbeitetes Support-Design
+   ========================================================================== */
+
+/* Support-Chat-Nachrichten (Schoolify-Kartenstil) */
+.support-chat-messages {
+  background: var(--cream);
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.support-chat-messages .chat-msg {
+  background: var(--white);
+  border: 1.5px solid var(--border);
+  border-radius: 16px 16px 16px 4px;
+  padding: 12px 14px;
+  max-width: 80%;
+  box-shadow: var(--shadow-1);
+}
+.support-chat-messages .chat-msg.user {
+  align-self: flex-end;
+  background: var(--accent-2);
+  border-color: var(--accent);
+  border-radius: 16px 16px 4px 16px;
+}
+.support-chat-messages .chat-msg.admin {
+  align-self: flex-start;
+  background: var(--white);
+}
+
+/* E-Mail-ähnliche Buttons innerhalb einer Admin-Nachricht */
+.email-action-container {
+  margin-top: 12px;
+  background: var(--cream-2);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+}
+.email-action-container p {
+  margin: 0 0 8px 0;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+.email-action-container .btn {
+  margin: 3px;
+}
+
+/* Support-App-Widget (unten rechts) */
+.support-app-widget {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 320px;
+  background: var(--white);
+  border: 1.5px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow-2);
+  z-index: 80;
+  overflow: hidden;
+  animation: slideup 0.25s ease;
+}
+.support-widget-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--cream-2);
+  padding: 10px 14px;
+  border-bottom: 1.5px solid var(--border);
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.support-widget-actions {
+  display: flex;
+  gap: 4px;
+}
+.support-widget-body {
+  display: flex;
+  flex-direction: column;
+}
+.support-widget-body .support-chat-messages {
+  max-height: 200px;
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Refresh-Button Cooldown */
+#refreshCooldownText {
+  font-size: 0.7rem;
+  font-style: italic;
+}
