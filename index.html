@@ -503,16 +503,19 @@
 <!-- NEU: Support Ticket Modal (User) -->
 <div id="supportTicketModal" class="modal-backdrop hidden">
   <div class="modal support-modal">
-    <div id="supportTicketCreate">
-      <h3>🎫 Support-Ticket erstellen</h3>
-      <p class="muted">Erhalte eine 4-stellige ID, um deinen Fall nachzuweisen.</p>
-      <button class="btn btn-sm" id="createTicketBtn">Ticket erstellen</button>
-      <div id="ticketIdDisplay" class="hidden" style="margin-top:12px;">
-        <p>Deine Ticket-ID: <strong id="ticketIdText" style="font-size:1.2rem;"></strong></p>
-        <button class="btn btn-sm btn-outline" id="copyTicketIdBtn">📋 Kopieren</button>
-        <button class="btn btn-sm btn-ghost" id="closeTicketIdBtn">Schließen</button>
-      </div>
-    </div>
+   <div id="supportTicketCreate">
+  <h3>🎫 Support-Ticket erstellen</h3>
+  <p class="muted">Beschreibe kurz dein Anliegen. Der Support wird sich bei dir melden.</p>
+  <div class="field">
+    <label>Dein Name (optional)</label>
+    <input type="text" id="supportNameInput" placeholder="z. B. Emma">
+  </div>
+  <div class="field" id="supportEmailField">
+    <label>Deine E-Mail-Adresse (für Rückmeldung)</label>
+    <input type="email" id="supportEmailInput" placeholder="deine@email.de">
+  </div>
+  <button class="btn btn-sm" id="createTicketBtn">Ticket erstellen</button>
+</div>
     <div id="supportTicketStatus" class="hidden">
       <h3>📋 Ticket-Status</h3>
       <p id="ticketStatusText"></p>
