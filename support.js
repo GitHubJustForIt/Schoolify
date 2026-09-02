@@ -1,535 +1,381 @@
 /* ==========================================================================
-   Schoolify — support.js (Support & Admin System)
+   Schoolify — support.js (Support Ticket & Live-Chat System)
    ==========================================================================
-   Ergänzt app.js um vollständige Support- und Admin-Funktionalität.
-
-   Voraussetzungen:
-   - app.js muss zuvor geladen sein (stellt AS, cloudPut/Get, persist, etc. bereit)
-   - Einbindung NACH app.js: <script src="support.js"></script>
-   - Ein Cloudflare Worker (worker.js) muss eingerichtet sein und die
-     URL in SUPPORT_EMAIL_ENDPOINT eingetragen werden.
-
-   Der Resend-API-Key befindet sich ausschließlich im Cloudflare Worker
-   und wird niemals an den Browser übertragen.
+   Ersetzt das alte E-Mail-Support-System.
+   Nutzt die bestehende Cloud-Infrastruktur (cloudPut/cloudGet aus app.js).
+   WebRTC (PeerJS) nur für Tippstatus.
    ========================================================================== */
 
 (function() {
-  // Support- & Admin-Konstanten
-  const SUPPORT_KEY = 'global_support_requests';
-  const MAGIC_LINK_KEY = 'magic_links';
-  const SUPPORT_RATE_LIMIT_MS = 10 * 60 * 1000; // 10 Minuten
+  // Schlüssel für Cloud-Speicherung
+  const SUPPORT_TICKETS_KEY = 'support_tickets';
+  const SUPPORT_CHAT_KEY = 'support_chat_'; // + ticketId
+  const SUPPORT_TYPING_KEY = 'support_typing_'; // + ticketId
 
-  // URL des Cloudflare Workers (ohne /send-support-email, wird unten ergänzt)
-  const SUPPORT_EMAIL_ENDPOINT = 'https://resendemailtransport.akkermann-elias.workers.dev/send-support-email';
-
-  // Admin-Passwort (nur für den Zugang zum Zusatzbereich)
+  // Admin-Passwort
   const ADMIN_PASSWORD = '19.08.2011';
 
-  // Zustand für Admin-Ansicht
-  let currentAdminView = 'list'; // 'list' | 'detail'
-  let selectedSupportRequestId = null;
-  let adminRequestsCache = [];
+  // Aktueller Zustand
+  let currentUserTicketId = null;
+  let currentAdminTicketId = null;
+  let typingPeer = null;
+  let typingConn = null;
+  let typingTimer = null;
 
   /* ======================================================================
      INITIALISIERUNG
      ====================================================================== */
   function initSupport() {
-    // Support FAB
-    const supportFab = document.getElementById('supportFab');
-    if (supportFab) {
-      supportFab.addEventListener('click', openSupportModal);
+    // Support-Bubble nur im Auth-Bereich anzeigen
+    const authScreen = document.getElementById('authScreen');
+    const supportBubble = document.getElementById('supportAuthBubble');
+    if (authScreen && supportBubble) {
+      // Beobachten, ob authScreen sichtbar ist
+      const observer = new MutationObserver(() => {
+        if (!authScreen.classList.contains('hidden')) {
+          supportBubble.classList.remove('hidden');
+        } else {
+          supportBubble.classList.add('hidden');
+        }
+      });
+      observer.observe(authScreen, { attributes: true, attributeFilter: ['class'] });
+      // Initial
+      if (!authScreen.classList.contains('hidden')) supportBubble.classList.remove('hidden');
     }
 
-    // Support Modal Events
-    const supportSubmitBtn = document.getElementById('supportSubmitBtn');
-    const supportCancelBtn = document.getElementById('supportCancelBtn');
-    const supportMessage = document.getElementById('supportMessage');
-    const supportCharCount = document.getElementById('supportCharCount');
+    // Event: Support-Bubble klicken
+    if (supportBubble) supportBubble.addEventListener('click', openSupportTicketModal);
 
-    if (supportSubmitBtn) supportSubmitBtn.addEventListener('click', submitSupportRequest);
-    if (supportCancelBtn) supportCancelBtn.addEventListener('click', closeSupportModal);
-    if (supportMessage) {
-      supportMessage.addEventListener('input', updateCharCount);
-      updateCharCount(); // initial
-    }
+    // Ticket-Modal Events
+    document.getElementById('createTicketBtn')?.addEventListener('click', createTicket);
+    document.getElementById('copyTicketIdBtn')?.addEventListener('click', copyTicketId);
+    document.getElementById('closeTicketIdBtn')?.addEventListener('click', closeTicketIdDisplay);
+    document.getElementById('closeTicketModalBtn')?.addEventListener('click', closeTicketModal);
+    document.getElementById('submitDescriptionBtn')?.addEventListener('click', submitDescription);
+    document.getElementById('supportChatSendBtn')?.addEventListener('click', sendUserChatMessage);
+    document.getElementById('chatEndBtn')?.addEventListener('click', () => endChat('user'));
+    document.getElementById('loginNoPwBtn')?.addEventListener('click', () => requestLoginNoPassword());
+    document.getElementById('unlockAccountBtn')?.addEventListener('click', () => requestUnlockAccount());
+    document.getElementById('exportDataBtn2')?.addEventListener('click', () => requestExportData());
 
-    // Admin Access Button
-    const adminAccessBtn = document.getElementById('adminAccessBtn');
-    if (adminAccessBtn) {
-      adminAccessBtn.addEventListener('click', openAdminModal);
-    }
+    // Admin Events
+    document.getElementById('adminSupportLoginBtn')?.addEventListener('click', adminLogin);
+    document.getElementById('adminSupportCloseBtn')?.addEventListener('click', closeAdminModal);
+    document.getElementById('adminBackToListBtn')?.addEventListener('click', showAdminTicketList);
+    document.getElementById('adminChatSendBtn')?.addEventListener('click', sendAdminChatMessage);
+    document.getElementById('adminChatEndBtn')?.addEventListener('click', () => endChat('admin'));
+    document.getElementById('adminLoginNoPwBtn')?.addEventListener('click', () => adminRequestLoginNoPassword());
+    document.getElementById('adminUnlockAccountBtn')?.addEventListener('click', () => adminRequestUnlockAccount());
+    document.getElementById('adminExportDataBtn')?.addEventListener('click', () => adminRequestExportData());
 
-    // Admin Modal Events
-    const adminLoginBtn = document.getElementById('adminLoginBtn');
-    const adminCancelBtn = document.getElementById('adminCancelBtn');
-    const adminBackToListBtn = document.getElementById('adminBackToListBtn');
-    const adminPasswordInput = document.getElementById('adminPasswordInput');
-
-    if (adminLoginBtn) adminLoginBtn.addEventListener('click', adminLogin);
-    if (adminCancelBtn) adminCancelBtn.addEventListener('click', closeAdminModal);
-    if (adminBackToListBtn) adminBackToListBtn.addEventListener('click', showAdminList);
-    if (adminPasswordInput) adminPasswordInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') adminLogin();
+    // Admin-Zugang über Sicherheit
+    document.getElementById('adminAccessBtn')?.addEventListener('click', () => {
+      openAdminModal();
     });
 
-    // Magic Link Verarbeitung beim Laden
-    checkMagicLink();
+    // 30-Sekunden-Refresh für Chat (optional)
+    setInterval(() => {
+      if (currentUserTicketId) refreshUserChat();
+      if (currentAdminTicketId) refreshAdminChat();
+    }, 30000);
   }
 
   /* ======================================================================
-     SUPPORT – USER SEITE
+     TICKET ERSTELLEN (USER)
      ====================================================================== */
-  function openSupportModal() {
-    const modal = document.getElementById('supportModal');
-    if (modal) modal.classList.remove('hidden');
-    // Eigene Anfragen laden
-    loadUserRequests();
+  function openSupportTicketModal() {
+    document.getElementById('supportTicketModal').classList.remove('hidden');
+    document.getElementById('supportTicketCreate').classList.remove('hidden');
+    document.getElementById('supportTicketStatus').classList.add('hidden');
+    // Prüfen, ob bereits ein Ticket existiert
+    loadUserTicket();
   }
 
-  function closeSupportModal() {
-    const modal = document.getElementById('supportModal');
-    if (modal) modal.classList.add('hidden');
-    // Zurücksetzen
-    const emailInput = document.getElementById('supportEmail');
-    const msgInput = document.getElementById('supportMessage');
-    if (emailInput) emailInput.value = AS.currentUser?.email || '';
-    if (msgInput) msgInput.value = '';
-    updateCharCount();
+  function closeTicketModal() {
+    document.getElementById('supportTicketModal').classList.add('hidden');
   }
 
-  function updateCharCount() {
-    const msg = document.getElementById('supportMessage');
-    const counter = document.getElementById('supportCharCount');
-    if (msg && counter) {
-      const len = msg.value.length;
-      counter.textContent = len;
-      counter.style.color = len > 250 ? 'var(--danger)' : '';
-    }
-  }
-
-  async function loadUserRequests() {
-    const container = document.getElementById('supportUserRequests');
-    if (!container) return;
+  async function createTicket() {
     if (!AS.cloudEnabled()) {
-      container.innerHTML = '<p class="tiny">Online-Speicherung erforderlich, um Support-Anfragen zu senden.</p>';
+      AS.toast('Bitte Online-Speicherung aktivieren.');
       return;
     }
-    if (!AS.currentUser) {
-      container.innerHTML = '';
-      return;
-    }
+    // 4-stellige ID generieren
+    const ticketId = Math.floor(1000 + Math.random() * 9000).toString();
+    const ticket = {
+      id: ticketId,
+      userId: AS.currentUser ? AS.currentUser.uniqueId : null,
+      userEmail: AS.currentUser ? AS.currentUser.email : 'unbekannt',
+      status: 'pending', // pending | accepted | rejected | in_chat | closed
+      description: '',
+      createdAt: Date.now(),
+      acceptedAt: null,
+    };
+    const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+    tickets.push(ticket);
+    await cloudPut(SUPPORT_TICKETS_KEY, tickets);
+    currentUserTicketId = ticketId;
+    // Anzeige der ID
+    document.getElementById('ticketIdText').textContent = ticketId;
+    document.getElementById('ticketIdDisplay').classList.remove('hidden');
+    document.getElementById('supportTicketCreate').classList.add('hidden');
+    document.getElementById('supportTicketStatus').classList.remove('hidden');
+    document.getElementById('ticketStatusText').textContent = 'Ticket erstellt. Warte auf Annahme durch Support.';
+    AS.toast('Ticket erstellt ✓');
+  }
 
-    try {
-      const all = await cloudGet(SUPPORT_KEY);
-      if (all && Array.isArray(all)) {
-        const myRequests = all.filter(r => r.userId === AS.currentUser.uniqueId);
-        if (myRequests.length === 0) {
-          container.innerHTML = '<p class="tiny">Du hast noch keine Support-Anfragen.</p>';
-        } else {
-          container.innerHTML = myRequests.map(r => `
-            <div class="support-request-item">
-              <div>
-                <strong>${escapeHtml(r.message.substring(0, 50))}${r.message.length > 50 ? '…' : ''}</strong>
-                <span class="support-status ${r.status}">${statusLabel(r.status)}</span>
-              </div>
-              <div class="tiny">${new Date(r.createdAt).toLocaleString('de-DE')}</div>
-              ${r.status === 'approved' && r.response ? `<div class="tiny" style="margin-top:4px;"><strong>Antwort:</strong> ${escapeHtml(r.response)}</div>` : ''}
-              ${r.status === 'rejected' ? `<div class="tiny" style="margin-top:4px; color:var(--danger);">Abgelehnt</div>` : ''}
-            </div>
-          `).join('');
-        }
-      } else {
-        container.innerHTML = '<p class="tiny">Noch keine Support-Anfragen.</p>';
-      }
-    } catch (e) {
-      console.warn('Fehler beim Laden der Support-Anfragen:', e);
-      container.innerHTML = '<p class="tiny">Konnte Anfragen nicht laden.</p>';
+  async function loadUserTicket() {
+    if (!AS.currentUser) return;
+    const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+    const myTicket = tickets.find(t => t.userId === AS.currentUser.uniqueId && t.status !== 'closed');
+    if (myTicket) {
+      currentUserTicketId = myTicket.id;
+      document.getElementById('supportTicketCreate').classList.add('hidden');
+      document.getElementById('supportTicketStatus').classList.remove('hidden');
+      updateUserTicketStatus(myTicket);
     }
   }
 
-  function statusLabel(status) {
-    const map = { pending: 'Ausstehend', approved: 'Beantwortet', rejected: 'Abgelehnt' };
-    return map[status] || status;
+  function updateUserTicketStatus(ticket) {
+    const statusText = document.getElementById('ticketStatusText');
+    const descArea = document.getElementById('ticketDescriptionArea');
+    const chatArea = document.getElementById('ticketChatArea');
+    if (ticket.status === 'pending') {
+      statusText.textContent = 'Status: Ausstehend – warte auf Support.';
+      descArea.classList.add('hidden');
+      chatArea.classList.add('hidden');
+    } else if (ticket.status === 'accepted') {
+      statusText.textContent = 'Status: Angenommen! Bitte beschreibe kurz dein Problem.';
+      descArea.classList.remove('hidden');
+      chatArea.classList.add('hidden');
+    } else if (ticket.status === 'in_chat') {
+      statusText.textContent = 'Status: Im Chat mit Support.';
+      descArea.classList.add('hidden');
+      chatArea.classList.remove('hidden');
+      refreshUserChat();
+      initTypingIndicator(ticket.id, 'user');
+    } else if (ticket.status === 'rejected') {
+      statusText.textContent = 'Status: Abgelehnt.';
+      descArea.classList.add('hidden');
+      chatArea.classList.add('hidden');
+    }
   }
 
-  async function submitSupportRequest() {
-    const emailInput = document.getElementById('supportEmail');
-    const msgInput = document.getElementById('supportMessage');
-    if (!emailInput || !msgInput) return;
+  function copyTicketId() {
+    const id = document.getElementById('ticketIdText').textContent;
+    navigator.clipboard.writeText(id).then(() => AS.toast('ID kopiert!'));
+  }
 
-    const email = emailInput.value.trim();
-    const message = msgInput.value.trim();
+  function closeTicketIdDisplay() {
+    document.getElementById('ticketIdDisplay').classList.add('hidden');
+  }
 
-    if (!email) {
-      AS.toast('Bitte gib deine E-Mail-Adresse an.');
-      return;
-    }
-    if (!message) {
-      AS.toast('Bitte beschreibe dein Anliegen.');
-      return;
-    }
-    if (message.length > 250) {
-      AS.toast('Die Nachricht darf maximal 250 Zeichen lang sein.');
-      return;
-    }
-
-    // Prüfen, ob Cloud aktiviert ist
-    if (!AS.cloudEnabled()) {
-      AS.toast('Bitte aktiviere die Online-Speicherung, um Support zu kontaktieren.');
-      return;
-    }
-
-    // Rate-Limit prüfen (basierend auf Benutzerdaten)
-    if (AS.currentData && AS.currentData.lastSupportRequestAt) {
-      const elapsed = Date.now() - AS.currentData.lastSupportRequestAt;
-      if (elapsed < SUPPORT_RATE_LIMIT_MS) {
-        const waitMinutes = Math.ceil((SUPPORT_RATE_LIMIT_MS - elapsed) / 60000);
-        AS.toast(`Bitte warte noch ${waitMinutes} Minute(n), bevor du eine neue Anfrage sendest.`);
-        return;
-      }
-    }
-
-    const btn = document.getElementById('supportSubmitBtn');
-    if (btn) {
-      btn.disabled = true;
-      btn.textContent = 'Sende…';
-    }
-
-    try {
-      // Unterstützungsanfrage in der Cloud speichern
-      const allRequests = await cloudGet(SUPPORT_KEY) || [];
-      const newRequest = {
-        id: 'sr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
-        userId: AS.currentUser.uniqueId,
-        userEmail: email,
-        message: message,
-        status: 'pending',
-        createdAt: Date.now(),
-        response: null
-      };
-      allRequests.push(newRequest);
-      await cloudPut(SUPPORT_KEY, allRequests);
-
-      // Letzten Sendezeitpunkt im Benutzerdatensatz speichern
-      AS.currentData.lastSupportRequestAt = Date.now();
-      persist(); // in app.js verfügbar
-
-      // Erfolgsmeldung
-      AS.toast('Support-Anfrage gesendet ✓');
-
-      // Modal zurücksetzen und eigene Anfragen neu laden
-      msgInput.value = '';
-      updateCharCount();
-      loadUserRequests();
-    } catch (e) {
-      console.error('Fehler beim Senden:', e);
-      AS.toast('Support-Anfrage konnte nicht gesendet werden. Bitte versuche es erneut.');
-    } finally {
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = 'Senden';
-      }
+  async function submitDescription() {
+    const desc = document.getElementById('ticketDescription').value.trim();
+    if (!desc) { AS.toast('Bitte Beschreibung eingeben.'); return; }
+    const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+    const idx = tickets.findIndex(t => t.id === currentUserTicketId);
+    if (idx !== -1) {
+      tickets[idx].description = desc;
+      tickets[idx].status = 'pending'; // zurück zu pending? Nein, warten auf Admin
+      await cloudPut(SUPPORT_TICKETS_KEY, tickets);
+      AS.toast('Beschreibung gesendet ✓');
+      updateUserTicketStatus(tickets[idx]);
     }
   }
 
   /* ======================================================================
-     ADMIN – SEITE
+     ADMIN FUNKTIONEN
      ====================================================================== */
   function openAdminModal() {
-    const modal = document.getElementById('adminModal');
-    if (modal) modal.classList.remove('hidden');
-    // Auth-Bereich anzeigen
-    document.getElementById('adminAuthSection').classList.remove('hidden');
-    document.getElementById('adminPanelSection').classList.add('hidden');
-    document.getElementById('adminPasswordInput').value = '';
-    document.getElementById('adminPasswordInput').focus();
+    document.getElementById('adminSupportModal').classList.remove('hidden');
+    document.getElementById('adminSupportAuth').classList.remove('hidden');
+    document.getElementById('adminSupportPanel').classList.add('hidden');
+    document.getElementById('adminSupportPassword').value = '';
   }
 
   function closeAdminModal() {
-    const modal = document.getElementById('adminModal');
-    if (modal) modal.classList.add('hidden');
-    // Reset Admin-View
-    currentAdminView = 'list';
-    selectedSupportRequestId = null;
+    document.getElementById('adminSupportModal').classList.add('hidden');
   }
 
-  function adminLogin() {
-    const input = document.getElementById('adminPasswordInput');
-    if (!input) return;
-    if (input.value === ADMIN_PASSWORD) {
-      // Erfolgreich: Panel anzeigen
-      document.getElementById('adminAuthSection').classList.add('hidden');
-      document.getElementById('adminPanelSection').classList.remove('hidden');
-      showAdminList();
+  async function adminLogin() {
+    const pw = document.getElementById('adminSupportPassword').value;
+    if (pw === ADMIN_PASSWORD) {
+      document.getElementById('adminSupportAuth').classList.add('hidden');
+      document.getElementById('adminSupportPanel').classList.remove('hidden');
+      showAdminTicketList();
     } else {
       AS.toast('Falsches Passwort.');
-      input.value = '';
-      input.focus();
     }
   }
 
-  async function showAdminList() {
-    currentAdminView = 'list';
-    selectedSupportRequestId = null;
-    document.getElementById('adminSupportList').classList.remove('hidden');
-    document.getElementById('adminSupportDetail').classList.add('hidden');
-    document.getElementById('adminBackToListBtn').classList.add('hidden');
-
-    const listContainer = document.getElementById('adminSupportList');
-    if (!listContainer) return;
-
-    try {
-      const allRequests = await cloudGet(SUPPORT_KEY) || [];
-      adminRequestsCache = allRequests;
-
-      const sorted = [...allRequests].sort((a, b) => a.createdAt - b.createdAt);
-
-      if (sorted.length === 0) {
-        listContainer.innerHTML = '<p class="tiny">Keine Support-Anfragen vorhanden.</p>';
-        return;
-      }
-
-      listContainer.innerHTML = sorted.map(r => {
-        return `
-          <div class="admin-support-item" data-id="${r.id}">
-            <div class="admin-item-header">
-              <span class="admin-item-email">${escapeHtml(r.userEmail)}</span>
-              <span class="admin-item-date">${new Date(r.createdAt).toLocaleString('de-DE')}</span>
-            </div>
-            <div class="tiny" style="margin-top:4px;">${escapeHtml(r.message.substring(0, 80))}${r.message.length > 80 ? '…' : ''}</div>
-            <div class="tiny" style="margin-top:4px;">Status: ${statusLabel(r.status)}</div>
-          </div>
-        `;
-      }).join('');
-
-      listContainer.querySelectorAll('.admin-support-item').forEach(el => {
-        el.addEventListener('click', () => {
-          const id = el.dataset.id;
-          openAdminDetail(id);
-        });
-      });
-    } catch (e) {
-      console.error('Fehler beim Laden der Admin-Liste:', e);
-      listContainer.innerHTML = '<p class="tiny">Konnte Anfragen nicht laden.</p>';
-    }
-  }
-
-  async function openAdminDetail(requestId) {
-    currentAdminView = 'detail';
-    selectedSupportRequestId = requestId;
-    document.getElementById('adminSupportList').classList.add('hidden');
-    document.getElementById('adminSupportDetail').classList.remove('hidden');
-    document.getElementById('adminBackToListBtn').classList.remove('hidden');
-
-    const detailContainer = document.getElementById('adminSupportDetail');
-    if (!detailContainer) return;
-
-    const request = adminRequestsCache.find(r => r.id === requestId);
-    if (!request) {
-      detailContainer.innerHTML = '<p class="tiny">Anfrage nicht gefunden.</p>';
-      return;
-    }
-
-    let html = `
-      <div class="slide-enter">
-        <strong>E-Mail:</strong> ${escapeHtml(request.userEmail)}<br>
-        <strong>Gesendet am:</strong> ${new Date(request.createdAt).toLocaleString('de-DE')}<br>
-        <strong>Status:</strong> ${statusLabel(request.status)}<br>
-        <strong>Nachricht:</strong><br>
-        <div class="admin-item-detail">${escapeHtml(request.message)}</div>
-    `;
-
-    if (request.response) {
-      html += `<div class="admin-item-detail" style="margin-top:8px;"><strong>Antwort (bereits gesendet):</strong><br>${escapeHtml(request.response)}</div>`;
-    }
-
-    if (request.status === 'pending') {
-      html += `
-        <div class="admin-item-actions">
-          <button class="btn btn-sm btn-danger" id="adminRejectBtn">Ablehnen</button>
-          <button class="btn btn-sm" id="adminApproveBtn">Annehmen & Antworten</button>
-        </div>
-        <div id="adminResponseForm" class="admin-response-form hidden">
-          <div class="field">
-            <label>Antworttext</label>
-            <textarea id="adminResponseText" rows="4" placeholder="Antwort an den Benutzer…"></textarea>
-          </div>
-          <div class="magic-link-option">
-            <input type="checkbox" id="magicLinkCheckbox">
-            <label for="magicLinkCheckbox">Magic-Link-Button in E-Mail einfügen (Anmeldung ohne Passwort)</label>
-          </div>
-          <div class="row" style="justify-content:flex-end;gap:8px;">
-            <button class="btn btn-ghost btn-sm" id="adminCancelResponseBtn">Abbrechen</button>
-            <button class="btn btn-sm" id="adminSendResponseBtn">Antwort senden</button>
-          </div>
-        </div>
-      `;
-    }
-
-    html += `</div>`;
-
-    detailContainer.innerHTML = html;
-
-    const rejectBtn = document.getElementById('adminRejectBtn');
-    const approveBtn = document.getElementById('adminApproveBtn');
-    const cancelResponseBtn = document.getElementById('adminCancelResponseBtn');
-    const sendResponseBtn = document.getElementById('adminSendResponseBtn');
-
-    if (rejectBtn) rejectBtn.addEventListener('click', () => rejectRequest(requestId));
-    if (approveBtn) approveBtn.addEventListener('click', () => {
-      document.getElementById('adminResponseForm').classList.remove('hidden');
+  async function showAdminTicketList() {
+    const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+    // Sortieren: angenommene zuerst (status 'in_chat' oder 'accepted'), dann pending
+    const sorted = tickets.sort((a, b) => {
+      const order = { in_chat: 0, accepted: 1, pending: 2, rejected: 3, closed: 4 };
+      return (order[a.status] || 5) - (order[b.status] || 5);
     });
-    if (cancelResponseBtn) cancelResponseBtn.addEventListener('click', () => {
-      document.getElementById('adminResponseForm').classList.add('hidden');
+    const listContainer = document.getElementById('adminTicketList');
+    listContainer.innerHTML = sorted.map(t => `
+      <div class="ticket-item ${t.status}" data-id="${t.id}">
+        <div class="ticket-header">
+          <span class="ticket-id">#${t.id}</span>
+          <span class="tiny">${t.userEmail}</span>
+          <span class="tiny">${new Date(t.createdAt).toLocaleString('de-DE')}</span>
+        </div>
+        <div class="tiny">Status: ${t.status}</div>
+        ${t.description ? `<div class="tiny">${escapeHtml(t.description.substring(0,80))}</div>` : ''}
+      </div>
+    `).join('');
+    listContainer.querySelectorAll('.ticket-item').forEach(el => {
+      el.addEventListener('click', () => openAdminTicketDetail(el.dataset.id));
     });
-    if (sendResponseBtn) sendResponseBtn.addEventListener('click', () => sendResponse(requestId));
   }
 
-  async function rejectRequest(requestId) {
-    try {
-      const allRequests = await cloudGet(SUPPORT_KEY) || [];
-      const idx = allRequests.findIndex(r => r.id === requestId);
-      if (idx === -1) return;
-      allRequests[idx].status = 'rejected';
-      await cloudPut(SUPPORT_KEY, allRequests);
-      adminRequestsCache = allRequests;
-      AS.toast('Anfrage abgelehnt.');
-      showAdminList();
-    } catch (e) {
-      console.error('Fehler beim Ablehnen:', e);
-      AS.toast('Ablehnen fehlgeschlagen.');
+  async function openAdminTicketDetail(ticketId) {
+    const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+    const ticket = tickets.find(t => t.id === ticketId);
+    if (!ticket) return;
+    currentAdminTicketId = ticketId;
+    // User-Daten laden
+    const users = AS.getUsers();
+    const user = Object.values(users).find(u => u.uniqueId === ticket.userId);
+    document.getElementById('adminChatUserEmail').textContent = ticket.userEmail;
+    document.getElementById('adminChatUserPassword').textContent = user ? (user.password || 'N/A') : 'N/A';
+    // Chat anzeigen
+    document.getElementById('adminTicketList').classList.add('hidden');
+    document.getElementById('adminChatArea').classList.remove('hidden');
+    // Wenn noch nicht im Chat, Status setzen
+    if (ticket.status === 'pending' || ticket.status === 'accepted') {
+      ticket.status = 'in_chat';
+      await cloudPut(SUPPORT_TICKETS_KEY, tickets);
     }
+    refreshAdminChat();
+    initTypingIndicator(ticketId, 'admin');
   }
 
-  async function sendResponse(requestId) {
-    const responseText = document.getElementById('adminResponseText').value.trim();
-    const magicLinkWanted = document.getElementById('magicLinkCheckbox').checked;
+  async function refreshAdminChat() {
+    const chat = await cloudGet(SUPPORT_CHAT_KEY + currentAdminTicketId) || [];
+    const container = document.getElementById('adminChatMessages');
+    container.innerHTML = chat.map(msg => `
+      <div class="chat-msg ${msg.sender}">
+        <div>${escapeHtml(msg.text)}</div>
+        ${msg.buttons ? `<div class="msg-buttons">${msg.buttons.map(b => `<button class="btn btn-sm btn-outline" disabled>${b.label}</button>`).join('')}</div>` : ''}
+        <span class="msg-time">${new Date(msg.timestamp).toLocaleTimeString('de-DE')}</span>
+      </div>
+    `).join('');
+    container.scrollTop = container.scrollHeight;
+  }
 
-    if (!responseText) {
-      AS.toast('Bitte gib einen Antworttext ein.');
-      return;
-    }
-
-    const request = adminRequestsCache.find(r => r.id === requestId);
-    if (!request) {
-      AS.toast('Anfrage nicht gefunden.');
-      return;
-    }
-
-    try {
-      let magicLink = null;
-      if (magicLinkWanted) {
-        magicLink = await generateMagicLink(request.userId);
-      }
-
-      // E-Mail über Cloudflare Worker senden
-      const emailSent = await sendSupportEmail(request.userEmail, request.message, responseText, magicLink);
-
-      if (!emailSent) {
-        AS.toast('E-Mail konnte nicht gesendet werden. Bitte Worker-Status prüfen.');
-        return;
-      }
-
-      // Status in Cloud aktualisieren
-      const allRequests = await cloudGet(SUPPORT_KEY) || [];
-      const idx = allRequests.findIndex(r => r.id === requestId);
-      if (idx !== -1) {
-        allRequests[idx].status = 'approved';
-        allRequests[idx].response = responseText;
-        if (magicLink) allRequests[idx].magicLink = magicLink;
-        await cloudPut(SUPPORT_KEY, allRequests);
-        adminRequestsCache = allRequests;
-      }
-
-      AS.toast('Antwort gesendet ✓');
-      showAdminList();
-    } catch (e) {
-      console.error('Fehler beim Senden der Antwort:', e);
-      AS.toast('Antwort konnte nicht gesendet werden.');
-    }
+  async function sendAdminChatMessage() {
+    const input = document.getElementById('adminChatInput');
+    const text = input.value.trim();
+    if (!text) return;
+    const chat = await cloudGet(SUPPORT_CHAT_KEY + currentAdminTicketId) || [];
+    chat.push({ sender: 'admin', text, timestamp: Date.now(), buttons: [] });
+    await cloudPut(SUPPORT_CHAT_KEY + currentAdminTicketId, chat);
+    input.value = '';
+    refreshAdminChat();
   }
 
   /* ======================================================================
-     MAGIC LINK
+     USER CHAT FUNKTIONEN
      ====================================================================== */
-  async function generateMagicLink(uid) {
-    const token = 'ml_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
-    const magicLinks = await cloudGet(MAGIC_LINK_KEY) || {};
-    magicLinks[token] = {
-      uid: uid,
-      expires: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 Tage
-    };
-    await cloudPut(MAGIC_LINK_KEY, magicLinks);
-
-    const baseUrl = `${location.origin}${location.pathname}`;
-    const fullUrl = `${baseUrl}?magic=${token}`;
-    return fullUrl;
+  async function refreshUserChat() {
+    if (!currentUserTicketId) return;
+    const chat = await cloudGet(SUPPORT_CHAT_KEY + currentUserTicketId) || [];
+    const container = document.getElementById('supportChatMessages');
+    container.innerHTML = chat.map(msg => `
+      <div class="chat-msg ${msg.sender}">
+        <div>${escapeHtml(msg.text)}</div>
+        ${msg.buttons ? `<div class="msg-buttons">${msg.buttons.map(b => `<button class="btn btn-sm btn-outline" data-action="${b.action}">${b.label}</button>`).join('')}</div>` : ''}
+        <span class="msg-time">${new Date(msg.timestamp).toLocaleTimeString('de-DE')}</span>
+      </div>
+    `).join('');
+    container.scrollTop = container.scrollHeight;
   }
 
-  async function checkMagicLink() {
-    const params = new URLSearchParams(location.search);
-    const token = params.get('magic');
-    if (!token) return;
+  async function sendUserChatMessage() {
+    const input = document.getElementById('supportChatInput');
+    const text = input.value.trim();
+    if (!text) return;
+    const chat = await cloudGet(SUPPORT_CHAT_KEY + currentUserTicketId) || [];
+    chat.push({ sender: 'user', text, timestamp: Date.now(), buttons: [] });
+    await cloudPut(SUPPORT_CHAT_KEY + currentUserTicketId, chat);
+    input.value = '';
+    refreshUserChat();
+  }
 
-    try {
-      const magicLinks = await cloudGet(MAGIC_LINK_KEY) || {};
-      const info = magicLinks[token];
-      if (info && info.expires > Date.now()) {
-        const users = AS.getUsers();
-        const user = users[info.uid];
-        if (user) {
-          const session = AS.getSession();
-          session.currentUserId = info.uid;
-          if (!session.accounts.includes(info.uid)) session.accounts.push(info.uid);
-          AS.saveSession(session);
-          delete magicLinks[token];
-          await cloudPut(MAGIC_LINK_KEY, magicLinks);
-          history.replaceState({}, '', location.pathname);
-          AS.toast(`Willkommen zurück, ${user.firstName}! ✦`);
-          if (typeof boot === 'function') boot();
-        } else {
-          AS.toast('Magic-Link ungültig: Benutzer nicht gefunden.');
+  /* ======================================================================
+     TIPPSTATUS via WebRTC (PeerJS)
+     ====================================================================== */
+  function initTypingIndicator(ticketId, role) {
+    if (typingPeer) typingPeer.destroy();
+    typingPeer = new Peer('support_' + ticketId + '_' + role, { debug: 1 });
+    typingPeer.on('open', (id) => {
+      console.log('Typing peer ID:', id);
+    });
+    typingPeer.on('connection', (conn) => {
+      typingConn = conn;
+      conn.on('data', (data) => {
+        if (data.type === 'typing') {
+          showTypingIndicator(role === 'user' ? 'admin' : 'user');
+        } else if (data.type === 'stop_typing') {
+          hideTypingIndicator();
         }
-      } else {
-        AS.toast('Magic-Link ist abgelaufen oder ungültig.');
-      }
-      history.replaceState({}, '', location.pathname);
-    } catch (e) {
-      console.error('Magic-Link Fehler:', e);
-      AS.toast('Magic-Link konnte nicht verarbeitet werden.');
-    }
-  }
-
-  /* ======================================================================
-     E-MAIL VERSAND (über Cloudflare Worker)
-     ====================================================================== */
-  async function sendSupportEmail(to, originalMessage, response, magicLink) {
-    try {
-      const payload = {
-        to: to,
-        original_message: originalMessage,
-        response: response,
-        magic_link: magicLink || null
-      };
-      const res = await fetch(SUPPORT_EMAIL_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
       });
-      const data = await res.json();
-      if (!data.success) {
-        console.error('Worker-Antwort:', data);
-        AS.toast('E-Mail-Fehler: ' + (data.error || 'Unbekannt'));
-      }
-      return data.success === true;
-    } catch (e) {
-      console.error('E-Mail-Versand fehlgeschlagen:', e);
-      return false;
-    }
+    });
+    // Verbindung zum Gegenpart aufbauen
+    const otherRole = role === 'user' ? 'admin' : 'user';
+    const conn = typingPeer.connect('support_' + ticketId + '_' + otherRole);
+    conn.on('open', () => {
+      typingConn = conn;
+    });
   }
 
+  function showTypingIndicator(who) {
+    const el = document.getElementById(who === 'admin' ? 'adminTypingIndicator' : 'userTypingIndicator');
+    if (el) el.classList.remove('hidden');
+  }
+  function hideTypingIndicator() {
+    document.querySelectorAll('.typing-indicator').forEach(el => el.classList.add('hidden'));
+  }
+
+  // Event-Listener für Tippen
+  document.getElementById('supportChatInput')?.addEventListener('input', () => {
+    if (typingConn && typingConn.open) {
+      typingConn.send({ type: 'typing' });
+      clearTimeout(typingTimer);
+      typingTimer = setTimeout(() => typingConn.send({ type: 'stop_typing' }), 1000);
+    }
+  });
+  document.getElementById('adminChatInput')?.addEventListener('input', () => {
+    if (typingConn && typingConn.open) {
+      typingConn.send({ type: 'typing' });
+      clearTimeout(typingTimer);
+      typingTimer = setTimeout(() => typingConn.send({ type: 'stop_typing' }), 1000);
+    }
+  });
+
   /* ======================================================================
-     INIT BEIM LADEN
+     BUTTON-FUNKTIONEN
+     ====================================================================== */
+  function endChat(who) {
+    // Status auf closed setzen
+    // ...
+  }
+  function requestLoginNoPassword() {
+    // Magic-Link generieren und als Nachricht senden
+  }
+  function requestUnlockAccount() { /* ... */ }
+  function requestExportData() { /* ... */ }
+  function adminRequestLoginNoPassword() { /* ... */ }
+  function adminRequestUnlockAccount() { /* ... */ }
+  function adminRequestExportData() { /* ... */ }
+
+  /* ======================================================================
+     INIT
      ====================================================================== */
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initSupport);
