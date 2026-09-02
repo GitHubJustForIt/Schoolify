@@ -18,6 +18,7 @@
   let typingConn = null;
   let typingTimer = null;
   let refreshInterval = null;
+  let userStatusInterval = null;
 
   /* ======================================================================
      INITIALISIERUNG
@@ -64,11 +65,18 @@
     document.getElementById('adminUnlockAccountBtn')?.addEventListener('click', () => adminRequestUnlockAccount());
     document.getElementById('adminExportDataBtn')?.addEventListener('click', () => adminRequestExportData());
 
-    // 30-Sekunden-Refresh
+    // 30-Sekunden-Refresh für Chat
     refreshInterval = setInterval(() => {
       if (currentUserTicketId) refreshUserChat();
       if (currentAdminTicketId) refreshAdminChat();
     }, 30000);
+
+    // Status-Live-Update für User (alle 10 Sekunden)
+    userStatusInterval = setInterval(() => {
+      if (currentUserTicketId && AS.currentUser) {
+        loadUserTicket();
+      }
+    }, 10000);
   }
 
   /* ======================================================================
@@ -91,6 +99,18 @@
       AS.toast('Bitte Online-Speicherung aktivieren.');
       return;
     }
+    // Prüfen, ob bereits ein offenes Ticket existiert
+    const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+    const existing = tickets.find(t => t.userId === AS.currentUser.uniqueId && t.status !== 'closed');
+    if (existing) {
+      AS.toast('Du hast bereits ein offenes Ticket.');
+      currentUserTicketId = existing.id;
+      document.getElementById('supportTicketCreate').classList.add('hidden');
+      document.getElementById('supportTicketStatus').classList.remove('hidden');
+      updateUserTicketStatus(existing);
+      return;
+    }
+
     const ticketId = Math.floor(1000 + Math.random() * 9000).toString();
     const ticket = {
       id: ticketId,
@@ -101,7 +121,6 @@
       createdAt: Date.now(),
       acceptedAt: null,
     };
-    const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
     tickets.push(ticket);
     await cloudPut(SUPPORT_TICKETS_KEY, tickets);
     currentUserTicketId = ticketId;
@@ -122,6 +141,11 @@
       document.getElementById('supportTicketCreate').classList.add('hidden');
       document.getElementById('supportTicketStatus').classList.remove('hidden');
       updateUserTicketStatus(myTicket);
+    } else {
+      // Kein offenes Ticket → Erstellungsansicht zeigen
+      currentUserTicketId = null;
+      document.getElementById('supportTicketCreate').classList.remove('hidden');
+      document.getElementById('supportTicketStatus').classList.add('hidden');
     }
   }
 
@@ -450,7 +474,6 @@
     const url = btn.dataset.url;
     if (action === 'login_no_pw' && url) window.open(url, '_blank');
     else if (action === 'unlock_account') {
-      // Hier Logik zum Entsperren (z.B. blockierte Freunde zurücksetzen)
       if (AS.currentData) {
         AS.currentData.blocked = [];
         AS.currentData.blockedFriends = [];
