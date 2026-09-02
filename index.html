@@ -618,5 +618,115 @@
 <script src="realtime.js"></script>
 <script src="session.js"></script>
 <script src="ai-chat.js"></script>
+
+<!-- NEU: Support-Bubble (global sichtbar, aber im Auth-Bereich immer, im App-Bereich nur wenn Ticket offen) -->
+<div id="supportAuthBubble" class="auth-support-fab hidden" title="Support kontaktieren">💬</div>
+
+<!-- NEU: Support Ticket Modal (User) – bleibt wie zuvor, aber mit verbessertem Chat -->
+<div id="supportTicketModal" class="modal-backdrop hidden">
+  <div class="modal support-modal">
+    <div id="supportTicketCreate">
+      <h3>🎫 Support-Ticket erstellen</h3>
+      <p class="muted">Beschreibe kurz dein Anliegen. Der Support wird sich bei dir melden.</p>
+      <div class="field">
+        <label>Dein Name (optional)</label>
+        <input type="text" id="supportNameInput" placeholder="z. B. Emma">
+      </div>
+      <div class="field" id="supportEmailField">
+        <label>Deine E-Mail-Adresse (für Rückmeldung)</label>
+        <input type="email" id="supportEmailInput" placeholder="deine@email.de">
+      </div>
+      <button class="btn btn-sm" id="createTicketBtn">Ticket erstellen</button>
+    </div>
+    <div id="supportTicketStatus" class="hidden">
+      <h3>📋 Ticket-Status</h3>
+      <div class="row between" style="margin-bottom:8px;">
+        <p id="ticketStatusText" style="margin:0;"></p>
+        <button class="btn btn-sm btn-outline" id="manualRefreshBtn">🔄 Aktualisieren</button>
+      </div>
+      <div class="tiny" id="refreshCooldownText" style="display:none; color:var(--ink-faint);"></div>
+      <div id="ticketDescriptionArea" class="hidden">
+        <div class="field">
+          <label>Kurze Problembeschreibung</label>
+          <textarea id="ticketDescription" maxlength="250" rows="3" placeholder="Beschreibe dein Problem…"></textarea>
+        </div>
+        <button class="btn btn-sm" id="submitDescriptionBtn">Beschreibung senden</button>
+      </div>
+      <div id="ticketChatArea" class="hidden">
+        <h4>💬 Live-Chat mit Support</h4>
+        <div id="supportChatMessages" class="support-chat-messages"></div>
+        <div class="row" style="gap:6px; margin-top:8px;">
+          <input type="text" id="supportChatInput" placeholder="Nachricht schreiben…" style="flex:1;">
+          <button class="btn btn-sm" id="supportChatSendBtn">Senden</button>
+        </div>
+      </div>
+      <button class="btn btn-sm btn-ghost" id="closeTicketModalBtn">Schließen</button>
+    </div>
+  </div>
+</div>
+
+<!-- NEU: Admin Support Modal -->
+<div id="adminSupportModal" class="modal-backdrop hidden">
+  <div class="modal admin-modal" style="max-width:650px;">
+    <div id="adminSupportAuth" class="hidden">
+      <h3>🔐 Admin-Login</h3>
+      <div class="field">
+        <label>Passwort</label>
+        <input type="password" id="adminSupportPassword" placeholder="Admin-Passwort">
+      </div>
+      <button class="btn btn-sm" id="adminSupportLoginBtn">Einloggen</button>
+    </div>
+    <div id="adminSupportPanel" class="hidden">
+      <div class="row between" style="margin-bottom:10px;">
+        <h3>🛠️ Support-Admin</h3>
+        <div class="row" style="gap:6px;">
+          <button class="btn btn-sm btn-ghost" id="adminBackToListBtn">← Zurück</button>
+          <button class="btn btn-sm btn-ghost" id="adminSupportCloseBtn">Schließen</button>
+        </div>
+      </div>
+      <div id="adminTicketList" style="margin-top:10px;"></div>
+      <div id="adminChatArea" class="hidden">
+        <div class="row between" style="margin-bottom:8px;">
+          <div>
+            <span class="tiny">User:</span> <strong id="adminChatUserEmail"></strong><br>
+            <span class="tiny">Passwort:</span> <strong id="adminChatUserPassword" style="color:var(--danger);"></strong>
+          </div>
+          <button class="btn btn-sm btn-ghost" id="adminBackToListBtn2">← Zurück</button>
+        </div>
+        <div id="adminChatMessages" class="support-chat-messages"></div>
+        <div class="row" style="gap:6px; margin-top:8px;">
+          <input type="text" id="adminChatInput" placeholder="Antwort schreiben…" style="flex:1;">
+          <button class="btn btn-sm" id="adminChatSendBtn">Senden</button>
+        </div>
+        <div class="row wrap" style="gap:6px; margin-top:6px;">
+          <button class="btn btn-sm btn-outline" id="adminChatEndBtn">Chat beenden</button>
+          <button class="btn btn-sm btn-outline" id="adminLoginNoPwBtn">Login ohne Passwort</button>
+          <button class="btn btn-sm btn-outline" id="adminUnlockAccountBtn">Account entsperren</button>
+          <button class="btn btn-sm btn-outline" id="adminExportDataBtn">Daten exportieren</button>
+          <button class="btn btn-sm btn-outline" id="adminAutoSignupBtn">Auto-Signup</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- NEU: Support-Chat-Widget für die Haupt-App (nach Auto-Signup sichtbar) -->
+<div id="supportAppWidget" class="support-app-widget hidden">
+  <div class="support-widget-header">
+    <span>💬 Support</span>
+    <span class="support-widget-actions">
+      <button id="supportWidgetMinimizeBtn" class="iconbtn" style="font-size:14px;">–</button>
+      <button id="supportWidgetCloseBtn" class="iconbtn" style="font-size:14px;">✕</button>
+    </span>
+  </div>
+  <div id="supportWidgetBody" class="support-widget-body">
+    <div id="supportWidgetMessages" class="support-chat-messages"></div>
+    <div class="row" style="gap:6px; padding:8px;">
+      <input type="text" id="supportWidgetInput" placeholder="Nachricht…" style="flex:1;">
+      <button class="btn btn-sm" id="supportWidgetSendBtn">Senden</button>
+    </div>
+  </div>
+</div>
+  
 </body>
 </html>
