@@ -497,30 +497,91 @@
 <div id="modalRoot"></div>
 
 <!-- NEU: Support FAB -->
-<div id="supportFab" class="support-fab" title="Support kontaktieren">💬</div>
+<!-- NEU: Support-Bubble nur im Auth-Bereich -->
+<div id="supportAuthBubble" class="auth-support-fab hidden" title="Support kontaktieren">🎫</div>
 
-<!-- NEU: Support Modal (wird dynamisch befüllt) -->
-<div id="supportModal" class="modal-backdrop hidden">
+<!-- NEU: Support Ticket Modal (User) -->
+<div id="supportTicketModal" class="modal-backdrop hidden">
   <div class="modal support-modal">
-    <h3>📩 Support kontaktieren</h3>
-    <p class="muted">Antwort wird per E-Mail vom Supportteam verschickt.</p>
-    <div class="field">
-      <label>Deine E-Mail-Adresse</label>
-      <input type="email" id="supportEmail" placeholder="deine@email.de">
+    <div id="supportTicketCreate">
+      <h3>🎫 Support-Ticket erstellen</h3>
+      <p class="muted">Erhalte eine 4-stellige ID, um deinen Fall nachzuweisen.</p>
+      <button class="btn btn-sm" id="createTicketBtn">Ticket erstellen</button>
+      <div id="ticketIdDisplay" class="hidden" style="margin-top:12px;">
+        <p>Deine Ticket-ID: <strong id="ticketIdText" style="font-size:1.2rem;"></strong></p>
+        <button class="btn btn-sm btn-outline" id="copyTicketIdBtn">📋 Kopieren</button>
+        <button class="btn btn-sm btn-ghost" id="closeTicketIdBtn">Schließen</button>
+      </div>
     </div>
-    <div class="field">
-      <label>Deine Nachricht (max. 250 Zeichen)</label>
-      <textarea id="supportMessage" maxlength="250" rows="4" placeholder="Beschreibe dein Anliegen…"></textarea>
-      <div class="tiny" style="text-align:right;"><span id="supportCharCount">0</span>/250</div>
+    <div id="supportTicketStatus" class="hidden">
+      <h3>📋 Ticket-Status</h3>
+      <p id="ticketStatusText"></p>
+      <div id="ticketDescriptionArea" class="hidden">
+        <div class="field">
+          <label>Kurze Problembeschreibung</label>
+          <textarea id="ticketDescription" maxlength="250" rows="3" placeholder="Beschreibe dein Problem…"></textarea>
+        </div>
+        <button class="btn btn-sm" id="submitDescriptionBtn">Beschreibung senden</button>
+      </div>
+      <div id="ticketChatArea" class="hidden">
+        <h4>💬 Live-Chat mit Support</h4>
+        <div id="supportChatMessages" class="chat-msgs" style="height:200px; overflow-y:auto;"></div>
+        <div class="row" style="gap:6px; margin-top:8px;">
+          <input type="text" id="supportChatInput" placeholder="Nachricht schreiben…" style="flex:1;">
+          <button class="btn btn-sm" id="supportChatSendBtn">Senden</button>
+        </div>
+        <div class="row wrap" style="gap:6px; margin-top:6px;">
+          <button class="btn btn-sm btn-outline" id="chatEndBtn">Chat beenden</button>
+          <button class="btn btn-sm btn-outline" id="loginNoPwBtn">Login ohne Passwort</button>
+          <button class="btn btn-sm btn-outline" id="unlockAccountBtn">Account entsperren</button>
+          <button class="btn btn-sm btn-outline" id="exportDataBtn2">Daten exportieren</button>
+        </div>
+      </div>
+      <button class="btn btn-sm btn-ghost" id="closeTicketModalBtn">Schließen</button>
     </div>
-    <div class="row" style="justify-content:flex-end;gap:8px;">
-      <button class="btn btn-ghost btn-sm" id="supportCancelBtn">Abbrechen</button>
-      <button class="btn btn-sm" id="supportSubmitBtn">Senden</button>
-    </div>
-    <div id="supportUserRequests" style="margin-top:16px;"></div>
   </div>
 </div>
 
+<!-- NEU: Admin Support Modal -->
+<div id="adminSupportModal" class="modal-backdrop hidden">
+  <div class="modal admin-modal" style="max-width:650px;">
+    <div id="adminSupportAuth" class="hidden">
+      <h3>🔐 Admin-Login</h3>
+      <div class="field">
+        <label>Passwort</label>
+        <input type="password" id="adminSupportPassword" placeholder="Admin-Passwort">
+      </div>
+      <button class="btn btn-sm" id="adminSupportLoginBtn">Einloggen</button>
+    </div>
+    <div id="adminSupportPanel" class="hidden">
+      <div class="row between">
+        <h3>🛠️ Support-Admin</h3>
+        <button class="btn btn-sm btn-ghost" id="adminSupportCloseBtn">Schließen</button>
+      </div>
+      <div id="adminTicketList" style="margin-top:10px;"></div>
+      <div id="adminChatArea" class="hidden">
+        <div class="row between">
+          <div>
+            <span class="tiny">User:</span> <strong id="adminChatUserEmail"></strong><br>
+            <span class="tiny">Passwort:</span> <strong id="adminChatUserPassword" style="color:var(--danger);"></strong>
+          </div>
+          <button class="btn btn-sm btn-ghost" id="adminBackToListBtn">← Zurück</button>
+        </div>
+        <div id="adminChatMessages" class="chat-msgs" style="height:250px; overflow-y:auto;"></div>
+        <div class="row" style="gap:6px; margin-top:8px;">
+          <input type="text" id="adminChatInput" placeholder="Antwort schreiben…" style="flex:1;">
+          <button class="btn btn-sm" id="adminChatSendBtn">Senden</button>
+        </div>
+        <div class="row wrap" style="gap:6px; margin-top:6px;">
+          <button class="btn btn-sm btn-outline" id="adminChatEndBtn">Chat beenden</button>
+          <button class="btn btn-sm btn-outline" id="adminLoginNoPwBtn">Login ohne Passwort</button>
+          <button class="btn btn-sm btn-outline" id="adminUnlockAccountBtn">Account entsperren</button>
+          <button class="btn btn-sm btn-outline" id="adminExportDataBtn">Daten exportieren</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 <!-- NEU: Admin Modal (für Passwort und Panel) -->
 <div id="adminModal" class="modal-backdrop hidden">
   <div class="modal admin-modal" style="max-width:600px;">
