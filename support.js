@@ -6,9 +6,10 @@
    WebRTC (PeerJS) nur für Tippstatus.
 
    Änderungen:
-   - Keine 4-stellige ID mehr, stattdessen wird der Benutzername angezeigt.
+   - Keine Anmeldung erforderlich, aber E-Mail ist Pflicht (wenn nicht angemeldet).
+   - Keine 4-stellige ID mehr, stattdessen wird der Name/E-Mail in der Admin-Liste angezeigt.
    - Abgelehnte oder beendete Tickets werden aus der Cloud gelöscht.
-   - Der Benutzer muss angemeldet sein, um ein Ticket zu erstellen.
+   - Live-Update alle 10 Sekunden, um den Status zu prüfen und den Chat anzuzeigen.
    ========================================================================== */
 
 (function() {
@@ -49,8 +50,6 @@
 
     // User Ticket Modal Events
     document.getElementById('createTicketBtn')?.addEventListener('click', createTicket);
-    document.getElementById('copyTicketIdBtn')?.addEventListener('click', copyTicketId);
-    document.getElementById('closeTicketIdBtn')?.addEventListener('click', closeTicketIdDisplay);
     document.getElementById('closeTicketModalBtn')?.addEventListener('click', closeTicketModal);
     document.getElementById('submitDescriptionBtn')?.addEventListener('click', submitDescription);
     document.getElementById('supportChatSendBtn')?.addEventListener('click', () => sendUserChatMessage());
@@ -86,16 +85,27 @@
      TICKET ERSTELLEN (USER)
      ====================================================================== */
   function openSupportTicketModal() {
-    // Nur eingeloggte Benutzer können Support nutzen
-    if (!AS.currentUser) {
-      AS.toast('Bitte melde dich an, um den Support zu nutzen.');
-      return;
-    }
-
     const modal = document.getElementById('supportTicketModal');
     modal.classList.remove('hidden');
     document.getElementById('supportTicketCreate').classList.remove('hidden');
     document.getElementById('supportTicketStatus').classList.add('hidden');
+
+    // Namensfeld und E-Mail-Feld je nach Anmeldestatus vorbereiten
+    const nameInput = document.getElementById('supportNameInput');
+    const emailField = document.getElementById('supportEmailField');
+    const emailInput = document.getElementById('supportEmailInput');
+
+    if (AS.currentUser) {
+      // Angemeldet: Name vorbelegen, E-Mail-Feld ausblenden
+      if (nameInput) nameInput.value = AS.currentUser.firstName || '';
+      if (emailField) emailField.classList.add('hidden');
+    } else {
+      // Nicht angemeldet: Name leeren, E-Mail-Feld anzeigen und leeren
+      if (nameInput) nameInput.value = '';
+      if (emailField) emailField.classList.remove('hidden');
+      if (emailInput) emailInput.value = '';
+    }
+
     loadUserTicket();
   }
 
@@ -108,14 +118,39 @@
       AS.toast('Bitte Online-Speicherung aktivieren.');
       return;
     }
-    if (!AS.currentUser) {
-      AS.toast('Bitte melde dich an.');
-      return;
+
+    // Benutzeridentität feststellen
+    let userId = AS.currentUser ? AS.currentUser.uniqueId : null;
+    if (!userId) {
+      userId = localStorage.getItem('anon_support_id');
+      if (!userId) {
+        userId = 'anon_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+        localStorage.setItem('anon_support_id', userId);
+      }
     }
 
-    const userId = AS.currentUser.uniqueId;
-    const username = AS.currentUser.username || AS.currentUser.firstName;
-    const userEmail = AS.currentUser.email || '';
+    // Name ermitteln (optional)
+    const nameInput = document.getElementById('supportNameInput');
+    let userName = nameInput ? nameInput.value.trim() : '';
+    if (!userName && AS.currentUser) userName = AS.currentUser.firstName || '';
+    if (!userName) userName = 'Unbekannt';
+
+    // E-Mail ermitteln: Pflicht, wenn nicht angemeldet
+    let userEmail = '';
+    if (AS.currentUser && AS.currentUser.email) {
+      userEmail = AS.currentUser.email;
+    } else {
+      const emailInput = document.getElementById('supportEmailInput');
+      userEmail = emailInput ? emailInput.value.trim() : '';
+      if (!userEmail) {
+        AS.toast('Bitte gib deine E-Mail-Adresse an.');
+        return;
+      }
+      if (!userEmail.includes('@')) {
+        AS.toast('Bitte gib eine gültige E-Mail-Adresse ein.');
+        return;
+      }
+    }
 
     // Prüfen, ob bereits ein offenes Ticket existiert
     const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
@@ -129,11 +164,11 @@
       return;
     }
 
-    // Ticket erstellen – ohne ID-Anzeige, nur für die Cloud
+    // Ticket erstellen – ohne ID-Anzeige
     const ticket = {
-      id: 'sr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), // interne ID
+      id: 'sr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
       userId: userId,
-      username: username,
+      username: userName,
       userEmail: userEmail,
       status: 'pending',
       description: '',
@@ -151,9 +186,13 @@
   }
 
   async function loadUserTicket() {
-    if (!AS.currentUser) return;
+    // Bestimme die Benutzerkennung
+    let userId = AS.currentUser ? AS.currentUser.uniqueId : null;
+    if (!userId) {
+      userId = localStorage.getItem('anon_support_id');
+      if (!userId) return; // Noch nie ein Ticket erstellt
+    }
 
-    const userId = AS.currentUser.uniqueId;
     const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
     const myTicket = tickets.find(t => t.userId === userId && t.status !== 'closed');
 
@@ -166,9 +205,6 @@
       currentUserTicketId = null;
       document.getElementById('supportTicketCreate').classList.remove('hidden');
       document.getElementById('supportTicketStatus').classList.add('hidden');
-      // Ticket wurde gelöscht – zurücksetzen
-      document.getElementById('ticketIdDisplay').classList.add('hidden');
-      document.getElementById('ticketStatusText').textContent = '';
     }
   }
 
@@ -204,19 +240,6 @@
       descArea.classList.add('hidden');
       chatArea.classList.add('hidden');
     }
-  }
-
-  function copyTicketId() {
-    // Da die ID nicht mehr angezeigt wird, ist diese Funktion unnötig,
-    // aber wir lassen sie als Platzhalter für zukünftige Verwendung.
-    const id = document.getElementById('ticketIdText')?.textContent;
-    if (id) {
-      navigator.clipboard.writeText(id).then(() => AS.toast('ID kopiert!'));
-    }
-  }
-
-  function closeTicketIdDisplay() {
-    document.getElementById('ticketIdDisplay').classList.add('hidden');
   }
 
   async function submitDescription() {
@@ -264,7 +287,6 @@
     document.getElementById('adminTicketList').classList.remove('hidden');
 
     const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
-    // Sortierung: aktive zuerst
     const order = { in_chat: 0, accepted: 1, described: 2, pending: 3, rejected: 4, closed: 5 };
     const sorted = tickets.sort((a, b) => (order[a.status] || 9) - (order[b.status] || 9));
 
@@ -277,7 +299,8 @@
     listContainer.innerHTML = sorted.map(t => `
       <div class="ticket-item ${t.status}" data-id="${t.id}">
         <div class="ticket-header">
-          <span class="ticket-username">${escapeHtml(t.username || t.userEmail)}</span>
+          <span class="ticket-username">${escapeHtml(t.username || 'Unbekannt')}</span>
+          <span class="tiny">${escapeHtml(t.userEmail || '')}</span>
           <span class="tiny">${new Date(t.createdAt).toLocaleString('de-DE')}</span>
         </div>
         <div class="tiny">Status: ${t.status}</div>
@@ -314,7 +337,6 @@
   }
 
   async function rejectTicket(ticketId) {
-    // Ticket wird aus der Cloud gelöscht
     let tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
     tickets = tickets.filter(t => t.id !== ticketId);
     await cloudPut(SUPPORT_TICKETS_KEY, tickets);
@@ -330,13 +352,12 @@
 
     const users = AS.getUsers();
     const user = Object.values(users).find(u => u.uniqueId === ticket.userId);
-    document.getElementById('adminChatUserEmail').textContent = ticket.userEmail;
+    document.getElementById('adminChatUserEmail').textContent = ticket.userEmail || 'Keine E-Mail';
     document.getElementById('adminChatUserPassword').textContent = user ? (user.password || 'N/A') : 'N/A';
 
     document.getElementById('adminTicketList').classList.add('hidden');
     document.getElementById('adminChatArea').classList.remove('hidden');
 
-    // Falls noch nicht im Chat, Status auf in_chat setzen
     if (ticket.status === 'pending' || ticket.status === 'described') {
       ticket.status = 'in_chat';
       await cloudPut(SUPPORT_TICKETS_KEY, tickets);
@@ -446,7 +467,6 @@
      BUTTON-FUNKTIONEN
      ====================================================================== */
   async function endChat(who) {
-    // Ticket aus der Cloud löschen
     const ticketId = who === 'user' ? currentUserTicketId : currentAdminTicketId;
     if (!ticketId) return;
 
@@ -454,7 +474,6 @@
     tickets = tickets.filter(t => t.id !== ticketId);
     await cloudPut(SUPPORT_TICKETS_KEY, tickets);
 
-    // Chat ebenfalls löschen
     await cloudDelete(SUPPORT_CHAT_KEY_PREFIX + ticketId);
 
     AS.toast('Chat beendet und Ticket gelöscht.');
@@ -470,7 +489,7 @@
 
   async function requestLoginNoPassword() {
     if (!AS.currentUser) {
-      AS.toast('Bitte melde dich an, um diese Funktion zu nutzen.');
+      AS.toast('Diese Funktion erfordert einen Account.');
       return;
     }
     const magicLink = await generateMagicLink(AS.currentUser.uniqueId);
