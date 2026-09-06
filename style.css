@@ -2299,6 +2299,14 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   animation: slideup 0.25s ease;
 }
 .support-widget-header {
+  border-radius: 18px 18px 0 0;
+}
+.support-widget-body .support-chat-messages {
+  border-radius: 0;
+  border: none;
+  border-bottom: 1px solid var(--border);
+}
+.support-widget-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -2331,17 +2339,21 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 .support-chat-messages.email-style {
   background: #f5f5f0;
   border: 1px solid #d0d0c8;
-  border-radius: 3px;
+  border-radius: 12px;      /* vorher 3px – jetzt deutlich runder */
   padding: 8px;
 }
 .support-chat-messages.email-style .chat-msg {
   background: #ffffff;
   border: 1px solid #d0d0c8;
-  border-radius: 2px;
+  border-radius: 10px;      /* vorher 2px – jetzt abgerundet */
   padding: 10px 12px;
   margin-bottom: 8px;
   box-shadow: none;
   max-width: 90%;
+  transition: box-shadow 0.15s ease;
+}
+.support-chat-messages.email-style .chat-msg:hover {
+  box-shadow: 0 2px 6px rgba(60,67,64,0.08);
 }
 .support-chat-messages.email-style .chat-msg.user {
   background: #e8f0fe;
