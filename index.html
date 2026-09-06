@@ -522,7 +522,10 @@
         <label>Dein Problem (max. 250 Zeichen)</label>
         <textarea id="supportProblemInput" maxlength="250" rows="4" placeholder="Beschreibe kurz, was los ist…"></textarea>
       </div>
-      <button class="btn btn-sm" id="createTicketBtn">Ticket erstellen</button>
+      <div class="row" style="gap:8px;">
+  <button class="btn btn-ghost btn-sm" id="backFromTicketCreateBtn">← Zurück</button>
+  <button class="btn btn-sm" id="createTicketBtn" style="flex:1;">Ticket erstellen</button>
+</div>
     </div>
     <div id="supportTicketStatus" class="hidden">
       <h3>📋 Ticket-Status</h3>
