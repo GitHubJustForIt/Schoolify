@@ -14,6 +14,7 @@
   let userRefreshCooldownUntil = 0;
   let adminRefreshCooldownUntil = 0;
   let cooldownInterval = null;
+    let widgetOpen = false;
 
   function initSupport() {
     const authScreen = document.getElementById('authScreen');
@@ -38,6 +39,9 @@
     document.getElementById('manualRefreshBtn')?.addEventListener('click', userManualRefresh);
     document.getElementById('supportChatSendBtn')?.addEventListener('click', sendUserChatMessage);
     document.getElementById('supportAccessBtn')?.addEventListener('click', openSupportTicketModal);
+    document.getElementById('backFromTicketCreateBtn')?.addEventListener('click', () => {
+      closeTicketModal();
+    });
 
     document.getElementById('adminAccessBtn')?.addEventListener('click', openAdminModal);
     document.getElementById('adminSupportLoginBtn')?.addEventListener('click', adminLogin);
@@ -52,6 +56,13 @@
     document.getElementById('supportWidgetSendBtn')?.addEventListener('click', sendWidgetMessage);
 
     cooldownInterval = setInterval(updateCooldownTexts, 1000);
+        document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
+      backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) {
+          backdrop.classList.add('hidden');
+        }
+      });
+    });
   }
 
   function updateSupportBubbleVisibility() {
@@ -492,19 +503,39 @@
     session.currentUserId = uniqueId;
     if(!session.accounts.includes(uniqueId)) session.accounts.push(uniqueId);
     AS.saveSession(session);
-    AS.currentUser = newUser;
+       AS.currentUser = newUser;
     AS.currentData = AS.getData(uniqueId);
     persist();
+
+    // Automatisch anmelden: App anzeigen
+    if (typeof AS.loginUser === 'function') {
+      AS.loginUser(newUser);
+    } else {
+      // Fallback: Auth-Screen ausblenden, App einblenden
+      document.getElementById('authScreen')?.classList.add('hidden');
+      document.getElementById('app')?.classList.remove('hidden');
+    }
+
     AS.toast(`Auto-Signup erfolgreich! Benutzername: ${username}, Passwort: ${password}`);
-    openSupportWidget();
     closeTicketModal();
+    openSupportWidget();   // Widget öffnen, damit User sofort Zugriff auf Chat hat
   }
 
   function openSupportWidget() {
     const widget = document.getElementById('supportAppWidget');
-    if(widget){ widget.classList.remove('hidden'); widgetOpen = true; refreshUserChat(); }
+    if (widget) {
+      widget.classList.remove('hidden');
+      widgetOpen = true;
+      refreshUserChat();
+    }
   }
-  function closeWidget() { document.getElementById('supportAppWidget').classList.add('hidden'); widgetOpen = false; }
+  function closeWidget() {
+    const widget = document.getElementById('supportAppWidget');
+    if (widget) {
+      widget.classList.add('hidden');
+      widgetOpen = false;
+    }
+  }
   function toggleWidgetMinimize() { document.getElementById('supportWidgetBody').classList.toggle('hidden'); }
 
   async function endChat(who) {
