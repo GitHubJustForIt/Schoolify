@@ -1110,6 +1110,19 @@ function loginAs(uniqueId) {
   AS.saveSession(session);
   boot();
 }
+AS.loginUser = function(user) {
+  const session = AS.getSession();
+  session.currentUserId = user.uniqueId;
+  if (!session.accounts.includes(user.uniqueId)) session.accounts.push(user.uniqueId);
+  AS.saveSession(session);
+  // App anzeigen
+  document.getElementById('authScreen').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  applyTheme();
+  renderSidebarProfile();
+  showView('dashboard');
+  hideSplash();
+};
 
 function renderLocalAccountsQuickList() {
   const session = AS.getSession();
@@ -2509,7 +2522,54 @@ function initAppEvents() {
   document.querySelectorAll('#moreMenuSheet .sheet-item').forEach(el => el.addEventListener('click', () => showView(el.dataset.view)));
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   initAppEvents();
-  setTimeout(boot, 500);
+
+  // Magic-Link Handler
+  const params = new URLSearchParams(window.location.search);
+  const magicToken = params.get('magic');
+  if (magicToken) {
+    history.replaceState({}, '', window.location.pathname);
+    try {
+      const magicLinks = await cloudGet('magic_links');
+      if (magicLinks && magicLinks[magicToken]) {
+        const linkData = magicLinks[magicToken];
+        if (linkData.expires > Date.now()) {
+          const uid = linkData.uid;
+          const users = AS.getUsers();
+          const user = users[uid];
+          if (user) {
+            // Cloud-Daten laden, falls vorhanden
+            if (AS.cloudEnabled()) {
+              const remoteData = await cloudGet(dataKey(uid));
+              if (remoteData) AS.storage.setLocalOnly(dataKey(uid), remoteData);
+              await loadBlobSizes(uid);
+            }
+            // User einloggen
+            const session = AS.getSession();
+            session.currentUserId = uid;
+            if (!session.accounts.includes(uid)) session.accounts.push(uid);
+            AS.saveSession(session);
+            // Nach erfolgreichem Login booten
+            boot();
+            AS.toast('Erfolgreich eingeloggt (ohne Passwort).');
+          } else {
+            AS.toast('Magic-Link ungültig: User nicht gefunden.');
+            setTimeout(boot, 500);
+          }
+        } else {
+          AS.toast('Magic-Link abgelaufen.');
+          setTimeout(boot, 500);
+        }
+      } else {
+        AS.toast('Magic-Link ungültig.');
+        setTimeout(boot, 500);
+      }
+    } catch (e) {
+      AS.toast('Fehler beim Magic-Link.');
+      setTimeout(boot, 500);
+    }
+  } else {
+    setTimeout(boot, 500);
+  }
 });
