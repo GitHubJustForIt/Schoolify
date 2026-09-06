@@ -39,7 +39,7 @@
   --mint:#2E4A3E; --mint-2:#243530;
   --sky:#2E415A; --sky-2:#26303F;
   --peach:#5A4433; --peach-2:#382D24;
-  --ink:#EAF0EC; --ink-soft:#B7C6BE; --ink-faint:#7E8D86;
+  --ink:#EAF0EC; --ink-soft:#C9D5CE; --ink-faint:#96A59D;
   --white:#262B25; --border:#37403A;
   --danger:#E8879A; --danger-bg:#4A2C33; --success:#5FAE8B;
   --margin-red:#8A5A5A;
@@ -2658,3 +2658,15 @@ body.reduce-motion .section-tag{
   box-shadow:none;
 }
 body.reduce-motion .study-divider span{ transform:none; }
+
+/* --- Dark-Mode-Sicherheitsnetz: disabled Buttons, Pills & Badges dürfen
+   nie unter ein lesbares Minimum fallen (das war der Bug: opacity-basiertes
+   Dimmen + zu dunkle --ink-soft/--ink-faint ließ Text auf dunklem Grund
+   praktisch verschwinden, z.B. bei den Wochentag-Buttons). --- */
+[data-theme="dark"] .btn:disabled{ opacity:.7; }
+[data-theme="dark"] .todo-check-row.locked{ opacity:.55; }
+[data-theme="dark"] .section-tag,
+[data-theme="dark"] .pill,
+[data-theme="dark"] .day-tabs .pill,
+[data-theme="dark"] .folder-name,
+[data-theme="dark"] .page-name{ color: var(--ink); }
