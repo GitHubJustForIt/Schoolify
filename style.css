@@ -2391,6 +2391,11 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   --paper-fiber: rgba(110,125,119,0.06);
   --hole-shadow: rgba(60,67,64,0.20);
   --tape: rgba(255,255,255,.5);
+  /* Fix: --accent/--accent-2 waren fest verdrahtet und wechselten im Dark
+     Mode nicht mit — jetzt an --mint gekoppelt, damit Buttons, aktive
+     Nav-Items, Pills etc. im Dark Mode wieder korrekten Kontrast haben. */
+  --accent: var(--mint);
+  --accent-2: var(--mint-2);
 }
 [data-theme="dark"]{
   --periwinkle:#3B4566; --periwinkle-2:#2C3347;
@@ -2400,18 +2405,8 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   --tape: rgba(255,255,255,.12);
 }
 
-/* --- Papier-Textur: feines Faser-Rauschen über dem ganzen Blatt --- */
-.bg-pattern{ opacity:.85; }
-.bg-pattern::before{
-  content:"";
-  position:absolute;
-  inset:0;
-  background-image:
-    radial-gradient(var(--paper-fiber) 1px, transparent 1px),
-    radial-gradient(var(--paper-fiber) 1px, transparent 1px);
-  background-size:3px 3px, 5px 5px;
-  background-position:0 0, 2px 2px;
-}
+/* Hintergrund bleibt unverändert wie im Original (kein zusätzliches Rauschen,
+   Kariert-/Liniert-System unangetastet) — siehe body[data-paper] weiter oben. */
 
 /* --- Sidebar: aus Lochreihe wird eine echte Spiralbindung --- */
 .sidebar{ border-right:none; }
@@ -2426,13 +2421,10 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
 }
 .sidebar{ border-right:1.5px dashed var(--border); }
 
-/* --- Karten: echtes liniertes Notizblatt inkl. Eselsohr & Papierstapel --- */
+/* --- Karten: Hintergrund bleibt normales Weiß (kein eigenes Linien-Overlay,
+   das Kariert/Liniert-System ist ausschließlich body[data-paper] / .kariert
+   vorbehalten) — nur der Papierstapel-Schatten bleibt als Tiefe-Effekt. */
 .card{
-  background-image:
-    linear-gradient(var(--paper-line) 1px, transparent 1px),
-    linear-gradient(135deg, transparent calc(100% - 16px), var(--cream-2) calc(100% - 16px), var(--cream-2) calc(100% - 15px), transparent calc(100% - 15px));
-  background-size:100% 25px, 100% 100%;
-  background-position:0 8px, 0 0;
   box-shadow:
     var(--shadow-1),
     4px 5px 0 -1px var(--cream),
@@ -2447,10 +2439,6 @@ input:focus,textarea:focus,select:focus{outline:none; border-color:var(--accent)
   background-size:6px 26px, 6px 26px;
   background-position:0 14px, 0.6px 14.6px;
   opacity:.75;
-}
-.card.no-margin{
-  background-image:none;
-  box-shadow:var(--shadow-1);
 }
 
 /* --- Buttons: griffiger, handgemachter Radiergummi-/Stempel-Look --- */
@@ -2506,7 +2494,7 @@ mark, .hl-yellow{ background:var(--hl-yellow); border-radius:2px 8px 3px 7px; pa
   width:42px;
   height:16px;
   transform:translateX(-50%) rotate(-3deg);
-  background:repeating-linear-gradient(45deg, var(--blush) 0 6px, var(--blush-2) 6px 12px);
+  background:repeating-linear-gradient(45deg, var(--mint) 0 6px, var(--mint-2) 6px 12px);
   opacity:.9;
   box-shadow:var(--shadow-1);
   clip-path:polygon(4% 0,96% 0,100% 100%,0% 100%);
@@ -2526,6 +2514,17 @@ mark, .hl-yellow{ background:var(--hl-yellow); border-radius:2px 8px 3px 7px; pa
   transform:translateX(-50%) rotate(-1.5deg);
 }
 .add-tile::before{ display:none; }
+/* Pink/Lavendel nur noch als bewusste Opt-in-Klasse, nicht als Standard —
+   macht die Farbverteilung insgesamt geschlechtsneutraler. */
+.folder-tile.tape-pink::before, .page-tile.tape-pink::before, .deck-tile.tape-pink::before{
+  background:repeating-linear-gradient(45deg, var(--blush) 0 6px, var(--blush-2) 6px 12px) !important;
+}
+.folder-tile.tape-lavender::before, .page-tile.tape-lavender::before, .deck-tile.tape-lavender::before{
+  background:repeating-linear-gradient(45deg, var(--lavender) 0 6px, var(--lavender-2) 6px 12px) !important;
+}
+.folder-tile.tape-peach::before, .page-tile.tape-peach::before, .deck-tile.tape-peach::before{
+  background:repeating-linear-gradient(45deg, var(--peach) 0 6px, var(--peach-2) 6px 12px) !important;
+}
 
 /* --- leichte, wechselnde Schräglage: Collage- statt Raster-Gefühl --- */
 .folder-grid .folder-tile:nth-child(3n+1),
@@ -2567,6 +2566,35 @@ mark, .hl-yellow{ background:var(--hl-yellow); border-radius:2px 8px 3px 7px; pa
 }
 .motivate-msg, .hero-free-note{ font-size:1.25rem; }
 
+/* --- Zwischenüberschrift im Collegeblock-Stil, z.B. zwischen Abschnitten
+   ("Weiter geht's", "Fokus-Zone", "Kurze Pause" ...). Text kommt aus dem HTML,
+   diese Klasse liefert nur den Rahmen. --- */
+.study-divider{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  margin:34px 0 20px 0;
+}
+.study-divider::before, .study-divider::after{
+  content:"";
+  flex:1;
+  height:2px;
+  background:repeating-linear-gradient(90deg, var(--border) 0 6px, transparent 6px 11px);
+}
+.study-divider span{
+  font-family:var(--font-hand);
+  font-size:1.3rem;
+  font-weight:700;
+  color:var(--ink-soft);
+  background:var(--accent-2);
+  padding:4px 16px;
+  border-radius:var(--radius-pill);
+  border:1.5px dashed var(--ink-faint);
+  white-space:nowrap;
+  transform:rotate(-1deg);
+  flex:0 0 auto;
+}
+
 /* --- Auth-Hero: Pinnwand-Gefühl mit Pinnadeln an den Feature-Karten --- */
 .auth-hero{
   background:
@@ -2607,8 +2635,26 @@ mark, .hl-yellow{ background:var(--hl-yellow); border-radius:2px 8px 3px 7px; pa
 }
 *::-webkit-scrollbar-thumb:hover{ background:linear-gradient(var(--sky), var(--lavender)); }
 
-/* --- Fokus & Bewegungsreduktion bleiben respektiert --- */
+/* --- "Animationen reduzieren" schaltet zusätzlich die verspielte Deko ab
+   (Washi-Tape, Pinnadeln, Schräglage, Post-it-Tilt) — nicht nur Animationen.
+   Struktur bleibt: Papierstapel-Schatten, Lochung, Kariert/Liniert. --- */
 body.reduce-motion .folder-tile,
 body.reduce-motion .page-tile,
 body.reduce-motion .deck-tile{ transform:none !important; }
 body.reduce-motion .btn:hover{ transform:none !important; }
+body.reduce-motion .folder-tile::before,
+body.reduce-motion .page-tile::before,
+body.reduce-motion .deck-tile::before,
+body.reduce-motion .hero-feature::after{ display:none; }
+body.reduce-motion .sticky-note{
+  transform:none;
+  border-radius:10px;
+  box-shadow:var(--shadow-1);
+}
+body.reduce-motion .sticky-note::before{ display:none; }
+body.reduce-motion .section-tag{
+  transform:none;
+  border:1.5px solid var(--border);
+  box-shadow:none;
+}
+body.reduce-motion .study-divider span{ transform:none; }
