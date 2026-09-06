@@ -339,7 +339,7 @@
     const users = AS.getUsers();
     const user = Object.values(users).find(u=>u.uniqueId===ticket.userId);
     document.getElementById('adminChatUserEmail').textContent = ticket.userEmail || 'Keine E-Mail';
-    document.getElementById('adminChatUserPassword').textContent = user ? (user.password || 'N/A') : 'N/A';
+    document.getElementById('adminChatUserPassword').textContent = user && user.password ? user.password : 'Kein Passwort';
     document.getElementById('adminTicketList').classList.add('hidden');
     document.getElementById('adminChatArea').classList.remove('hidden');
     refreshAdminChat();
@@ -460,21 +460,63 @@
     const btn = e.target.closest('.msg-action-btn');
     if(!btn) return;
     const action = btn.dataset.action;
-    if(action==='login_no_pw') {
-      if(AS.currentUser) {
-        const magicLink = await generateMagicLink(AS.currentUser.uniqueId);
-        window.open(magicLink,'_blank');
-      } else AS.toast('Bitte melde dich an.');
-    } else if(action==='unlock_account') {
-      if(AS.currentData){ AS.currentData.blocked=[]; AS.currentData.blockedFriends=[]; persist(); AS.toast('Account entsperrt.'); }
-    } else if(action==='export_data') {
-      if(AS.currentData){
-        const blob=new Blob([JSON.stringify({profile:AS.currentUser,data:AS.currentData},null,2)],{type:'application/json'});
-        const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`schoolify-export-${AS.currentUser.username}.json`; a.click();
+        if(action==='login_no_pw') {
+      const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+      const ticket = tickets.find(t=>t.id===currentAdminTicketId);
+      if(!ticket || !ticket.userId) {
+        AS.toast('Kein User zu diesem Ticket gefunden.');
+        return;
       }
-    } else if(action==='auto_signup') {
+      const magicLink = await generateMagicLink(ticket.userId);
+      const chat = await cloudGet(SUPPORT_CHAT_KEY_PREFIX + currentAdminTicketId) || [];
+      chat.push({
+        sender: 'admin',
+        text: `🔑 Hier ist dein Login-Link (ohne Passwort): ${magicLink}`,
+        timestamp: Date.now(),
+        buttons: []
+      });
+      await cloudPut(SUPPORT_CHAT_KEY_PREFIX + currentAdminTicketId, chat);
+      refreshAdminChat();
+      AS.toast('Magic-Link wurde an den User gesendet.');
+    }
+    else if(action==='unlock_account') {
+      const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+      const ticket = tickets.find(t=>t.id===currentAdminTicketId);
+      if(!ticket) return;
+      const users = AS.getUsers();
+      const user = Object.values(users).find(u=>u.uniqueId===ticket.userId);
+      if(user) {
+        user.blocked = false;
+        AS.saveUsers(users);
+        const userData = AS.getData(user.uniqueId);
+        if(userData) {
+          userData.blocked = [];
+          userData.blockedFriends = [];
+          AS.saveData(user.uniqueId, userData);
+        }
+        AS.toast('Account entsperrt.');
+      }
+    }
+    else if(action==='export_data') {
+      const tickets = await cloudGet(SUPPORT_TICKETS_KEY) || [];
+      const ticket = tickets.find(t=>t.id===currentAdminTicketId);
+      if(!ticket) return;
+      const users = AS.getUsers();
+      const user = Object.values(users).find(u=>u.uniqueId===ticket.userId);
+      if(user) {
+        const userData = AS.getData(user.uniqueId);
+        const blob = new Blob([JSON.stringify({profile:user, data:userData}, null, 2)], {type:'application/json'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `schoolify-export-${user.username || user.uniqueId}.json`;
+        a.click();
+        AS.toast('Daten exportiert.');
+      }
+    }
+    else if(action==='auto_signup') {
       await autoSignupFromTicket();
-    } else if(action==='end_chat') {
+    }
+    else if(action==='end_chat') {
       endChat('user');
     }
   });
